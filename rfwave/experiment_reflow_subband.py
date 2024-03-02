@@ -49,7 +49,6 @@ class RectifiedFlow(nn.Module):
         self.prev_cond = False
         self.parallel_uncond = True
         self.time_balance_loss = True
-        self.time_balance_noise = False  # always false, deprecated
         self.noise_alpha = 0.1
         self.cfg = guidance_scale > 1.
         self.p_uncond = p_uncond
@@ -64,23 +63,6 @@ class RectifiedFlow(nn.Module):
         if self.feature_loss:
             self.register_buffer(
                 "feature_weight", get_feature_weight2(self.head.n_fft, self.head.hop_length))
-
-    def time_balance_for_noise(self, noise, mel, log_var):
-        if log_var is None:
-            v = torch.var(torch.exp(mel) / np.sqrt(self.head.n_fft), dim=1, keepdim=True)
-        else:
-            v = log_var.detach().clamp(-14, 6).exp()
-            v = torch.mean(v, dim=1, keepdim=True)
-        if self.wave:
-            m = self.head.n_fft // self.head.hop_length
-            rp = 2 if self.head.padding == "same" else 1
-            v = F.pad(v.squeeze(1), (1, rp), mode='reflect').unfold(1, m, m // 2 - 1).mean(-1, keepdim=True)
-            noise = noise.reshape(noise.size(0), -1, self.head.hop_length)
-            noise = noise * ((v + 1e-6) ** self.noise_alpha).clamp_min_(0.01)
-            noise = noise.reshape(noise.size(0), -1)
-        else:
-            noise = noise * ((v + 1e-6) ** self.noise_alpha).clamp_min_(0.01)
-        return noise
 
     def get_subband(self, S, i):
         if i.numel() > 1:
@@ -136,40 +118,27 @@ class RectifiedFlow(nn.Module):
     def get_z0(self, mel, bandwidth_id):
         if bandwidth_id.numel() > 1:
             bandwidth_id = bandwidth_id[0]
-        log_var = self.backbone.get_log_var(mel)
-        # for training var pred.
-        log_var_i = log_var[:, bandwidth_id: bandwidth_id + 1] if log_var is not None else None
         if self.wave:
             nf = mel.shape[2] if self.head.padding == "same" else (mel.shape[2] - 1)
             r = torch.randn([mel.shape[0], self.head.hop_length * nf], device=mel.device)
-            if self.time_balance_noise:
-                r = self.time_balance_for_noise(r, mel, log_var)
             rf = self.stft(r)
             z0 = self.get_subband(rf, bandwidth_id)
         else:
             r = torch.randn([mel.shape[0], self.head.n_fft + 2, mel.shape[2]], device=mel.device)
             z0 = self.get_subband(r, bandwidth_id)
-            if self.time_balance_noise:
-                z0 = self.time_balance_for_noise(z0, mel, log_var)
-        return log_var_i, z0
+        return z0
 
     def get_joint_z0(self, mel):
-        log_var = self.backbone.get_log_var(mel)
         if self.wave:
             nf = mel.shape[2] if self.head.padding == "same" else (mel.shape[2] - 1)
             r = torch.randn([mel.shape[0], self.head.hop_length * nf], device=mel.device)
-            if self.time_balance_noise:
-                r = self.time_balance_for_noise(r, mel, log_var)
             rf = self.stft(r)
             z0 = self.get_joint_subband(rf)
         else:
             r = torch.randn([mel.shape[0], self.head.n_fft + 2, mel.shape[2]], device=mel.device)
             z0 = self.get_joint_subband(r)
-            if self.time_balance_noise:
-                z0 = self.time_balance_for_noise(z0, mel, log_var)
         z0 = z0.reshape(z0.size(0) * self.num_bands, z0.size(1) // self.num_bands, z0.size(2))
-        log_var = log_var.reshape(log_var.size(0) * self.num_bands, 1, log_var.size(2)) if log_var is not None else None
-        return log_var, z0
+        return z0
 
     def get_eq_norm_stft(self, audio):
         if self.equalizer:
@@ -210,32 +179,24 @@ class RectifiedFlow(nn.Module):
             x = self.eq_processor.return_sample(x.unsqueeze(1)).squeeze(1)
         return x
 
-    def get_target_log_var(self, sS):
-        if self.backbone.pred_var:
-            target_log_var = torch.log(sS.var(dim=1, keepdim=True) + 1e-6)
-        else:
-            target_log_var = None
-        return target_log_var
-
     def get_train_tuple(self, mel, audio_input):
         if self.prev_cond or not self.parallel_uncond:
             t = torch.rand((mel.size(0),), device=mel.device)
             bandwidth_id = torch.tile(torch.randint(0, self.num_bands, (), device=mel.device), (mel.size(0),))
             bandwidth_id = torch.ones([mel.shape[0]], dtype=torch.long, device=mel.device) * bandwidth_id
-            pred_log_var, z0 = self.get_z0(mel, bandwidth_id)
+            z0 = self.get_z0(mel, bandwidth_id)
             z1, cond_band = self.get_z1(audio_input, bandwidth_id)
             mel = torch.cat([mel, cond_band], 1) if self.prev_cond else mel
         else:
             t = torch.rand((mel.size(0),), device=mel.device).repeat_interleave(self.num_bands, 0)
-            pred_log_var, z0 = self.get_joint_z0(mel)
+            z0 = self.get_joint_z0(mel)
             z1 = self.get_joint_z1(audio_input)
             bandwidth_id = torch.tile(torch.arange(self.num_bands, device=mel.device), (mel.size(0),))
             mel = torch.repeat_interleave(mel, self.num_bands, 0)
         t_ = t.view(-1, 1, 1)
         z_t = t_ * z1 + (1. - t_) * z0
         target = z1 - z0
-        target_log_var = self.get_target_log_var(z1)
-        return (pred_log_var, target_log_var), mel, bandwidth_id, (z_t, t, target)
+        return mel, bandwidth_id, (z_t, t, target)
 
     def get_pred(self, z_t, t, mel, bandwidth_id, encodec_bandwidth_id=None):
         pred = self.backbone(z_t, t, mel, bandwidth_id, encodec_bandwidth_id)
@@ -482,30 +443,7 @@ class VocosExp(pl.LightningModule):
         guidance_scale: float = 1.,
         p_uncond: float = 0.2,
         num_warmup_steps: int = 0,
-        mel_loss_coeff: float = 45,
-        mrd_loss_coeff: float = 1.0,
-        pretrain_mel_steps: int = 0,
-        decay_mel_coeff: bool = False,
-        evaluate_utmos: bool = False,
-        evaluate_pesq: bool = False,
-        evaluate_periodicty: bool = False,
     ):
-        """
-        Args:
-            feature_extractor (FeatureExtractor): An instance of FeatureExtractor to extract features from audio signals.
-            backbone (Backbone): An instance of Backbone model.
-            head (FourierHead):  An instance of Fourier head to generate spectral coefficients and reconstruct a waveform.
-            sample_rate (int): Sampling rate of the audio signals.
-            initial_learning_rate (float): Initial learning rate for the optimizer.
-            num_warmup_steps (int): Number of steps for the warmup phase of learning rate scheduler. Default is 0.
-            mel_loss_coeff (float, optional): Coefficient for Mel-spectrogram loss in the loss function. Default is 45.
-            mrd_loss_coeff (float, optional): Coefficient for Multi Resolution Discriminator loss. Default is 1.0.
-            pretrain_mel_steps (int, optional): Number of steps to pre-train the model without the GAN objective. Default is 0.
-            decay_mel_coeff (bool, optional): If True, the Mel-spectrogram loss coefficient is decayed during training. Default is False.
-            evaluate_utmos (bool, optional): If True, UTMOS scores are computed for each validation run.
-            evaluate_pesq (bool, optional): If True, PESQ scores are computed for each validation run.
-            evaluate_periodicty (bool, optional): If True, periodicity scores are computed for each validation run.
-        """
         super().__init__()
         self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head", "input_adaptor"])
 
@@ -525,8 +463,6 @@ class VocosExp(pl.LightningModule):
 
         self.melspec_loss = MelSpecReconstructionLoss(sample_rate=sample_rate)
         self.rvm = RelativeVolumeMel(sample_rate=sample_rate)
-
-        self.base_mel_coeff = self.mel_loss_coeff = mel_loss_coeff
 
         self.validation_step_outputs = []
         self.automatic_optimization = False
@@ -601,15 +537,11 @@ class VocosExp(pl.LightningModule):
         else:
             features = mel
             cond_mel_loss = 0.
-        ((pred_log_var, target_log_var), features_ext, bandwidth_id,
-         (z_t, t, target)) = self.reflow.get_train_tuple(features, audio_input)
+        features_ext, bandwidth_id, (z_t, t, target) = self.reflow.get_train_tuple(features, audio_input)
         bi = kwargs.get("encodec_bandwidth_id", None)
         loss, loss_dict = self.reflow.compute_loss(
             z_t, t, target, features_ext, bandwidth_id=bandwidth_id, encodec_bandwidth_id=bi)
         loss = loss + cond_mel_loss
-        if pred_log_var is not None:
-            var_loss = F.mse_loss(pred_log_var, target_log_var)
-            loss = loss + var_loss
         self.manual_backward(loss)
         self.skip_nan(opt_gen)
         opt_gen.step()
@@ -617,8 +549,6 @@ class VocosExp(pl.LightningModule):
 
         self.log("generator/total_loss", loss, prog_bar=True, logger=False)
         if self.global_step % 1000 == 0 and self.global_rank == 0:
-            if pred_log_var is not None:
-                self.logger.log_metrics({"generator/var_loss": var_loss}, step=self.global_step)
             with torch.no_grad():
                 audio_hat_traj = self.reflow.sample_ode(features, N=100, **kwargs)
             audio_hat = audio_hat_traj[-1]
@@ -634,13 +564,6 @@ class VocosExp(pl.LightningModule):
 
         return loss
 
-    def on_validation_epoch_start(self):
-        if self.hparams.evaluate_utmos:
-            from metrics.UTMOS import UTMOSScore
-
-            if not hasattr(self, "utmos_model"):
-                self.utmos_model = UTMOSScore(device=self.device)
-
     def validation_step(self, batch, batch_idx, **kwargs):
         if self.task == 'tts':
             audio_input, phone_info = batch
@@ -650,42 +573,15 @@ class VocosExp(pl.LightningModule):
         with torch.no_grad():
             features = self.feature_extractor(audio_input, **kwargs)
             cond = self.input_adaptor(*phone_info) if self.task == 'tts' else features
-            (pred_log_var, target_log_var), *_ = self.reflow.get_train_tuple(cond, audio_input)
             audio_hat_traj = self.reflow.sample_ode(cond, N=100, **kwargs)
             cond_mel_hat = self.input_adaptor_proj(cond) if self.aux_loss and self.task == 'tts' else None
         audio_hat = audio_hat_traj[-1]
 
         audio_16_khz = torchaudio.functional.resample(audio_input, orig_freq=self.hparams.sample_rate, new_freq=16000)
         audio_hat_16khz = torchaudio.functional.resample(audio_hat, orig_freq=self.hparams.sample_rate, new_freq=16000)
-
-        if self.hparams.evaluate_periodicty:
-            from metrics.periodicity import calculate_periodicity_metrics
-
-            periodicity_loss, pitch_loss, f1_score = calculate_periodicity_metrics(audio_16_khz, audio_hat_16khz)
-        else:
-            periodicity_loss = pitch_loss = f1_score = 0
-
-        if self.hparams.evaluate_utmos:
-            utmos_score = self.utmos_model.score(audio_hat_16khz.unsqueeze(1)).mean()
-        else:
-            utmos_score = torch.zeros(1, device=self.device)
-
-        if self.hparams.evaluate_pesq:
-            from pesq import pesq
-
-            pesq_score = 0
-            for ref, deg in zip(audio_16_khz.cpu().numpy(), audio_hat_16khz.cpu().numpy()):
-                pesq_score += pesq(16000, ref, deg, "wb", on_error=1)
-            pesq_score /= len(audio_16_khz)
-            pesq_score = torch.tensor(pesq_score)
-        else:
-            pesq_score = torch.zeros(1, device=self.device)
-
         mel_loss = F.mse_loss(self.feature_extractor(audio_hat), features)
         rvm_loss = self.rvm(audio_hat.unsqueeze(1), audio_input.unsqueeze(1))
-        var_loss = (F.mse_loss(pred_log_var, target_log_var) if pred_log_var is not None
-                    else torch.zeros(1, device=self.device))
-        total_loss = mel_loss + (5 - utmos_score) + (5 - pesq_score)
+        total_loss = mel_loss
         cond_mel_loss = (F.mse_loss(cond_mel_hat, features) if cond_mel_hat is not None
                          else torch.zeros(1, device=self.device))
         phase_loss = compute_phase_error(audio_hat, audio_input, self.reflow.head.get_spec)
@@ -693,14 +589,8 @@ class VocosExp(pl.LightningModule):
         output = {
             "val_loss": total_loss,
             "mel_loss": mel_loss,
-            "utmos_score": utmos_score,
-            "pesq_score": pesq_score,
-            "periodicity_loss": periodicity_loss,
-            "pitch_loss": pitch_loss,
-            "f1_score": f1_score,
             "audio_input": audio_input[0],
             "audio_pred": audio_hat[0],
-            "var_loss": var_loss,
             "cond_mel_loss": cond_mel_loss,
             "phase_loss": phase_loss,
         }
@@ -714,12 +604,6 @@ class VocosExp(pl.LightningModule):
         outputs = self.validation_step_outputs
         avg_loss = torch.stack([x["val_loss"] for x in outputs]).mean()
         mel_loss = torch.stack([x["mel_loss"] for x in outputs]).mean()
-        utmos_score = torch.stack([x["utmos_score"] for x in outputs]).mean()
-        pesq_score = torch.stack([x["pesq_score"] for x in outputs]).mean()
-        periodicity_loss = np.array([x["periodicity_loss"] for x in outputs]).mean()
-        pitch_loss = np.array([x["pitch_loss"] for x in outputs]).mean()
-        f1_score = np.array([x["f1_score"] for x in outputs]).mean()
-        var_loss = torch.stack([x["var_loss"] for x in outputs]).mean()
         cond_mel_loss = torch.stack([x["cond_mel_loss"] for x in outputs]).mean()
         phase_loss = torch.stack([x["phase_loss"] for x in outputs]).mean()
         rvm_loss_dict = {}
@@ -736,13 +620,7 @@ class VocosExp(pl.LightningModule):
                 "val_loss": avg_loss,
                 "val/mel_loss": mel_loss,
                 "val/cond_mel_loss": cond_mel_loss,
-                "val/phase_loss": phase_loss,
-                "val/utmos_score": utmos_score,
-                "val/pesq_score": pesq_score,
-                "val/periodicity_loss": periodicity_loss,
-                "val/pitch_loss": pitch_loss,
-                "val/f1_score": f1_score,
-                "val/var_loss": var_loss}
+                "val/phase_loss": phase_loss}
             self.logger.log_metrics(
                 {**metrics, **rvm_loss_dict},
                 step=self.global_step)
@@ -761,19 +639,6 @@ class VocosExp(pl.LightningModule):
     def on_train_start(self, *args):
         if self.global_rank == 0:
             save_code(None, self.logger.save_dir)
-
-    def on_train_batch_end(self, *args):
-        def mel_loss_coeff_decay(current_step, num_cycles=0.5):
-            max_steps = self.trainer.max_steps // 2
-            if current_step < self.hparams.num_warmup_steps:
-                return 1.0
-            progress = float(current_step - self.hparams.num_warmup_steps) / float(
-                max(1, max_steps - self.hparams.num_warmup_steps)
-            )
-            return max(0.0, 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress)))
-
-        if self.hparams.decay_mel_coeff:
-            self.mel_loss_coeff = self.base_mel_coeff * mel_loss_coeff_decay(self.global_step)
 
 
 class VocosEncodecExp(VocosExp):
@@ -797,13 +662,6 @@ class VocosEncodecExp(VocosExp):
         guidance_scale: float = 1.,
         p_uncond: float = 0.2,
         num_warmup_steps: int = 0,
-        mel_loss_coeff: float = 45,
-        mrd_loss_coeff: float = 1.0,
-        pretrain_mel_steps: int = 0,
-        decay_mel_coeff: bool = False,
-        evaluate_utmos: bool = False,
-        evaluate_pesq: bool = False,
-        evaluate_periodicty: bool = False,
     ):
         super().__init__(
             feature_extractor,
@@ -817,13 +675,6 @@ class VocosEncodecExp(VocosExp):
             guidance_scale,
             p_uncond,
             num_warmup_steps,
-            mel_loss_coeff,
-            mrd_loss_coeff,
-            pretrain_mel_steps,
-            decay_mel_coeff,
-            evaluate_utmos,
-            evaluate_pesq,
-            evaluate_periodicty,
         )
 
     def training_step(self, *args):
@@ -869,7 +720,7 @@ if __name__ == '__main__':
         sample_rate=24000, n_fft=1024, hop_length=256, n_mels=100, padding='center')
     backbone = VocosRFBackbone(
         input_channels=100, output_channels=130, dim=512, intermediate_dim=1536, num_layers=8, num_bands=8,
-        with_fourier_features=False, encodec_num_embeddings=None, prev_cond=False, pred_var=True)
+        with_fourier_features=False, encodec_num_embeddings=None, prev_cond=False)
     head = RFSTFTHead(dim=512, n_fft=1024, hop_length=256, padding='center')
     # head = RawFFTHead(n_fft=1024, hop_length=256)
     exp = VocosExp(
@@ -881,7 +732,7 @@ if __name__ == '__main__':
     y = y[:, :num_samples].requires_grad_(True)
     y = torch.repeat_interleave(y, 8, dim=0)
     features = exp.feature_extractor(y)
-    _, cond, bandwidth_id, (z_t, t, target) = exp.reflow.get_train_tuple(features, y)
+    cond, bandwidth_id, (z_t, t, target) = exp.reflow.get_train_tuple(features, y)
 
     z0 = z_t - t.view(-1, 1, 1) * target
     overlap_loss = exp.reflow.compute_overlap_loss(z0)

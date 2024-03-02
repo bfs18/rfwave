@@ -59,7 +59,6 @@ model:
         num_layers: 8
         num_bands: 8
         prev_cond: False
-        pred_var: False
         encodec_num_embeddings: null
 
     head:
