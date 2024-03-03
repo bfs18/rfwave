@@ -96,6 +96,8 @@ class VocosExp(pl.LightningModule):
         self.task = task
         self.input_adaptor = input_adaptor
         self.reflow = RectifiedFlow(backbone, p_uncond=p_uncond, guidance_scale=guidance_scale)
+        self.validation_step_outputs = []
+        self.automatic_optimization = False
 
     def configure_optimizers(self):
         gen_params = [

@@ -22,6 +22,7 @@ from rfwave.lr_schedule import get_cosine_schedule_with_warmup
 from rfwave.input import InputAdaptor, InputAdaptorProject
 from rfwave.helpers import save_code
 from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_error, compute_instantaneous_frequency
+from rfwave.feature_weight import get_feature_weight, get_feature_weight2
 
 
 class RectifiedFlow(nn.Module):
@@ -549,13 +550,6 @@ class VocosExp(pl.LightningModule):
         guidance_scale: float = 1.,
         p_uncond: float = 0.2,
         num_warmup_steps: int = 0,
-        mel_loss_coeff: float = 45,
-        mrd_loss_coeff: float = 1.0,
-        pretrain_mel_steps: int = 0,
-        decay_mel_coeff: bool = False,
-        evaluate_utmos: bool = False,
-        evaluate_pesq: bool = False,
-        evaluate_periodicty: bool = False,
     ):
         """
         Args:
@@ -593,7 +587,6 @@ class VocosExp(pl.LightningModule):
         self.melspec_loss = MelSpecReconstructionLoss(sample_rate=sample_rate)
         self.rvm = RelativeVolumeMel(sample_rate=sample_rate)
 
-        self.base_mel_coeff = self.mel_loss_coeff = mel_loss_coeff
         self.validation_step_outputs = []
         self.automatic_optimization = False
         assert num_bands == backbone.num_bands
@@ -669,7 +662,7 @@ class VocosExp(pl.LightningModule):
         opt_gen.step()
         sch_gen.step()
 
-        self.log("generator/total_loss", loss, prog_bar=True, logger=False)
+        self.log("train/total_loss", loss, prog_bar=True, logger=False)
         if self.global_step % 1000 == 0 and self.global_rank == 0:
             with torch.no_grad():
                 mel_hat_traj, audio_hat_traj = self.reflow.sample_ode(text, N=100, **kwargs)
@@ -678,22 +671,15 @@ class VocosExp(pl.LightningModule):
             tandem_mel_loss = F.mse_loss(mel_hat, tandem_feat)
             mel_loss = F.mse_loss(self.feature_extractor(audio_hat), mel)
             self.logger.log_metrics(
-                {"generator/total_loss": loss, "generator/cond_mel_loss": cond_mel_loss,
-                 "generator/mel_loss": mel_loss, "generator/tandem_mel_loss": tandem_mel_loss},
+                {"train/total_loss": loss, "train/cond_mel_loss": cond_mel_loss,
+                 "train/mel_loss": mel_loss, "train/tandem_mel_loss": tandem_mel_loss},
                 step=self.global_step)
-            loss_dict = dict((f'generator/{k}', v) for k, v in loss_dict.items())
+            loss_dict = dict((f'train/{k}', v) for k, v in loss_dict.items())
             self.logger.log_metrics(loss_dict, step=self.global_step)
             rvm_loss = self.rvm(audio_hat.unsqueeze(1), audio_input.unsqueeze(1))
             for k, v in rvm_loss.items():
-                self.logger.log_metrics({f"generator/{k}": v}, step=self.global_step)
+                self.logger.log_metrics({f"train/{k}": v}, step=self.global_step)
         return loss
-
-    def on_validation_epoch_start(self):
-        if self.hparams.evaluate_utmos:
-            from metrics.UTMOS import UTMOSScore
-
-            if not hasattr(self, "utmos_model"):
-                self.utmos_model = UTMOSScore(device=self.device)
 
     def validation_step(self, batch, batch_idx, **kwargs):
         audio_input, phone_info = batch
@@ -707,51 +693,16 @@ class VocosExp(pl.LightningModule):
         audio_hat = audio_hat_traj[-1]
         mel_hat = mel_hat_traj[-1]
 
-        audio_16_khz = torchaudio.functional.resample(
-            audio_input, orig_freq=self.hparams.sample_rate, new_freq=16000)
-        audio_hat_16khz = torchaudio.functional.resample(
-            audio_hat, orig_freq=self.hparams.sample_rate, new_freq=16000)
-
-        if self.hparams.evaluate_periodicty:
-            from metrics.periodicity import calculate_periodicity_metrics
-
-            periodicity_loss, pitch_loss, f1_score = calculate_periodicity_metrics(audio_16_khz, audio_hat_16khz)
-        else:
-            periodicity_loss = pitch_loss = f1_score = 0
-
-        if self.hparams.evaluate_utmos:
-            utmos_score = self.utmos_model.score(audio_hat_16khz.unsqueeze(1)).mean()
-        else:
-            utmos_score = torch.zeros(1, device=self.device)
-
-        if self.hparams.evaluate_pesq:
-            from pesq import pesq
-
-            pesq_score = 0
-            for ref, deg in zip(audio_16_khz.cpu().numpy(), audio_hat_16khz.cpu().numpy()):
-                pesq_score += pesq(16000, ref, deg, "wb", on_error=1)
-            pesq_score /= len(audio_16_khz)
-            pesq_score = torch.tensor(pesq_score)
-        else:
-            pesq_score = torch.zeros(1, device=self.device)
-
         tandem_mel_loss = F.mse_loss(mel_hat, tandem_feat)
         mel_loss = F.mse_loss(self.feature_extractor(audio_hat), mel)
         rvm_loss = self.rvm(audio_hat.unsqueeze(1), audio_input.unsqueeze(1))
-        total_loss = mel_loss + (5 - utmos_score) + (5 - pesq_score)
         cond_mel_loss = (F.mse_loss(cond_mel_hat, mel) if cond_mel_hat is not None
                          else torch.zeros(1, device=self.device))
         phase_loss = compute_phase_error(audio_hat, audio_input, self.reflow.head.get_spec)
 
         output = {
-            "val_loss": total_loss,
             "tandem_mel_loss": tandem_mel_loss,
             "mel_loss": mel_loss,
-            "utmos_score": utmos_score,
-            "pesq_score": pesq_score,
-            "periodicity_loss": periodicity_loss,
-            "pitch_loss": pitch_loss,
-            "f1_score": f1_score,
             "audio_input": audio_input[0],
             "audio_pred": audio_hat[0],
             "mel_pred": mel_hat[0],
@@ -766,67 +717,41 @@ class VocosExp(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         outputs = self.validation_step_outputs
-        avg_loss = torch.stack([x["val_loss"] for x in outputs]).mean()
         tandem_mel_loss = torch.stack([x["tandem_mel_loss"] for x in outputs]).mean()
         mel_loss = torch.stack([x["mel_loss"] for x in outputs]).mean()
-        utmos_score = torch.stack([x["utmos_score"] for x in outputs]).mean()
-        pesq_score = torch.stack([x["pesq_score"] for x in outputs]).mean()
-        periodicity_loss = np.array([x["periodicity_loss"] for x in outputs]).mean()
-        pitch_loss = np.array([x["pitch_loss"] for x in outputs]).mean()
-        f1_score = np.array([x["f1_score"] for x in outputs]).mean()
         cond_mel_loss = torch.stack([x["cond_mel_loss"] for x in outputs]).mean()
         phase_loss = torch.stack([x["phase_loss"] for x in outputs]).mean()
         rvm_loss_dict = {}
         for k in outputs[0].keys():
             if k.startswith("rvm"):
-                rvm_loss_dict[k] = torch.stack([x[k] for x in outputs]).mean()
+                rvm_loss_dict[f'valid/{k}'] = torch.stack([x[k] for x in outputs]).mean()
 
-        self.log("val_loss", avg_loss, sync_dist=True, logger=False)
+        self.log("val_loss", mel_loss, sync_dist=True, logger=False)
         if self.global_rank == 0:
             audio_in, audio_pred, tandem_mel_hat = (
                 outputs[0]['audio_input'], outputs[0]['audio_pred'], outputs[0]['mel_pred'])
             mel_target = self.feature_extractor(audio_in)
             mel_hat = self.feature_extractor(audio_pred)
             metrics = {
-                "val_loss": avg_loss,
-                "val/tandem_mel_loss": tandem_mel_loss,
-                "val/cond_mel_loss": cond_mel_loss,
-                "val/mel_loss": mel_loss,
-                "val/phase_loss": phase_loss,
-                "val/utmos_score": utmos_score,
-                "val/pesq_score": pesq_score,
-                "val/periodicity_loss": periodicity_loss,
-                "val/pitch_loss": pitch_loss,
-                "val/f1_score": f1_score}
+                "valid/tandem_mel_loss": tandem_mel_loss,
+                "valid/cond_mel_loss": cond_mel_loss,
+                "valid/mel_loss": mel_loss,
+                "valid/phase_loss": phase_loss}
             self.logger.log_metrics(
                 {**metrics, **rvm_loss_dict},
                 step=self.global_step)
             self.logger.experiment.log(
-                {"valid/audio_in": wandb.Audio(audio_in.data.cpu().numpy(), sample_rate=self.hparams.sample_rate),
-                 "valid/audio_hat": wandb.Audio(audio_pred.data.cpu().numpy(), sample_rate=self.hparams.sample_rate),
-                 "valid/mel_in": wandb.Image(plot_spectrogram_to_numpy(mel_target.data.cpu().numpy())),
-                 "valid/tandem_mel_hat": wandb.Image(plot_spectrogram_to_numpy(tandem_mel_hat.data.cpu().numpy())),
-                 "valid/mel_hat": wandb.Image(plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()))},
-                step=self.global_step)
+                {"valid_media/audio_in": wandb.Audio(audio_in.data.cpu().numpy(), sample_rate=self.hparams.sample_rate),
+                 "valid_media/audio_hat": wandb.Audio(audio_pred.data.cpu().numpy(), sample_rate=self.hparams.sample_rate),
+                 "valid_media/mel_in": wandb.Image(plot_spectrogram_to_numpy(mel_target.data.cpu().numpy())),
+                 "valid_media/tandem_mel_hat": wandb.Image(plot_spectrogram_to_numpy(tandem_mel_hat.data.cpu().numpy())),
+                 "valid_media/mel_hat": wandb.Image(plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()))})
             if 'cond_mel_pred' in outputs[0]:
                 self.logger.experiment.log(
-                    {"valid/cond_mel_hat": wandb.Image(
+                    {"valid_media/cond_mel_hat": wandb.Image(
                         plot_spectrogram_to_numpy(outputs[0]['cond_mel_pred'].data.cpu().numpy()))})
         self.validation_step_outputs.clear()
 
     def on_train_start(self, *args):
         if self.global_rank == 0:
             save_code(None, self.logger.save_dir)
-
-    def on_train_batch_end(self, *args):
-        def mel_loss_coeff_decay(current_step, num_cycles=0.5):
-            max_steps = self.trainer.max_steps // 2
-            if current_step < self.hparams.num_warmup_steps:
-                return 1.0
-            progress = float(current_step - self.hparams.num_warmup_steps) / float(
-                max(1, max_steps - self.hparams.num_warmup_steps)
-            )
-            return max(0.0, 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress)))
-
-        if self.hparams.decay_mel_coeff:
-            self.mel_loss_coeff = self.base_mel_coeff * mel_loss_coeff_decay(self.global_step)

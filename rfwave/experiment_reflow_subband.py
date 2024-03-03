@@ -579,13 +579,11 @@ class VocosExp(pl.LightningModule):
 
         mel_loss = F.mse_loss(self.feature_extractor(audio_hat, **kwargs), features)
         rvm_loss = self.rvm(audio_hat.unsqueeze(1), audio_input.unsqueeze(1))
-        total_loss = mel_loss
         cond_mel_loss = (F.mse_loss(cond_mel_hat, features) if cond_mel_hat is not None
                          else torch.zeros(1, device=self.device))
         phase_loss = compute_phase_error(audio_hat, audio_input, self.reflow.head.get_spec)
 
         output = {
-            "val_loss": total_loss,
             "mel_loss": mel_loss,
             "audio_input": audio_input[0],
             "audio_pred": audio_hat[0],
@@ -600,7 +598,6 @@ class VocosExp(pl.LightningModule):
 
     def on_validation_epoch_end(self, **kwargs):
         outputs = self.validation_step_outputs
-        avg_loss = torch.stack([x["val_loss"] for x in outputs]).mean()
         mel_loss = torch.stack([x["mel_loss"] for x in outputs]).mean()
         cond_mel_loss = torch.stack([x["cond_mel_loss"] for x in outputs]).mean()
         phase_loss = torch.stack([x["phase_loss"] for x in outputs]).mean()
@@ -609,13 +606,12 @@ class VocosExp(pl.LightningModule):
             if k.startswith("rvm"):
                 rvm_loss_dict[f'valid/{k}'] = torch.stack([x[k] for x in outputs]).mean()
 
-        self.log("val_loss", avg_loss, sync_dist=True, logger=False)
+        self.log("val_loss", mel_loss, sync_dist=True, logger=False)
         if self.global_rank == 0:
             audio_in, audio_pred = outputs[0]['audio_input'], outputs[0]['audio_pred']
             mel_target = self.feature_extractor(audio_in.unsqueeze(0), **kwargs)[0]
             mel_hat = self.feature_extractor(audio_pred.unsqueeze(0), **kwargs)[0]
             metrics = {
-                "valid/loss": avg_loss,
                 "valid/mel_loss": mel_loss,
                 "valid/cond_mel_loss": cond_mel_loss,
                 "valid/phase_loss": phase_loss}
@@ -626,8 +622,7 @@ class VocosExp(pl.LightningModule):
                 {"valid_media/audio_in": wandb.Audio(audio_in.data.cpu().numpy(), sample_rate=self.hparams.sample_rate),
                  "valid_media/audio_hat": wandb.Audio(audio_pred.data.cpu().numpy(), sample_rate=self.hparams.sample_rate),
                  "valid_media/mel_in": wandb.Image(plot_spectrogram_to_numpy(mel_target.data.cpu().numpy())),
-                 "valid_media/mel_hat": wandb.Image(plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()))},
-                step=self.global_step)
+                 "valid_media/mel_hat": wandb.Image(plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()))})
             if 'cond_mel_pred' in outputs[0]:
                 self.logger.experiment.log(
                     {"valid_media/cond_mel_hat": wandb.Image(
@@ -689,18 +684,17 @@ class VocosEncodecExp(VocosExp):
 
     def on_validation_epoch_end(self):
         outputs = self.validation_step_outputs
+        bandwidth_id = torch.randint(
+            low=0, high=len(self.feature_extractor.bandwidths), size=(1,), device=self.device)
         if self.global_rank == 0:
             audio_in = outputs[0]['audio_input']
             # Resynthesis with encodec for reference
-            bandwidth_id = torch.randint(
-                low=0, high=len(self.feature_extractor.bandwidths), size=(1,), device=self.device, )
             self.feature_extractor.encodec.set_target_bandwidth(self.feature_extractor.bandwidths[bandwidth_id])
             encodec_audio = self.feature_extractor.encodec(audio_in[None, None, :])
             self.logger.experiment.log(
                 {"valid_media/encodec":
-                     wandb.Audio(encodec_audio[0, 0].data.cpu().numpy(), sample_rate=self.hparams.sample_rate)},
-                step=self.global_step)
-            super().on_validation_epoch_end(encodec_bandwidth_id=bandwidth_id)
+                     wandb.Audio(encodec_audio[0, 0].data.cpu().numpy(), sample_rate=self.hparams.sample_rate)})
+        super().on_validation_epoch_end(encodec_bandwidth_id=bandwidth_id)
 
 
 if __name__ == '__main__':
