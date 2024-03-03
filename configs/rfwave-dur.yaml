@@ -6,7 +6,7 @@ data:
   init_args:
     train_params:
       filelist_path: synta_filelist.train
-      batch_size: 24
+      batch_size: 128
       num_workers: 8
       cache: True
       task: dur
