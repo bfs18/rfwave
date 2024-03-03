@@ -628,7 +628,7 @@ def dur_collate(data):
 
 if __name__ == "__main__":
     from matplotlib import pyplot as plt
-    from vocos.feature_extractors import MelSpectrogramFeatures
+    from rfwave.feature_extractors import MelSpectrogramFeatures
     import torch.nn.functional as F
     import matplotlib
     import soundfile as sf

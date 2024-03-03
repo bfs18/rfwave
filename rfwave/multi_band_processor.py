@@ -2,7 +2,7 @@ import torch
 import julius
 import typing as tp
 
-from vocos.pqmf import PQMF
+from rfwave.pqmf import PQMF
 
 
 class SampleProcessor(torch.nn.Module):

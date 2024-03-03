@@ -220,7 +220,7 @@ class RectifiedFlow(nn.Module):
             assert band is None
             assert bandwidth_id is None
             bandwidth_id = torch.tile(torch.arange(self.num_bands, device=mel.device), (mel.size(0),))
-            _, z0 = self.get_joint_z0(mel)  # get z0 must be called before pre-processing mel
+            z0 = self.get_joint_z0(mel)  # get z0 must be called before pre-processing mel
             mel = torch.repeat_interleave(mel, self.num_bands, 0)
 
         z = z0.detach()
@@ -547,20 +547,20 @@ class VocosExp(pl.LightningModule):
         opt_gen.step()
         sch_gen.step()
 
-        self.log("generator/total_loss", loss, prog_bar=True, logger=False)
+        self.log("train/total_loss", loss, prog_bar=True, logger=False)
         if self.global_step % 1000 == 0 and self.global_rank == 0:
             with torch.no_grad():
                 audio_hat_traj = self.reflow.sample_ode(features, N=100, **kwargs)
             audio_hat = audio_hat_traj[-1]
-            mel_loss = F.mse_loss(self.feature_extractor(audio_hat), mel)
+            mel_loss = F.mse_loss(self.feature_extractor(audio_hat, **kwargs), mel)
             self.logger.log_metrics(
-                {"generator/total_loss": loss, "generator/cond_mel_loss": cond_mel_loss,
-                 "generator/mel_loss": mel_loss}, step=self.global_step)
-            loss_dict = dict((f'generator/{k}', v) for k, v in loss_dict.items())
+                {"train/total_loss": loss, "train/cond_mel_loss": cond_mel_loss,
+                 "train/mel_loss": mel_loss}, step=self.global_step)
+            loss_dict = dict((f'train/{k}', v) for k, v in loss_dict.items())
             self.logger.log_metrics(loss_dict, step=self.global_step)
             rvm_loss = self.rvm(audio_hat.unsqueeze(1), audio_input.unsqueeze(1))
             for k, v in rvm_loss.items():
-                self.logger.log_metrics({f"generator/{k}": v}, step=self.global_step)
+                self.logger.log_metrics({f"train/{k}": v}, step=self.global_step)
 
         return loss
 
@@ -577,9 +577,7 @@ class VocosExp(pl.LightningModule):
             cond_mel_hat = self.input_adaptor_proj(cond) if self.aux_loss and self.task == 'tts' else None
         audio_hat = audio_hat_traj[-1]
 
-        audio_16_khz = torchaudio.functional.resample(audio_input, orig_freq=self.hparams.sample_rate, new_freq=16000)
-        audio_hat_16khz = torchaudio.functional.resample(audio_hat, orig_freq=self.hparams.sample_rate, new_freq=16000)
-        mel_loss = F.mse_loss(self.feature_extractor(audio_hat), features)
+        mel_loss = F.mse_loss(self.feature_extractor(audio_hat, **kwargs), features)
         rvm_loss = self.rvm(audio_hat.unsqueeze(1), audio_input.unsqueeze(1))
         total_loss = mel_loss
         cond_mel_loss = (F.mse_loss(cond_mel_hat, features) if cond_mel_hat is not None
@@ -600,7 +598,7 @@ class VocosExp(pl.LightningModule):
         self.validation_step_outputs.append(output)
         return output
 
-    def on_validation_epoch_end(self):
+    def on_validation_epoch_end(self, **kwargs):
         outputs = self.validation_step_outputs
         avg_loss = torch.stack([x["val_loss"] for x in outputs]).mean()
         mel_loss = torch.stack([x["mel_loss"] for x in outputs]).mean()
@@ -609,30 +607,30 @@ class VocosExp(pl.LightningModule):
         rvm_loss_dict = {}
         for k in outputs[0].keys():
             if k.startswith("rvm"):
-                rvm_loss_dict[k] = torch.stack([x[k] for x in outputs]).mean()
+                rvm_loss_dict[f'valid/{k}'] = torch.stack([x[k] for x in outputs]).mean()
 
         self.log("val_loss", avg_loss, sync_dist=True, logger=False)
         if self.global_rank == 0:
             audio_in, audio_pred = outputs[0]['audio_input'], outputs[0]['audio_pred']
-            mel_target = self.feature_extractor(audio_in)
-            mel_hat = self.feature_extractor(audio_pred)
+            mel_target = self.feature_extractor(audio_in.unsqueeze(0), **kwargs)[0]
+            mel_hat = self.feature_extractor(audio_pred.unsqueeze(0), **kwargs)[0]
             metrics = {
-                "val_loss": avg_loss,
-                "val/mel_loss": mel_loss,
-                "val/cond_mel_loss": cond_mel_loss,
-                "val/phase_loss": phase_loss}
+                "valid/loss": avg_loss,
+                "valid/mel_loss": mel_loss,
+                "valid/cond_mel_loss": cond_mel_loss,
+                "valid/phase_loss": phase_loss}
             self.logger.log_metrics(
                 {**metrics, **rvm_loss_dict},
                 step=self.global_step)
             self.logger.experiment.log(
-                {"valid/audio_in": wandb.Audio(audio_in.data.cpu().numpy(), sample_rate=self.hparams.sample_rate),
-                 "valid/audio_hat": wandb.Audio(audio_pred.data.cpu().numpy(), sample_rate=self.hparams.sample_rate),
-                 "valid/mel_in": wandb.Image(plot_spectrogram_to_numpy(mel_target.data.cpu().numpy())),
-                 "valid/mel_hat": wandb.Image(plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()))},
+                {"valid_media/audio_in": wandb.Audio(audio_in.data.cpu().numpy(), sample_rate=self.hparams.sample_rate),
+                 "valid_media/audio_hat": wandb.Audio(audio_pred.data.cpu().numpy(), sample_rate=self.hparams.sample_rate),
+                 "valid_media/mel_in": wandb.Image(plot_spectrogram_to_numpy(mel_target.data.cpu().numpy())),
+                 "valid_media/mel_hat": wandb.Image(plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()))},
                 step=self.global_step)
             if 'cond_mel_pred' in outputs[0]:
                 self.logger.experiment.log(
-                    {"valid/cond_mel_hat": wandb.Image(
+                    {"valid_media/cond_mel_hat": wandb.Image(
                         plot_spectrogram_to_numpy(outputs[0]['cond_mel_pred'].data.cpu().numpy()))})
         self.validation_step_outputs.clear()
 
@@ -664,17 +662,19 @@ class VocosEncodecExp(VocosExp):
         num_warmup_steps: int = 0,
     ):
         super().__init__(
-            feature_extractor,
-            backbone,
-            head,
-            sample_rate,
-            initial_learning_rate,
-            feature_loss,
-            wave,
-            num_bands,
-            guidance_scale,
-            p_uncond,
-            num_warmup_steps,
+            feature_extractor=feature_extractor,
+            backbone=backbone,
+            head=head,
+            input_adaptor=None,
+            task="voc",
+            sample_rate=sample_rate,
+            initial_learning_rate=initial_learning_rate,
+            feature_loss=feature_loss,
+            wave=wave,
+            num_bands=num_bands,
+            guidance_scale=guidance_scale,
+            p_uncond=p_uncond,
+            num_warmup_steps=num_warmup_steps,
         )
 
     def training_step(self, *args):
@@ -683,7 +683,7 @@ class VocosEncodecExp(VocosExp):
         return output
 
     def validation_step(self, *args):
-        bandwidth_id = torch.tensor([0], device=self.device)
+        bandwidth_id = torch.randint(low=0, high=len(self.feature_extractor.bandwidths), size=(1,), device=self.device,)
         output = super().validation_step(*args, encodec_bandwidth_id=bandwidth_id)
         return output
 
@@ -692,13 +692,15 @@ class VocosEncodecExp(VocosExp):
         if self.global_rank == 0:
             audio_in = outputs[0]['audio_input']
             # Resynthesis with encodec for reference
-            self.feature_extractor.encodec.set_target_bandwidth(self.feature_extractor.bandwidths[0])
+            bandwidth_id = torch.randint(
+                low=0, high=len(self.feature_extractor.bandwidths), size=(1,), device=self.device, )
+            self.feature_extractor.encodec.set_target_bandwidth(self.feature_extractor.bandwidths[bandwidth_id])
             encodec_audio = self.feature_extractor.encodec(audio_in[None, None, :])
             self.logger.experiment.log(
-                {"valid/encodec":
+                {"valid_media/encodec":
                      wandb.Audio(encodec_audio[0, 0].data.cpu().numpy(), sample_rate=self.hparams.sample_rate)},
                 step=self.global_step)
-            super().on_validation_epoch_end()
+            super().on_validation_epoch_end(encodec_bandwidth_id=bandwidth_id)
 
 
 if __name__ == '__main__':
