@@ -135,7 +135,7 @@ class VocosExp(pl.LightningModule):
         self.skip_nan(opt_gen)
         opt_gen.step()
         sch_gen.step()
-        self.log("generator/total_loss", loss, prog_bar=True, logger=True)
+        self.log("train_loss", loss, prog_bar=True, logger=True)
         return loss
 
     def validation_step(self, batch, batch_idx, **kwargs):
