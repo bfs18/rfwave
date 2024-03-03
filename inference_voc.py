@@ -34,6 +34,7 @@ def load_model(model_dir, device):
 
     model_dict = torch.load(ckpt_fp, map_location='cpu')
     exp.load_state_dict(model_dict['state_dict'])
+    exp.eval()
     exp.to(device)
     return exp
 
