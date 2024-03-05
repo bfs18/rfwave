@@ -1,4 +1,7 @@
+# RFWave: Multi-band Rectified Flow for Audio Waveform Reconstruction.
+
+`sed -i -- 's,LJSPEECH_PATH,ljs_dataset_folder/wavs,g' LJSpeech/*.filelist`
 
 # Thanks
 
-Some code is build upon Vocos, audiocraft 
+This repository uses code from Vocos, audiocraft 

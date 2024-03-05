@@ -4,6 +4,9 @@ import torch
 import yaml
 import time
 import rfwave
+import re
+import kaldiio
+import torchaudio
 
 from pathlib import Path
 from argparse import ArgumentParser
@@ -22,12 +25,20 @@ def create_instance(config):
     return eval(config['class_path'])(**config['init_args'])
 
 
-def load_model(model_dir, device):
+def load_model(model_dir, device, last=False):
     config_yaml = Path(model_dir) / 'config.yaml'
-    ckpt_fp = list(Path(model_dir).rglob("last.ckpt"))
-    if len(ckpt_fp) == 0:
-        raise ValueError(f"No checkpoint found in {model_dir}")
-    ckpt_fp = ckpt_fp[0]
+    if last:
+        ckpt_fp = list(Path(model_dir).rglob("last.ckpt"))
+        if len(ckpt_fp) == 0:
+            raise ValueError(f"No checkpoint found in {model_dir}")
+        elif len(ckpt_fp) > 1:
+            raise ValueError(f"More than 1 checkpoints found in {model_dir}")
+        ckpt_fp = ckpt_fp[0]
+        print(f'using last ckpt form {str(ckpt_fp)}')
+    else:
+        ckpt_fp = [fp for fp in list(Path(model_dir).rglob("*.ckpt")) if 'last' not in fp.stem]
+        ckpt_fp = sorted(ckpt_fp, key=lambda x: int(re.search('_step=(\d+)_', x.stem).group(1)))[-1]
+        print(f'using best ckpt form {str(ckpt_fp)}')
 
     config = load_config(config_yaml)
     exp = create_instance(config['model'])
@@ -39,11 +50,7 @@ def load_model(model_dir, device):
     return exp
 
 
-def copy_synthesis(exp, wav_fp, save_fp, N=1000):
-    y, fs = librosa.load(wav_fp, sr=None)
-    y = torch.from_numpy(y)
-    y = y.to(exp.device)
-    y = y.unsqueeze(0)
+def copy_synthesis(exp, y, N=1000):
     features = exp.feature_extractor(y)
     start = time.time()
     sample = exp.reflow.sample_ode(features, N=N)[-1]
@@ -51,19 +58,42 @@ def copy_synthesis(exp, wav_fp, save_fp, N=1000):
     l = min(sample.size(-1), y.size(-1))
     rvm_loss = exp.rvm(sample[..., :l], y[..., :l])
     recon = sample.detach().cpu().numpy()[0]
-    soundfile.write(save_fp, recon, fs, 'PCM_16')
-    return cost, recon.shape[0] / fs, rvm_loss
+    return recon, cost, rvm_loss
 
 
 def voc(model_dir, wav_dir, save_dir):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    exp = load_model(model_dir, device=device)
+    exp = load_model(model_dir, device=device, last=True)
 
     tot_cost = 0.
     tot_dur = 0.
-    for wav_fp in Path(wav_dir).rglob("*.wav"):
-        save_fp = Path(save_dir) / wav_fp.name
-        cost, dur, rvm_loss = copy_synthesis(exp, wav_fp, save_fp, N=10)
+    if Path(wav_dir).is_dir():
+        wav_fps = Path(wav_dir).rglob("*.wav")
+    elif Path(wav_dir).is_file() and Path(wav_dir).suffix == '.scp':
+        arc_dict = kaldiio.load_scp(wav_dir, max_cache_fd=32)
+        wav_fps = arc_dict.items()
+    else:
+        raise ValueError(f"wav_dir should be a dir or a scp file, got {wav_dir}")
+
+    for wav_fp in wav_fps:
+        if isinstance(wav_fp, Path):
+            y, fs = torchaudio.load(wav_fp)
+            fn = wav_fp.name
+        elif isinstance(wav_fp, tuple):
+            fn = wav_fp[0].replace('/', '_') + '.wav'
+            fs, y = wav_fp[1]
+            y = torch.from_numpy(y.T.astype('float32'))
+        else:
+            raise ValueError(f"wav_fp should be a Path or a tuple, got {wav_fp}")
+
+        if y.size(0) > 1:
+            y = y[:1]
+
+        y = y.to(exp.device)
+        save_fp = Path(save_dir) / fn
+        recon, cost, rvm_loss = copy_synthesis(exp, y, N=10)
+        soundfile.write(save_fp, recon, fs, 'PCM_16')
+        dur = len(recon) / fs
         tot_cost += cost
         tot_dur += dur
 

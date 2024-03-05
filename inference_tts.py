@@ -15,7 +15,7 @@ from inference_voc import load_config, create_instance, load_model
 
 def dur(model_dir, text_lines, phone2id, scale, num_samples=1):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    exp = load_model(model_dir, device=device)
+    exp = load_model(model_dir, device=device, last=True)
 
     phone_info = {}
     for k, line in text_lines.items():
@@ -43,7 +43,7 @@ def get_random_ref(ref_audio, hop_length, padding):
 
 def tts(model_dir, phone_info, save_dir, ref_audio, sr):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    exp = load_model(model_dir, device=device)
+    exp = load_model(model_dir, device=device, last=True)
     config_yaml = Path(model_dir) / 'config.yaml'
     config = load_config(config_yaml)
     hop_length = config['data']['init_args']['train_params']['hop_length']

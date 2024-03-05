@@ -27,8 +27,10 @@ def build_ark(filelist, save_prefix, filename_func=default_filename_func,
         save_scp = str(Path(shard_prefix).with_suffix('.scp'))
         shard_scps.append(save_scp)
         writer = kaldiio.WriteHelper(
-            f'ark,scp:{save_ark},{save_scp}', write_function='soundfile_wav')
+            f'ark,scp:{save_ark},{save_scp}', write_function='soundfile')
         for wav_fp in tqdm(shard_filelist):
+            if not Path(wav_fp).exists():
+                continue
             audio = soundfile.read(wav_fp, dtype='int16')  # 16 bit to save space.
             y, sr = audio
             print(audio[0].shape)
