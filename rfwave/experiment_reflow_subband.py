@@ -615,18 +615,18 @@ class VocosExp(pl.LightningModule):
                 "valid/mel_loss": mel_loss,
                 "valid/cond_mel_loss": cond_mel_loss,
                 "valid/phase_loss": phase_loss}
-            self.logger.log_metrics(
-                {**metrics, **rvm_loss_dict},
-                step=self.global_step)
+            self.logger.log_metrics({**metrics, **rvm_loss_dict}, step=self.global_step)
             self.logger.experiment.log(
                 {"valid_media/audio_in": wandb.Audio(audio_in.data.cpu().numpy(), sample_rate=self.hparams.sample_rate),
                  "valid_media/audio_hat": wandb.Audio(audio_pred.data.cpu().numpy(), sample_rate=self.hparams.sample_rate),
                  "valid_media/mel_in": wandb.Image(plot_spectrogram_to_numpy(mel_target.data.cpu().numpy())),
-                 "valid_media/mel_hat": wandb.Image(plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()))})
+                 "valid_media/mel_hat": wandb.Image(plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()))},
+                step=self.global_step)
             if 'cond_mel_pred' in outputs[0]:
                 self.logger.experiment.log(
                     {"valid_media/cond_mel_hat": wandb.Image(
-                        plot_spectrogram_to_numpy(outputs[0]['cond_mel_pred'].data.cpu().numpy()))})
+                        plot_spectrogram_to_numpy(outputs[0]['cond_mel_pred'].data.cpu().numpy()))},
+                    step=self.global_step)
         self.validation_step_outputs.clear()
 
     def on_train_start(self, *args):
@@ -693,7 +693,8 @@ class VocosEncodecExp(VocosExp):
             encodec_audio = self.feature_extractor.encodec(audio_in[None, None, :])
             self.logger.experiment.log(
                 {"valid_media/encodec":
-                     wandb.Audio(encodec_audio[0, 0].data.cpu().numpy(), sample_rate=self.hparams.sample_rate)})
+                     wandb.Audio(encodec_audio[0, 0].data.cpu().numpy(), sample_rate=self.hparams.sample_rate)},
+                step=self.global_step-1 if self.global_step > 0 else 0)  # avoid a wired bug in wandb
         super().on_validation_epoch_end(encodec_bandwidth_id=bandwidth_id)
 
 

@@ -737,19 +737,19 @@ class VocosExp(pl.LightningModule):
                 "valid/cond_mel_loss": cond_mel_loss,
                 "valid/mel_loss": mel_loss,
                 "valid/phase_loss": phase_loss}
-            self.logger.log_metrics(
-                {**metrics, **rvm_loss_dict},
-                step=self.global_step)
+            self.logger.log_metrics({**metrics, **rvm_loss_dict}, step=self.global_step)
             self.logger.experiment.log(
                 {"valid_media/audio_in": wandb.Audio(audio_in.data.cpu().numpy(), sample_rate=self.hparams.sample_rate),
                  "valid_media/audio_hat": wandb.Audio(audio_pred.data.cpu().numpy(), sample_rate=self.hparams.sample_rate),
                  "valid_media/mel_in": wandb.Image(plot_spectrogram_to_numpy(mel_target.data.cpu().numpy())),
                  "valid_media/tandem_mel_hat": wandb.Image(plot_spectrogram_to_numpy(tandem_mel_hat.data.cpu().numpy())),
-                 "valid_media/mel_hat": wandb.Image(plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()))})
+                 "valid_media/mel_hat": wandb.Image(plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()))},
+                step=self.global_step)
             if 'cond_mel_pred' in outputs[0]:
                 self.logger.experiment.log(
                     {"valid_media/cond_mel_hat": wandb.Image(
-                        plot_spectrogram_to_numpy(outputs[0]['cond_mel_pred'].data.cpu().numpy()))})
+                        plot_spectrogram_to_numpy(outputs[0]['cond_mel_pred'].data.cpu().numpy()))},
+                    step=self.global_step)
         self.validation_step_outputs.clear()
 
     def on_train_start(self, *args):
