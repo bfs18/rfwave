@@ -4,6 +4,7 @@ import torch
 import torchaudio
 from encodec import EncodecModel
 from torch import nn
+from espnet2.tts.feats_extract.log_mel_fbank import LogMelFbank
 
 from rfwave.modules import safe_log, safe_log10
 
@@ -48,6 +49,38 @@ class MelSpectrogramFeatures(FeatureExtractor):
         mel = self.mel_spec(audio)
         features = safe_log10(mel)
         return features
+
+
+class EspnetMelSpectrogramFeatures(FeatureExtractor):
+    def __init__(self, sample_rate=24000, n_fft=2048, hop_length=300, win_length=1200, n_mels=80, fmin=80, fmax=7600):
+        super().__init__()
+        self.mel_func = LogMelFbank(fs=sample_rate,
+                                    n_fft=n_fft,
+                                    hop_length=hop_length,
+                                    win_length=win_length,
+                                    n_mels=n_mels,
+                                    fmin=fmin,
+                                    fmax=fmax)
+    
+    def forward(self, audio, **kwargs):
+        # Check if the audio is one-dimensional
+        if audio.dim() == 1:
+            # Add an extra dimension to make it two-dimensional: [1, sample_num]
+            audio = audio.unsqueeze(0)
+            # Indicate that the input was originally one-dimensional
+            was_one_dim = True
+        else:
+            # Indicate that the input was not modified (it was already two-dimensional)
+            was_one_dim = False
+
+        mel, _ = self.mel_func(audio)
+        mel = mel.transpose(1, 2)
+
+        # If the original input was one-dimensional, remove the extra dimension before returning
+        if was_one_dim:
+            mel = mel.squeeze(0)
+
+        return mel
 
 
 class EncodecFeatures(FeatureExtractor):

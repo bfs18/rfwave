@@ -68,14 +68,16 @@ class RFSTFTHead(FourierHead):
         padding (str, optional): Type of padding. Options are "center" or "same". Defaults to "same".
     """
 
-    def __init__(self, dim: int, n_fft: int, hop_length: int, padding: str = "same"):
+    def __init__(self, dim: int, n_fft: int, hop_length: int, win_length: int = None, padding: str = "same"):
         super().__init__()
         out_dim = n_fft + 2
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.padding = padding
-        self.istft = ISTFT(n_fft=n_fft, hop_length=hop_length, win_length=n_fft, padding=padding)
-        self.stft = STFT(n_fft=n_fft, hop_length=hop_length, win_length=n_fft, padding=padding)
+        if win_length is None or win_length <= 0:
+            win_length = n_fft
+        self.istft = ISTFT(n_fft=n_fft, hop_length=hop_length, win_length=win_length, padding=padding)
+        self.stft = STFT(n_fft=n_fft, hop_length=hop_length, win_length=win_length, padding=padding)
 
     def get_wave(self, S):
         audio = self.istft(S)
@@ -98,13 +100,15 @@ class ISTFTHead(FourierHead):
         padding (str, optional): Type of padding. Options are "center" or "same". Defaults to "same".
     """
 
-    def __init__(self, dim: int, n_fft: int, hop_length: int, padding: str = "same"):
+    def __init__(self, dim: int, n_fft: int, hop_length: int, win_length: int = None, padding: str = "same"):
         super().__init__()
         out_dim = n_fft + 2
         self.n_fft = n_fft
         self.padding = padding
         self.out = torch.nn.Linear(dim, out_dim)
-        self.istft = ISTFT(n_fft=n_fft, hop_length=hop_length, win_length=n_fft, padding=padding)
+        if win_length is None or win_length <= 0:
+            win_length = n_fft
+        self.istft = ISTFT(n_fft=n_fft, hop_length=hop_length, win_length=win_length, padding=padding)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

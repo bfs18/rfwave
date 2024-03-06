@@ -18,3 +18,4 @@ librosa
 soundfile
 xformers
 transformers
+espnet
