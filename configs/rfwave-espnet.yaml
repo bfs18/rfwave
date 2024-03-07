@@ -4,96 +4,78 @@ data:
   class_path: rfwave.dataset.VocosDataModule
   init_args:
     train_params:
-      filelist_path: synta_filelist.train
-      sampling_rate: 22050
-      num_samples: 65280
-      batch_size: 22
+      filelist_path: wav_filelist.train
+      sampling_rate: 24000
+      num_samples: 33600
+      batch_size: 64
       num_workers: 8
       cache: True
-      task: tts
-      hop_length: 256
-      padding: "center"
-      phoneset: synta_phoneset.th
-      min_context: 200
 
     val_params:
-      filelist_path: synta_filelist.valid
-      sampling_rate: 22050
-      num_samples: 65280
+      filelist_path: wav_filelist.valid
+      sampling_rate: 24000
+      num_samples: 67200
       batch_size: 16
       num_workers: 4
       cache: True
-      task: tts
-      hop_length: 256
-      padding: "center"
-      phoneset: synta_phoneset.th
-      min_context: 200
 
 model:
-  class_path: rfwave.experiment_reflow_subband_tts.VocosExp
+  class_path: rfwave.experiment_reflow_subband.VocosExp
   init_args:
-    sample_rate: 22050
+    sample_rate: 24000
     feature_loss: False
     wave: True
     num_bands: 8
-    intt: 0.5
     guidance_scale: 1.
     p_uncond: 0.1
     initial_learning_rate: 2e-4
     num_warmup_steps: 20_000 # Optimizers warmup steps
 
     feature_extractor:
-      class_path: rfwave.feature_extractors.MelSpectrogramFeatures
+      class_path: rfwave.feature_extractors.EspnetMelSpectrogramFeatures
       init_args:
-        sample_rate: 22050
-        n_fft: 1024
-        hop_length: 256
-        n_mels: 100
-        padding: center
+        sample_rate: 24000
+        n_fft: 2048
+        hop_length: 300 
+        win_length: 1200
+        n_mels: 80
+        fmin: 80
+        fmax: 7600
 
     backbone:
-      class_path: rfwave.models.VocosRFTTSMultiTaskBackbone
+      class_path: rfwave.models.VocosRFBackbone
       init_args:
-        input_channels: 512
-        output_channels1: 100
-        output_channels2: 160
+        input_channels: 80
+        output_channels: 258
         dim: 512
         intermediate_dim: 1536
-        num_layers1: 4
-        num_layers2: 8
+        num_layers: 8
         num_bands: 8
         prev_cond: False
+        encodec_num_embeddings: null
 
     head:
       class_path: rfwave.heads.RFSTFTHead
       init_args:
         dim: 512
-        n_fft: 1024
-        hop_length: 256
+        n_fft: 2048
+        hop_length: 300
+        win_length: 1200
         padding: center
-
-    input_adaptor:
-      class_path: rfwave.input.CtxCharInputTransformerAdaptor
-      init_args:
-        embedding_dim: 512
-        vocab_size: 78
-        ctx_dim: 100
-        n_attn_layers: 4
-        n_conv_layers: 4
 
 trainer:
   check_val_every_n_epoch: 10
   logger:
     class_path: pytorch_lightning.loggers.WandbLogger
     init_args:
-      project: rfwave-tts
-      save_dir: logs-rfwave-tts-ctx
-      name: rfwave-tts-ctx
+      project: rfwave
+      save_dir: logs-rfwave/
+      name: rfwave
   callbacks:
     - class_path: pytorch_lightning.callbacks.LearningRateMonitor
     - class_path: pytorch_lightning.callbacks.ModelSummary
       init_args:
-        max_depth: 1
+        max_depth: 2
     - class_path: pytorch_lightning.callbacks.ModelCheckpoint
       init_args:
         monitor: val_loss
