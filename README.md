@@ -1,5 +1,5 @@
 # RFWave: Multi-band Rectified Flow for Audio Waveform Reconstruction.
-[Audio samples]() | [Paper]()
+[Audio samples](https://bfs18.github.io/rfwave/) | [Paper]()
 
 ### TL;DR
 RFWave is a diffusion-based vocoder. It can generate high-quality audio waveforms from Mel-spectrograms at a speed that is 90 times quicker than real-time on an Nvidia 4090. 
