@@ -25,7 +25,7 @@ Empirical evaluations demonstrate that RFWave achieves exceptional reconstructio
 ### Setup
 1. Install the requirements.
 2. Download and extract the [LJ Speech dataset](https://keithito.com/LJ-Speech-Dataset/)
-3. Update the wav paths in filelists `sed -i -- 's,LJSPEECH_PATH,ljs_dataset_folder/wavs,g' LJSpeech/*.filelist`
+3. Update the wav paths in filelists `sed -i -- 's,LJSPEECH_PATH,ljs_dataset_folder,g' LJSpeech/*.filelist`
 4. Update the `filelist_path` in configs/*.yaml.
 
 ### Vocoder
