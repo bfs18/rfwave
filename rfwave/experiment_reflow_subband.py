@@ -184,7 +184,7 @@ class RectifiedFlow(nn.Module):
 
     def sample_t(self, shape, device):
         if self.logit_normal is not None:
-            return self.logit_normal.sample(shape)
+            return self.logit_normal.sample(shape).to(device)
         else:
             return torch.rand(shape, device=device)
 
@@ -212,7 +212,7 @@ class RectifiedFlow(nn.Module):
         return pred
 
     def get_ts(self, N):
-        ts = torch.linspace(0., 1., N)
+        ts = torch.linspace(0., 1., N + 1)
         if self.logit_normal is not None:
             ts = self.logit_normal.inv_cdf(ts)
         return ts
@@ -242,8 +242,8 @@ class RectifiedFlow(nn.Module):
         fs = (z.size(0) // self.num_bands, z.size(1) * self.num_bands, z.size(2))
         ss = z.shape
         for i, t in enumerate(ts[:-1]):
-            t = torch.ones(z.size(0)) * i / N
             dt = ts[i + 1] - t
+            t = torch.ones(z.size(0)) * t
             if self.cfg:
                 mel_ = torch.cat([mel, torch.ones_like(mel) * mel.mean(dim=(0, 2), keepdim=True)], dim=0)
                 (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t, bandwidth_id)]
