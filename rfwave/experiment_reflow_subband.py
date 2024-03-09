@@ -163,11 +163,7 @@ class RectifiedFlow(nn.Module):
         return z1, cond_band
 
     def get_joint_z1(self, audio):
-        if self.equalizer:
-            audio = self.eq_processor.project_sample(audio.unsqueeze(1)).squeeze(1)
-        S = self.stft(audio)
-        if self.stft_norm:
-            S = self.stft_processor.project_sample(S)
+        S = self.get_eq_norm_stft(audio)
         z1 = self.get_joint_subband(S)
         z1 = z1.reshape(z1.size(0) * self.num_bands, z1.size(1) // self.num_bands, z1.size(2))
         return z1
