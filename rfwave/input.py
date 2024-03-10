@@ -51,7 +51,7 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     freqs = torch.outer(t, freqs).float()  # type: ignore
     freqs_cos = torch.cos(freqs)  # real part
     freqs_sin = torch.sin(freqs)  # imaginary part
-    return freqs_cos, freqs_sin
+    return torch.cat([freqs_cos, freqs_sin], dim=-1)
 
 
 def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
@@ -70,11 +70,10 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
 
 def apply_rotary_emb(
     x: torch.Tensor,
-    freqs_cos: torch.Tensor,
-    freqs_sin: torch.Tensor
+    freqs_cis: torch.Tensor,
 ):
     x_r, x_i = x.float().reshape(x.shape[:-1] + (-1, 2)).unbind(-1)
-
+    freqs_cos, freqs_sin = torch.chunk(freqs_cis, 2, dim=-1)
     # reshape freqs_cos and freqs_sin for broadcasting
     freqs_cos = reshape_for_broadcast(freqs_cos, x_r)
     freqs_sin = reshape_for_broadcast(freqs_sin, x_r)
@@ -87,17 +86,6 @@ def apply_rotary_emb(
     x_out = torch.stack([x_out_r, x_out_i], dim=-1).flatten(x_out_r.ndim - 1)
 
     return x_out.type_as(x)
-
-
-def apply_rotary_emb_qk(
-    xq: torch.Tensor,
-    xk: torch.Tensor,
-    freqs_cos: torch.Tensor,
-    freqs_sin: torch.Tensor
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    xq_out = apply_rotary_emb(xq, freqs_cos, freqs_sin)
-    xk_out = apply_rotary_emb(xk, freqs_cos, freqs_sin)
-    return xq_out.type_as(xq), xk_out.type_as(xk)
 
 
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -146,10 +134,8 @@ class Attention(nn.Module):
         self,
         q_x: torch.Tensor,
         kv_x: torch.Tensor,
-        q_freqs_cos: torch.Tensor,
-        q_freqs_sin: torch.Tensor,
-        k_freqs_cos: torch.Tensor,
-        k_freqs_sin: torch.Tensor,
+        q_freqs_cis: torch.Tensor,
+        k_freqs_cis: torch.Tensor,
         mask: torch.Tensor
     ):
         bsz, q_seqlen, _ = q_x.shape
@@ -162,8 +148,8 @@ class Attention(nn.Module):
         xv = xv.view(bsz, kv_seqlen, self.n_local_kv_heads, self.head_dim)
 
         # RoPE relative positional embeddings
-        xq = apply_rotary_emb(xq, q_freqs_cos, q_freqs_sin)
-        xk = apply_rotary_emb(xk, k_freqs_cos, k_freqs_sin)
+        xq = apply_rotary_emb(xq, q_freqs_cis)
+        xk = apply_rotary_emb(xk, k_freqs_cis)
 
         # grouped multiquery attention: expand out keys and values
         xk = repeat_kv(xk, self.n_rep)  # (bs, kv_seqlen, n_local_heads, head_dim)
@@ -203,11 +189,10 @@ class SelfAttention(Attention):
     def forward(
         self,
         x: torch.Tensor,
-        freqs_cos: torch.Tensor,
-        freqs_sin: torch.Tensor,
+        freqs_cis: torch.Tensor,
         mask: torch.Tensor
     ):
-        return super().forward(x, x, freqs_cos, freqs_sin, freqs_cos, freqs_sin, mask)
+        return super().forward(x, x, freqs_cis, freqs_cis, mask)
 
 
 class FeedForward(nn.Module):
@@ -243,8 +228,8 @@ class TransformerBlock(nn.Module):
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
 
-    def forward(self, x, freqs_cos, freqs_sin, mask):
-        h = x + self.attention.forward(self.attention_norm(x), freqs_cos, freqs_sin, mask)
+    def forward(self, x, freqs_cis, mask):
+        h = x + self.attention.forward(self.attention_norm(x), freqs_cis, mask)
         out = h + self.feed_forward.forward(self.ffn_norm(h))
         return out
 
@@ -271,12 +256,10 @@ class CharInputTransformerAdaptor(InputAdaptor):
         self.pad_token = 0
 
         # some useful precompute for the RoPE relative positional embeddings
-        freqs_cos, freqs_sin = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len)
-        self.register_buffer("attn_freqs_cos", freqs_cos, persistent=False)
-        self.register_buffer("attn_freqs_sin", freqs_sin, persistent=False)
-        freqs_cos, freqs_sin = precompute_freqs_cis(params.dim, params.max_seq_len)
-        self.register_buffer("conv_freqs_cos", freqs_cos, persistent=False)
-        self.register_buffer("conv_freqs_sin", freqs_sin, persistent=False)
+        freqs_cis = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len)
+        self.register_buffer("attn_freqs_cis", freqs_cis, persistent=False)
+        freqs_cis = precompute_freqs_cis(params.dim, params.max_seq_len)
+        self.register_buffer("conv_freqs_cis", freqs_cis, persistent=False)
 
         # init all weights
         self.apply(self._init_weights)
@@ -298,15 +281,14 @@ class CharInputTransformerAdaptor(InputAdaptor):
         h = self.tok_embeddings(tokens)
         h = self.dropout(h)
         freqs_ids = phone_start.unsqueeze(1) + torch.arange(num_phones, device=tokens.device).unsqueeze(0)
-        freqs_cos = self.attn_freqs_cos[freqs_ids]
-        freqs_sin = self.attn_freqs_sin[freqs_ids]
+        freqs_cis = self.attn_freqs_cis[freqs_ids]
 
         phone_mask = torch.zeros(*tokens.size(), device=tokens.device)
         phone_mask.masked_fill_(tokens == self.pad_token, float('-inf'))
         phone_mask = phone_mask.unsqueeze(1).unsqueeze(2)
 
         for layer in self.layers:
-            h = layer(h, freqs_cos, freqs_sin, mask=phone_mask)
+            h = layer(h, freqs_cis, mask=phone_mask)
         h = self.attn_norm(h)
         h = self.attn_output(h)
         non_padding = (tokens != self.pad_token).float()
@@ -325,9 +307,8 @@ class CharInputTransformerAdaptor(InputAdaptor):
         non_padding = (expanded_phone.abs().sum(2) > 0.).float()
         num_frames = torch.sum(lengths, dim=1).long()
         freqs_ids = frame_start.unsqueeze(1) + torch.arange(num_frames[0], device=tokens.device).unsqueeze(0)
-        freqs_cos = self.conv_freqs_cos[freqs_ids]
-        freqs_sin = self.conv_freqs_sin[freqs_ids]
-        expanded_phone = apply_rotary_emb(expanded_phone, freqs_cos, freqs_sin)
+        freqs_cis = self.conv_freqs_cis[freqs_ids]
+        expanded_phone = apply_rotary_emb(expanded_phone, freqs_cis)
         output = self.convnext(expanded_phone.transpose(1, 2))
         output = self.output(output.transpose(1, 2))
         output = output * non_padding.unsqueeze(2)
@@ -353,10 +334,10 @@ class CrossAttTransformerBlock(nn.Module):
         self.cross_attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
 
-    def forward(self, x, context, x_freqs_cos, x_freqs_sin, c_freqs_cos, c_freqs_sin, x_mask, c_mask):
-        h = x + self.attention.forward(self.attention_norm(x), x_freqs_cos, x_freqs_sin, x_mask)
+    def forward(self, x, context, x_freqs_cis, c_freqs_cis, x_mask, c_mask):
+        h = x + self.attention.forward(self.attention_norm(x), x_freqs_cis, x_mask)
         h = h + self.cross_attention.forward(
-            self.cross_attention_norm(h), context, x_freqs_cos, x_freqs_sin, c_freqs_cos, c_freqs_sin, c_mask)
+            self.cross_attention_norm(h), context, x_freqs_cis, c_freqs_cis, c_mask)
         out = h + self.feed_forward.forward(self.ffn_norm(h))
         return out
 
@@ -372,13 +353,12 @@ class ContextBlock(nn.Module):
         self.attn_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.attn_output = nn.Linear(args.dim, args.dim, bias=False)
 
-    def forward(self, x, context, x_freqs_cos, x_freqs_sin,
-                c_freqs_cos, c_freqs_sin, x_mask, c_mask):
+    def forward(self, x, context, x_freqs_cis, c_freqs_cis, x_mask, c_mask):
         c = self.ctx_convnext(context)
         c = c.transpose(1, 2)
         h = x
         for layer in self.ctx_attention:
-            h = layer(h, c, x_freqs_cos, x_freqs_sin, c_freqs_cos, c_freqs_sin, x_mask, c_mask)
+            h = layer(h, c, x_freqs_cis, c_freqs_cis, x_mask, c_mask)
         h = self.attn_norm(h)
         h = self.attn_output(h)
         return h
@@ -404,9 +384,8 @@ class CtxCharInputTransformerAdaptor(InputAdaptor):
         self.pad_token = 0
 
         # some useful precompute for the RoPE relative positional embeddings
-        freqs_cos, freqs_sin = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len)
-        self.register_buffer("attn_freqs_cos", freqs_cos, persistent=False)
-        self.register_buffer("attn_freqs_sin", freqs_sin, persistent=False)
+        freqs_cis = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len)
+        self.register_buffer("attn_freqs_cis", freqs_cis, persistent=False)
 
         # init all weights
         self.apply(self._init_weights)
@@ -428,15 +407,14 @@ class CtxCharInputTransformerAdaptor(InputAdaptor):
         h = self.tok_embeddings(tokens)
         h = self.dropout(h)
         freqs_ids = phone_start.unsqueeze(1) + torch.arange(num_phones, device=tokens.device).unsqueeze(0)
-        freqs_cos = self.attn_freqs_cos[freqs_ids]
-        freqs_sin = self.attn_freqs_sin[freqs_ids]
+        freqs_cis = self.attn_freqs_cis[freqs_ids]
 
         phone_mask = torch.zeros(*tokens.size(), device=tokens.device)
         phone_mask.masked_fill_(tokens == self.pad_token, float('-inf'))
         phone_mask = phone_mask.unsqueeze(1).unsqueeze(2)
 
         for layer in self.layers:
-            h = layer(h, freqs_cos, freqs_sin, mask=phone_mask)
+            h = layer(h, freqs_cis, mask=phone_mask)
         h = self.attn_norm(h)
         h = self.attn_output(h)
         non_padding = (tokens != self.pad_token).float()
@@ -458,21 +436,19 @@ class CtxCharInputTransformerAdaptor(InputAdaptor):
         num_frames = torch.sum(lengths, dim=1).long()
 
         freqs_ids = frame_start.unsqueeze(1) + torch.arange(num_frames[0], device=tokens.device).unsqueeze(0)
-        freqs_cos = self.attn_freqs_cos[freqs_ids]
-        freqs_sin = self.attn_freqs_sin[freqs_ids]
+        freqs_cis = self.attn_freqs_cis[freqs_ids]
         x_mask = torch.zeros_like(non_padding)
         x_mask.masked_fill_(non_padding == 0, float('-inf'))
         x_mask = x_mask.unsqueeze(1).unsqueeze(2)
         ctx_freqs_ids = (torch.zeros_like(frame_start).unsqueeze(1) +
                          torch.arange(context.size(2), device=tokens.device).unsqueeze(0))
-        ctx_freqs_cos = self.attn_freqs_cos[ctx_freqs_ids]
-        ctx_freqs_sin = self.attn_freqs_sin[ctx_freqs_ids]
+        ctx_freqs_cis = self.attn_freqs_cis[ctx_freqs_ids]
         ctx_mask = torch.zeros((context.size(0), context.size(2)), device=tokens.device)
         ctx_mask.masked_fill_(~sequence_mask(context_lengths), float('-inf'))
         ctx_mask = ctx_mask.unsqueeze(1).unsqueeze(2)
 
         output = self.ctx_block(
-            expanded_phone, context, freqs_cos, freqs_sin, ctx_freqs_cos, ctx_freqs_sin, x_mask, ctx_mask)
+            expanded_phone, context, freqs_cis, ctx_freqs_cis, x_mask, ctx_mask)
 
         output = output * non_padding.unsqueeze(2)
         return output.transpose(1, 2)
@@ -493,9 +469,8 @@ class DurInputTransformerAdaptor(InputAdaptor):
         self.attn_norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.attn_output = nn.Linear(params.dim, params.dim, bias=False)
         self.pad_token = 0
-        freqs_cos, freqs_sin = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len)
-        self.register_buffer("attn_freqs_cos", freqs_cos, persistent=False)
-        self.register_buffer("attn_freqs_sin", freqs_sin, persistent=False)
+        freqs_cis = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len)
+        self.register_buffer("attn_freqs_cis", freqs_cis, persistent=False)
         # init all weights
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
@@ -517,15 +492,14 @@ class DurInputTransformerAdaptor(InputAdaptor):
         h = self.dropout(h)
         phone_start = torch.zeros([_bsz], dtype=torch.long, device=h.device)
         freqs_ids = phone_start.unsqueeze(1) + torch.arange(num_phones, device=tokens.device).unsqueeze(0)
-        freqs_cos = self.attn_freqs_cos[freqs_ids]
-        freqs_sin = self.attn_freqs_sin[freqs_ids]
+        freqs_cis = self.attn_freqs_cis[freqs_ids]
 
         phone_mask = torch.zeros(*tokens.size(), device=tokens.device)
         phone_mask.masked_fill_(tokens == self.pad_token, float('-inf'))
         phone_mask = phone_mask.unsqueeze(1).unsqueeze(2)
 
         for layer in self.layers:
-            h = layer(h, freqs_cos, freqs_sin, mask=phone_mask)
+            h = layer(h, freqs_cis, mask=phone_mask)
         h = self.attn_norm(h)
         h = self.attn_output(h)
         non_padding = (tokens != self.pad_token).float()
