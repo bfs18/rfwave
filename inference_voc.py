@@ -1,4 +1,5 @@
 import librosa
+import warnings
 import soundfile
 import torch
 import yaml
@@ -32,7 +33,8 @@ def load_model(model_dir, device, last=False):
         if len(ckpt_fp) == 0:
             raise ValueError(f"No checkpoint found in {model_dir}")
         elif len(ckpt_fp) > 1:
-            raise ValueError(f"More than 1 checkpoints found in {model_dir}")
+            warnings.warn(f"More than 1 checkpoints found in {model_dir}")
+            ckpt_fp = sorted([fp for fp in ckpt_fp], key=lambda x: ckpt_fp.stat().st_ctime)[-1:]
         ckpt_fp = ckpt_fp[0]
         print(f'using last ckpt form {str(ckpt_fp)}')
     else:
