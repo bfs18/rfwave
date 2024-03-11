@@ -151,11 +151,12 @@ class Mlp(nn.Module):
 class MMDiTBlock(nn.Module):
     def __init__(self, hidden_size, num_heads, mlp_ratio=4., **block_args):
         super().__init__()
-        self.m1_norm1 = RMSNorm(hidden_size)
-        self.m2_norm1 = RMSNorm(hidden_size)
-        self.attn = MMAttention(hidden_size, num_heads=num_heads, **block_args)
-        self.m1_norm2 = RMSNorm(hidden_size)
-        self.m2_norm2 = RMSNorm(hidden_size)
+        self.m1_norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.m2_norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.attn = MMAttention(hidden_size, num_heads=num_heads, qkv_bias=False, qk_norm=True,
+                                norm_layer=RMSNorm, **block_args)
+        self.m1_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.m2_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         approx_gelu = lambda: nn.GELU(approximate="tanh")
         self.m1_mlp = Mlp(
