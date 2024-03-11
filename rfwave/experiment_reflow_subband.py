@@ -8,6 +8,7 @@ import torch.nn.functional as F
 import wandb
 import torchaudio
 
+from typing import Optional, List, Union
 from torch import nn
 from rfwave.feature_extractors import FeatureExtractor
 from rfwave.heads import FourierHead
@@ -27,7 +28,8 @@ from rfwave.logit_normal import LogitNormal
 
 class RectifiedFlow(nn.Module):
     def __init__(self, backbon: Backbone, head: FourierHead,
-                 num_steps=10, feature_loss=False, wave=False, num_bands=8, p_uncond=0., guidance_scale=1.):
+                 num_steps=10, feature_loss=False, wave=False, num_bands=8,
+                 p_uncond=0., guidance_scale=1., t_sampling=None):
         super().__init__()
         self.backbone = backbon
         self.head = head
@@ -54,8 +56,9 @@ class RectifiedFlow(nn.Module):
         self.cfg = guidance_scale > 1.
         self.p_uncond = p_uncond
         self.guidance_scale = guidance_scale
+        assert t_sampling in [None, 'uniform', 'logit_normal']
         # Scaling Rectified Flow Transformers for High-Resolution Image Synthesis
-        self.logit_normal = LogitNormal(mu=0., sigma=1.)  # set to None to use uniform time
+        self.t_dist = LogitNormal(mu=0.5, sigma=1.) if t_sampling == 'logit_normal' else None
         assert self.prev_cond == self.backbone.prev_cond
         assert self.wave ^ self.stft_norm
         assert self.right_overlap >= 1  # at least one to deal with the last dimension of fft feature.
@@ -179,8 +182,8 @@ class RectifiedFlow(nn.Module):
         return x
 
     def sample_t(self, shape, device):
-        if self.logit_normal is not None:
-            return self.logit_normal.sample(shape).to(device)
+        if self.t_dist is not None:
+            return self.t_dist.sample(shape).to(device)
         else:
             return torch.rand(shape, device=device)
 
@@ -209,8 +212,8 @@ class RectifiedFlow(nn.Module):
 
     def get_ts(self, N):
         ts = torch.linspace(0., 1., N + 1)
-        if self.logit_normal is not None:
-            ts = self.logit_normal.inv_cdf(ts)
+        if self.t_dist is not None:
+            ts = self.t_dist.inv_cdf(ts)
         return ts
 
     @torch.no_grad()
@@ -454,6 +457,7 @@ class VocosExp(pl.LightningModule):
         num_bands: int = 8,
         guidance_scale: float = 1.,
         p_uncond: float = 0.2,
+        t_sampling: Optional[str] = None,
         num_warmup_steps: int = 0,
     ):
         super().__init__()
@@ -464,7 +468,7 @@ class VocosExp(pl.LightningModule):
         self.input_adaptor = input_adaptor
         self.reflow = RectifiedFlow(
             backbone, head, feature_loss=feature_loss, wave=wave, num_bands=num_bands,
-            guidance_scale=guidance_scale, p_uncond=p_uncond)
+            guidance_scale=guidance_scale, p_uncond=p_uncond, t_sampling=t_sampling)
         self.aux_loss = False
         self.aux_type = 'mel'
         if self.task == "tts":
@@ -666,6 +670,7 @@ class VocosEncodecExp(VocosExp):
         num_bands: int = 8,
         guidance_scale: float = 1.,
         p_uncond: float = 0.2,
+        t_sampling: Optional[str] = None,
         num_warmup_steps: int = 0,
     ):
         super().__init__(
@@ -681,6 +686,7 @@ class VocosEncodecExp(VocosExp):
             num_bands=num_bands,
             guidance_scale=guidance_scale,
             p_uncond=p_uncond,
+            t_sampling=t_sampling,
             num_warmup_steps=num_warmup_steps,
         )
 
