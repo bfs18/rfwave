@@ -179,3 +179,19 @@ class MMDiTBlock(nn.Module):
         x2 = x2 + m2_gate_mlp.unsqueeze(1) * self.m2_mlp(modulate(self.m2_norm2(x2), m2_shift_mlp, m2_scale_mlp))
         return x1, x2
 
+
+if __name__ == '__main__':
+    B = 2
+    N1 = 8
+    N2 = 7
+    C = 256
+    mask1 = torch.zeros([B, N1])
+    mask1[:, -3:] = float('-inf')
+    mask2 = torch.zeros([B, N2])
+    mask2[:, -1:] = float('-inf')
+    block = MMDiTBlock(256, 8, 4)
+    x1 = torch.randn([B, N1, C])
+    x2 = torch.randn([B, N2, C])
+    c = torch.randn([B, C])
+    x1_out, x2_out = block(x1, x2, c, mask1.view(B, 1, 1, N1), mask2.view(B, 1, 1, N2))
+    print(x1_out.shape, x2_out.shape, torch.all(x1_out.isfinite()), torch.all(x2_out.isfinite()))
