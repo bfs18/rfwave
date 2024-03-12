@@ -24,6 +24,7 @@ from rfwave.helpers import save_code
 from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_error, compute_instantaneous_frequency
 from rfwave.feature_weight import get_feature_weight, get_feature_weight2
 from rfwave.logit_normal import LogitNormal
+from rfwave.mm_dit import MMDiT
 
 
 class RectifiedFlow(nn.Module):
@@ -207,7 +208,11 @@ class RectifiedFlow(nn.Module):
         return mel, bandwidth_id, (z_t, t, target)
 
     def get_pred(self, z_t, t, mel, bandwidth_id, encodec_bandwidth_id=None):
-        pred = self.backbone(z_t, t, mel, bandwidth_id, encodec_bandwidth_id)
+        if isinstance(self.backbone, MMDiT):
+            assert encodec_bandwidth_id is None, "MMDiT does not support encodec_bandwidth_id for the current."
+            pred = self.backbone.voc_forward(z_t, t, mel, bandwidth_id)
+        else:
+            pred = self.backbone(z_t, t, mel, bandwidth_id, encodec_bandwidth_id)
         return pred
 
     def get_ts(self, N):

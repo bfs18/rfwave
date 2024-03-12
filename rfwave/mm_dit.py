@@ -7,6 +7,7 @@ import numpy as np
 from itertools import repeat
 from functools import partial
 from torch import nn
+from rfwave.models import Backbone
 
 
 # From PyTorch internals
@@ -279,11 +280,11 @@ class FinalLayer(nn.Module):
         return x
 
 
-class MMDiT(nn.Module):
+class MMDiT(Backbone):
     def __init__(
         self,
-        in_channels,
-        out_channels,
+        input_channels,
+        output_channels,
         hidden_size=768,
         depth=8,
         num_heads=16,
@@ -293,18 +294,20 @@ class MMDiT(nn.Module):
         pe_scale=1000,
     ):
         super().__init__()
+        self.prev_cond = False
+        self.num_bands = num_bands
 
         self.t_embed = TimestepEmbedder(hidden_size, pe_scale=pe_scale)
         pos_embed = torch.from_numpy(get_1d_sincos_pos_embed(hidden_size, max_seq_len))
         self.register_buffer("pos_embed", pos_embed, persistent=False)
         self.band_embed = nn.Embedding(num_bands, hidden_size)
 
-        self.m1_proj = nn.Linear(in_channels, hidden_size)
-        self.m2_proj = nn.Linear(out_channels, hidden_size)
+        self.m1_proj = nn.Linear(input_channels, hidden_size)
+        self.m2_proj = nn.Linear(output_channels, hidden_size)
         self.blocks = nn.ModuleList([
             MMDiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
         ])
-        self.final_layer = FinalLayer(hidden_size, out_channels)
+        self.final_layer = FinalLayer(hidden_size, output_channels)
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -351,8 +354,7 @@ class MMDiT(nn.Module):
         return (torch.ones([tensor.size(0)], dtype=torch.long, device=tensor.device) * tensor.size(1)
                 if length is None else length)
 
-    def forward(self,
-                x1, x2, t, bandwidth_id, ctx=None,
+    def forward(self, x1, x2, t, bandwidth_id, ctx=None,
                 x2_start=None, x2_len=None, x1_start=None, x1_len=None, ctx_start=None, ctx_len=None):
 
         x1_start = self._get_start(x1, x1_start)
@@ -385,6 +387,13 @@ class MMDiT(nn.Module):
 
         x2 = self.final_layer(x2, c)
         return x2
+
+    def voc_forward(self, z_t, t, cond, bandwidth_id):
+        # test for vocoder.
+        z_t = z_t.transpose(1, 2)
+        cond = cond.transpose(1, 2)
+        out = self(cond, z_t, t, bandwidth_id)
+        return out.transpose(1, 2)
 
 
 if __name__ == '__main__':
