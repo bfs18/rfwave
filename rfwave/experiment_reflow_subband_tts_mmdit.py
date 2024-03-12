@@ -215,9 +215,9 @@ class RectifiedFlow(nn.Module):
 
     def get_train_tuple(self, cond, mel, audio_input):
         assert len(cond) == 6
-        cond, dur = cond[:-1], cond[-1]
+        cond, length = cond[:-1], cond[-1]
         t = self.sample_t((mel.size(0),), device=mel.device).repeat_interleave(self.num_bands, 0)
-        z0 = self.get_joint_z0(cond[0], dur.sum(1)[0])
+        z0 = self.get_joint_z0(cond[0], length)
         z1 = self.get_joint_z1(audio_input, mel)
         bandwidth_id = torch.tile(torch.arange(self.num_bands, device=mel.device), (mel.size(0),))
         cond = self.repeat_cond(cond)
@@ -259,8 +259,8 @@ class RectifiedFlow(nn.Module):
         assert band is None
         assert bandwidth_id is None
         bandwidth_id = torch.tile(torch.arange(self.num_bands, device=cond[0].device), (cond[0].size(0),))
-        cond, dur = cond[:-1], cond[-1]
-        z0 = self.get_joint_z0(cond[0], dur.sum(1)[0])  # get z0 must be called before pre-processing text
+        cond, length = cond[:-1], cond[-1]
+        z0 = self.get_joint_z0(cond[0], length)  # get z0 must be called before pre-processing text
         cond = self.repeat_cond(cond)
 
         ts = self.get_ts(N)
@@ -580,7 +580,7 @@ class VocosExp(pl.LightningModule):
         token_ids, tk_durs, tk_start, _, ctx, ctx_n_frame = phone_info
         tk_lens = (token_ids != 0).sum(1).long()
         tk_emb, ctx = self.input_adaptor(token_ids, ctx)
-        cond = (tk_emb, tk_start, tk_lens, ctx, ctx_n_frame, tk_durs)
+        cond = (tk_emb, tk_start, tk_lens, ctx, ctx_n_frame, torch.max(tk_durs.sum(1)))
         cond_ = [c.detach().clone() for c in cond]
         cond, bandwidth_id, (z_t, t, target) = self.reflow.get_train_tuple(cond, tandem_feat, audio_input)
         loss, loss_dict = self.reflow.compute_loss(z_t, t, target, cond, bandwidth_id=bandwidth_id)
@@ -616,7 +616,7 @@ class VocosExp(pl.LightningModule):
             mel = self.feature_extractor(audio_input, **kwargs)
             tandem_feat = mel if self.tandem_type == "mel" else self.get_log_spec(audio_input)
             tk_emb, ctx = self.input_adaptor(token_ids, ctx)
-            cond = (tk_emb, tk_start, tk_lens, ctx, ctx_n_frame, dur)
+            cond = (tk_emb, tk_start, tk_lens, ctx, ctx_n_frame, torch.max(dur.sum(1)))
             mel_hat_traj, audio_hat_traj = self.reflow.sample_ode(cond, N=100, **kwargs)
         audio_hat = audio_hat_traj[-1]
         mel_hat = mel_hat_traj[-1]
