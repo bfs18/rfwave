@@ -341,26 +341,37 @@ class MMDiT(nn.Module):
         pe = self.pos_embed[pos]
         return pe
 
+    @staticmethod
+    def _get_start(tensor, start):
+        return (torch.zeros([tensor.size(0)], dtype=torch.long, device=tensor.device)
+                if start is None else start)
+
+    @staticmethod
+    def _get_len(tensor, length):
+        return (torch.ones([tensor.size(0)], dtype=torch.long, device=tensor.device) * tensor.size(1)
+                if length is None else length)
+
     def forward(self,
-                x1, x1_start, x1_len,
-                x2, x2_start, x2_len,
-                t, bandwidth_id,
-                ctx=None, ctx_start=None, ctx_len=None):
+                x1, x2, t, bandwidth_id, ctx=None,
+                x2_start=None, x2_len=None, x1_start=None, x1_len=None, ctx_start=None, ctx_len=None):
+
+        x1_start = self._get_start(x1, x1_start)
+        x1_len = self._get_len(x1, x1_len)
         x1_sco_mask = score_mask(x1_len)
         x1_pe = self.get_pos_embed(x1_start, x1_len)
         x1 = self.m1_proj(x1) + x1_pe
 
         if ctx is not None:
-            ctx_start = (torch.zeros([ctx.size(0)], dtype=torch.long, device=ctx.device)
-                         if ctx_start is None else ctx_start)
-            ctx_len = (torch.ones([ctx.size(0)], dtype=torch.long, device=ctx.device) * ctx.size(1)
-                       if ctx_len is None else ctx_len)
+            ctx_start = self._get_start(ctx, ctx_start)
+            ctx_len = self._get_len(ctx, ctx_len)
             ctx_sco_mask = score_mask(ctx_len)
             ctx_pe = self.get_pos_embed(ctx_start, ctx_len)
             ctx = self.m1_proj(ctx) + ctx_pe
             x1 = torch.cat([ctx, x1], dim=1)
             x1_sco_mask = torch.cat([ctx_sco_mask, x1_sco_mask], dim=-1)
 
+        x2_start = self._get_start(x2, x2_start)
+        x2_len = self._get_len(x2, x2_len)
         x2_sco_mask = score_mask(x2_len)
         x2_pe = self.get_pos_embed(x2_start, x2_len)
         x2 = self.m2_proj(x2) + x2_pe
@@ -400,5 +411,6 @@ if __name__ == '__main__':
     bandwidth_id = torch.tensor([0, 1], dtype=torch.long)
     t = torch.tensor([0.1, 0.2], dtype=torch.float)
     model = MMDiT(C, C)
-    out = model(x1, x1_start, x1_len, x2, x2_start, x2_len, t, bandwidth_id, ctx_seq)
+    out = model(x1=x1, x2=x2, t=t, bandwidth_id=bandwidth_id, ctx=ctx_seq,
+                x1_start=x1_start, x1_len=x1_len, x2_start=x2_start, x2_len=x2_len)
     print(out.shape, torch.all(out.isfinite()))
