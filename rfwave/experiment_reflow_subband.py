@@ -247,15 +247,15 @@ class RectifiedFlow(nn.Module):
         ss = z.shape
         for i, t in enumerate(ts[:-1]):
             dt = ts[i + 1] - t
-            t = torch.ones(z.size(0)) * t
+            t_ = torch.ones(z.size(0)) * t
             if self.cfg:
                 mel_ = torch.cat([mel, torch.ones_like(mel) * mel.mean(dim=(0, 2), keepdim=True)], dim=0)
-                (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t, bandwidth_id)]
+                (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t_, bandwidth_id)]
                 pred = self.get_pred(z_, t_.to(mel.device), mel_, bandwidth_id_, encodec_bandwidth_id)
                 pred, uncond_pred = torch.chunk(pred, 2, dim=0)
                 pred = uncond_pred + self.guidance_scale * (pred - uncond_pred)
             else:
-                pred = self.get_pred(z, t.to(mel.device), mel, bandwidth_id, encodec_bandwidth_id)
+                pred = self.get_pred(z, t_.to(mel.device), mel, bandwidth_id, encodec_bandwidth_id)
             if self.wave:
                 if self.prev_cond or not self.parallel_uncond:
                     pred = self.place_subband(pred, bandwidth_id)

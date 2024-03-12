@@ -507,6 +507,18 @@ class DurInputTransformerAdaptor(InputAdaptor):
         return out.transpose(1, 2)
 
 
+class MMDitInputAdaptor(InputAdaptor):
+    def __init__(self, embedding_dim, vocab_size, ctx_dim):
+        super().__init__()
+        self.tok_embeddings = nn.Embedding(vocab_size, embedding_dim)
+        self.ctx_proj = nn.Conv1d(ctx_dim, embedding_dim, kernel_size=1)
+
+    def forward(self, tokens, ctx):
+        te = self.tok_embeddings(tokens)
+        ce = self.ctx_proj(ctx)
+        return te, ce
+
+
 class InputAdaptorProject(nn.Module):
     def __init__(self, input_channels, output_channels):
         super().__init__()

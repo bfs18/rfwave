@@ -226,16 +226,19 @@ class RectifiedFlow(nn.Module):
         target = torch.cat([target_1, target_2], dim=1)
         return target
 
+    def sample_t(self, shape, device):
+        return torch.rand(shape, device=device)
+
     def get_train_tuple(self, text, mel, audio_input):
         if self.prev_cond or not self.parallel_uncond:
-            t = torch.rand((mel.size(0),), device=mel.device)
+            t = self.sample_t((mel.size(0),), device=mel.device)
             bandwidth_id = torch.tile(torch.randint(0, self.num_bands, (), device=mel.device), (mel.size(0),))
             bandwidth_id = torch.ones([mel.shape[0]], dtype=torch.long, device=mel.device) * bandwidth_id
             z0 = self.get_z0(text, bandwidth_id)
             z1, cond_band = self.get_z1(audio_input, mel, bandwidth_id)
             text = torch.cat([text, cond_band], 1) if self.prev_cond else mel
         else:
-            t = torch.rand((mel.size(0),), device=mel.device).repeat_interleave(self.num_bands, 0)
+            t = self.sample_t((mel.size(0),), device=mel.device).repeat_interleave(self.num_bands, 0)
             z0 = self.get_joint_z0(text)
             z1 = self.get_joint_z1(audio_input, mel)
             bandwidth_id = torch.tile(torch.arange(self.num_bands, device=mel.device), (mel.size(0),))
@@ -253,12 +256,16 @@ class RectifiedFlow(nn.Module):
         pred = self.backbone(z_t, t, text, bandwidth_id)
         return pred
 
-    def get_intt_dt(self, i, N):
-        if i / N < self.intt:
-            dt = 1. / N / self.intt
+    def get_intt_dt(self, t, dt):
+        if t < self.intt:
+            dt = dt / self.intt
         else:
-            dt = 1. / N / (1 - self.intt)
+            dt = dt / (1 - self.intt)
         return dt
+
+    def get_ts(self, N):
+        ts = torch.linspace(0., 1., N + 1)
+        return ts
 
     def make_pred1_consistent(self, pred1):
         pred1 = pred1.reshape(pred1.size(0) // self.num_bands, self.num_bands, *pred1.shape[1:])
@@ -289,23 +296,22 @@ class RectifiedFlow(nn.Module):
             z0 = self.get_joint_z0(text)  # get z0 must be called before pre-processing text
             text = torch.repeat_interleave(text, self.num_bands, 0)
 
+        ts = self.get_ts(N)
         z = z0.detach()
         fs = (z.size(0) // self.num_bands, self.output_channels2 * self.num_bands, z.size(2))
         ss = (z.size(0), self.output_channels2, z.size(2))
-        for i in range(N):
-            t = torch.ones(z.size(0)) * i / N
-            if self.intt > 0.:
-                dt = self.get_intt_dt(i, N)
-            else:
-                dt = 1. / N
+        for i, t in enumerate(ts[:-1]):
+            dt = ts[i + 1] - t
+            dt = self.get_intt_dt(t, dt) if self.intt > 0. else dt
+            t_ = torch.ones(z.size(0)) * t
             if self.cfg:
                 text_ = torch.cat([text, torch.ones_like(text) * text.mean(dim=(0, 2), keepdim=True)], dim=0)
-                (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t, bandwidth_id)]
+                (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t_, bandwidth_id)]
                 pred = self.get_pred(z_, t_.to(text.device), text_, bandwidth_id_)
                 pred, uncond_pred = torch.chunk(pred, 2, dim=0)
                 pred = uncond_pred + self.guidance_scale * (pred - uncond_pred)
             else:
-                pred = self.get_pred(z, t.to(text.device), text, bandwidth_id)
+                pred = self.get_pred(z, t_.to(text.device), text, bandwidth_id)
             if self.wave:
                 pred1, pred2 = self.split(pred)
                 if self.prev_cond or not self.parallel_uncond:
@@ -321,7 +327,7 @@ class RectifiedFlow(nn.Module):
             if self.prev_cond or not self.parallel_uncond:
                 pred1 = self.make_pred1_consistent(pred1)
             if self.intt > 0.:
-                if i / N < self.intt:
+                if t < self.intt:
                     pred2 = torch.zeros_like(pred2)
                 else:
                     pred1 = torch.zeros_like(pred1)
