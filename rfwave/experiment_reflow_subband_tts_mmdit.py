@@ -581,6 +581,7 @@ class VocosExp(pl.LightningModule):
         tk_lens = (token_ids != 0).sum(1).long()
         tk_emb, ctx = self.input_adaptor(token_ids, ctx)
         cond = (tk_emb, tk_start, tk_lens, ctx, ctx_n_frame, tk_durs)
+        cond_ = [c.detach().clone() for c in cond]
         cond, bandwidth_id, (z_t, t, target) = self.reflow.get_train_tuple(cond, tandem_feat, audio_input)
         loss, loss_dict = self.reflow.compute_loss(z_t, t, target, cond, bandwidth_id=bandwidth_id)
         self.manual_backward(loss)
@@ -591,7 +592,7 @@ class VocosExp(pl.LightningModule):
         self.log("train/total_loss", loss, prog_bar=True, logger=False)
         if self.global_step % 1000 == 0 and self.global_rank == 0:
             with torch.no_grad():
-                mel_hat_traj, audio_hat_traj = self.reflow.sample_ode(cond, N=100, **kwargs)
+                mel_hat_traj, audio_hat_traj = self.reflow.sample_ode(cond_, N=100, **kwargs)
             audio_hat = audio_hat_traj[-1]
             mel_hat = mel_hat_traj[-1]
             tandem_mel_loss = F.mse_loss(mel_hat, tandem_feat)
