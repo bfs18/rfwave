@@ -396,6 +396,40 @@ class MMDiT(Backbone):
         return out.transpose(1, 2)
 
 
+class MMDiTTTS(Backbone):
+    def __init__(
+        self,
+        input_channels,
+        output_channels1,
+        output_channels2,
+        hidden_size=768,
+        depth=8,
+        num_heads=16,
+        mlp_ratio=4.0,
+        max_seq_len=4096,
+        num_bands=8,
+        pe_scale=1000
+    ):
+        super().__init__()
+        self.input_channels = input_channels
+        self.output_channels1 = output_channels1
+        self.output_channels2 = output_channels2
+        self.p_uncond = 0.1
+        self.guidance_scale = 2.
+        self.num_bands = num_bands
+        self.module = MMDiT(input_channels, output_channels1+output_channels2,
+                            hidden_size, depth, num_heads, mlp_ratio, max_seq_len, pe_scale, pe_scale)
+
+    def tts_forward(self, z_t, t, cond, bandwidth_id):
+        cond, cond_start, cond_len, ctx, ctx_len = cond
+        ctx = ctx.transpose(1, 2)
+        cond = cond.transpose(1, 2)
+        z_t = z_t.transpose(1, 2)
+        out = self.module(cond, z_t, t, bandwidth_id,
+                          ctx=ctx, x1_start=cond_start, x1_len=cond_len, ctx_len=ctx_len)
+        return out.transpose(1, 2)
+
+
 if __name__ == '__main__':
     B = 2
     N1 = 8
