@@ -42,7 +42,7 @@ model:
       class_path: rfwave.models.VocosRFBackbone
       init_args:
         input_channels: 128
-        output_channels: 162
+        output_channels: 192
         dim: 512
         intermediate_dim: 1536
         num_layers: 8
