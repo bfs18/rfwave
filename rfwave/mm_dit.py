@@ -89,6 +89,7 @@ class MMAttention(nn.Module):
         norm_layer: nn.Module = RMSNorm,
     ) -> None:
         super().__init__()
+        assert dim % num_heads == 0, 'dim should be divisible by num_heads'
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim ** -0.5
@@ -414,8 +415,6 @@ class MMDiTTTS(Backbone):
         self.input_channels = input_channels
         self.output_channels1 = output_channels1
         self.output_channels2 = output_channels2
-        self.p_uncond = 0.1
-        self.guidance_scale = 2.
         self.num_bands = num_bands
         self.module = MMDiT(input_channels, output_channels1+output_channels2,
                             hidden_size, depth, num_heads, mlp_ratio, max_seq_len, pe_scale, pe_scale)
