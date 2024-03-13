@@ -38,8 +38,8 @@ class RectifiedFlow(nn.Module):
         self.wave = wave
         self.equalizer = wave
         self.stft_norm = not wave
-        self.stft_loss = wave
-        self.phase_loss = wave
+        self.stft_loss = False
+        self.phase_loss = False
         self.overlap_loss = True
         self.num_bands = num_bands
         self.num_bins = self.head.n_fft // 2 // self.num_bands
@@ -57,6 +57,7 @@ class RectifiedFlow(nn.Module):
         self.output_channels1 = self.backbone.output_channels1
         self.output_channels2 = self.backbone.output_channels2
         self.intt = intt  # resemble cascade system
+        assert self.backbone.output_channels == self.head.n_fft // self.num_bands + 2 * self.overlap
         assert self.wave ^ self.stft_norm
         assert self.right_overlap >= 1  # at least one to deal with the last dimension of fft feature.
         if self.stft_norm:
@@ -532,7 +533,7 @@ class RectifiedFlow(nn.Module):
         overlap_loss = self.compute_overlap_loss(pred2) if self.overlap_loss else 0.
         loss_dict = {"loss1": loss1, "loss2": loss2, "stft_loss": stft_loss,
                      "phase_loss": phase_loss, "overlap_loss": overlap_loss}
-        return loss1 * 5. + loss2 + stft_loss + phase_loss + overlap_loss * 0.1, loss_dict
+        return loss1 * 5. + loss2 + (stft_loss + phase_loss + overlap_loss) * 0.1, loss_dict
 
 
 class VocosExp(pl.LightningModule):

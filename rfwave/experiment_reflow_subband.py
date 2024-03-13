@@ -41,13 +41,13 @@ class RectifiedFlow(nn.Module):
         self.wave = wave
         self.equalizer = wave
         self.stft_norm = not wave
-        self.stft_loss = wave   # false to reproduce paper results, true produce better result when wave=True.
-        self.phase_loss = wave  # false to reproduce paper results, true produce better result when wave=True.
-        self.overlap_loss = True  # false to reproduce paper results, true produce better result
+        self.stft_loss = False
+        self.phase_loss = False
+        self.overlap_loss = True
         self.num_bands = num_bands
         self.num_bins = self.head.n_fft // 2 // self.num_bands
-        self.left_overlap = 0
-        self.right_overlap = 1
+        self.left_overlap = 8
+        self.right_overlap = 8
         self.overlap = self.left_overlap + self.right_overlap
         self.cond_mask_right_overlap = True
         self.prev_cond = False
@@ -228,6 +228,7 @@ class RectifiedFlow(nn.Module):
         if N is None:
             N = self.N
         traj = []  # to store the trajectory
+        dt = 1. / N
         if self.prev_cond or not self.parallel_uncond:
             assert band is not None
             assert bandwidth_id is not None
@@ -443,7 +444,7 @@ class RectifiedFlow(nn.Module):
         loss = self.compute_rf_loss(pred, target, bandwidth_id)
         loss_dict = {"loss": loss, "stft_loss": stft_loss,
                      "phase_loss": phase_loss, "overlap_loss": overlap_loss}
-        return loss + stft_loss + phase_loss + overlap_loss * 0.1, loss_dict
+        return loss + (stft_loss + phase_loss + overlap_loss) * 0.1, loss_dict
 
 
 class VocosExp(pl.LightningModule):
