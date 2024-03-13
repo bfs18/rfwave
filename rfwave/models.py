@@ -297,8 +297,6 @@ class VocosRFTTSTandemBackbone(Backbone):
         self.input_channels = input_channels
         self.output_channels1 = output_channels1
         self.output_channels2 = output_channels2
-        self.p_uncond = 0.1
-        self.guidance_scale = 2.
         self.num_bands = num_bands
 
         self.module1 = VocosRFBackbone(
