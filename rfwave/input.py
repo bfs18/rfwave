@@ -508,14 +508,18 @@ class DurInputTransformerAdaptor(InputAdaptor):
 
 
 class MMDiTInputAdaptor(InputAdaptor):
-    def __init__(self, embedding_dim, vocab_size, ctx_dim):
+    def __init__(self, embedding_dim, vocab_size, ctx_dim, num_layers=4):
         super().__init__()
         self.tok_embeddings = nn.Embedding(vocab_size, embedding_dim)
         self.ctx_proj = nn.Conv1d(ctx_dim, embedding_dim, kernel_size=1)
+        self.tok_blocks = nn.Sequential(*[ConvNeXtV2Block(embedding_dim, embedding_dim*3) for _ in range(num_layers)])
+        self.ctx_blocks = nn.Sequential(*[ConvNeXtV2Block(embedding_dim, embedding_dim*3) for _ in range(num_layers)])
 
     def forward(self, tokens, ctx):
         te = self.tok_embeddings(tokens).transpose(1, 2)
         ce = self.ctx_proj(ctx)
+        te = self.tok_blocks(te)
+        ce = self.ctx_blocks(ce)
         return te, ce
 
 

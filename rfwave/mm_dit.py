@@ -7,7 +7,7 @@ import numpy as np
 from itertools import repeat
 from functools import partial
 from torch import nn
-from rfwave.models import Backbone
+from rfwave.models import Backbone, ConvNeXtV2Block
 
 
 # From PyTorch internals
@@ -188,6 +188,42 @@ class Mlp(nn.Module):
         return x
 
 
+class GRN(nn.Module):
+    """ GRN (Global Response Normalization) layer
+    """
+    def __init__(self, dim):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.zeros(1, 1, dim))
+        self.beta = nn.Parameter(torch.zeros(1, 1, dim))
+
+    def forward(self, x):
+        Gx = torch.norm(x, p=2, dim=(1,2), keepdim=True)
+        Nx = Gx / (Gx.mean(dim=-1, keepdim=True) + 1e-6)
+        return self.gamma * (x * Nx) + self.beta + x
+
+
+class ConvFF(nn.Module):
+    def __init__(self, dim, intermediate_dim):
+        super().__init__()
+        self.dwconv = nn.Conv1d(dim, dim, kernel_size=7, padding=3, groups=dim)
+        self.norm = nn.LayerNorm(dim, eps=1e-6)
+        self.pwconv1 = nn.Linear(dim, intermediate_dim)  # pointwise/1x1 convs, implemented with linear layers
+        self.act = nn.GELU()
+        self.grn = GRN(intermediate_dim)
+        self.pwconv2 = nn.Linear(intermediate_dim, dim)
+
+    def forward(self, x):
+        x = x.transpose(1, 2)  # (B, T, C) -> (B, C, T)
+        x = self.dwconv(x)
+        x = x.transpose(1, 2)  # (B, C, T) -> (B, T, C)
+        x = self.norm(x)
+        x = self.pwconv1(x)
+        x = self.act(x)
+        x = self.grn(x)
+        x = self.pwconv2(x)
+        return x
+
+
 class MMDiTBlock(nn.Module):
     def __init__(self, hidden_size, num_heads, mlp_ratio=4., **block_args):
         super().__init__()
@@ -198,11 +234,13 @@ class MMDiTBlock(nn.Module):
         self.m1_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.m2_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        approx_gelu = lambda: nn.GELU(approximate="tanh")
-        self.m1_mlp = Mlp(
-            in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0)
-        self.m2_mlp = Mlp(
-            in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0)
+        # approx_gelu = lambda: nn.GELU(approximate="tanh")
+        # self.m1_mlp = Mlp(
+        #     in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0)
+        # self.m2_mlp = Mlp(
+        #     in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0)
+        self.m1_mlp = ConvFF(hidden_size, mlp_hidden_dim)
+        self.m2_mlp = ConvFF(hidden_size, mlp_hidden_dim)
         self.m1_adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(hidden_size, 6 * hidden_size, bias=True))
         self.m2_adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(hidden_size, 6 * hidden_size, bias=True))
 
@@ -301,10 +339,13 @@ class MMDiT(Backbone):
         self.t_embed = TimestepEmbedder(hidden_size, pe_scale=pe_scale)
         pos_embed = torch.from_numpy(get_1d_sincos_pos_embed(hidden_size, max_seq_len))
         self.register_buffer("pos_embed", pos_embed, persistent=False)
-        self.band_embed = nn.Embedding(num_bands, hidden_size)
+        self.band_embed = nn.Sequential(
+            nn.Embedding(num_bands, hidden_size), nn.Linear(hidden_size, hidden_size))
 
         self.m1_proj = nn.Linear(input_channels, hidden_size)
+        self.m1_norm = nn.LayerNorm(hidden_size, eps=1e-6)
         self.m2_proj = nn.Linear(output_channels, hidden_size)
+        self.m2_norm = nn.LayerNorm(hidden_size, eps=1e-6)
         self.blocks = nn.ModuleList([
             MMDiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
         ])
@@ -325,7 +366,7 @@ class MMDiT(Backbone):
         nn.init.normal_(self.t_embed.mlp[2].weight, std=0.02)
 
         # Initialize band embedding:
-        nn.init.normal_(self.band_embed.weight, mean=0.0, std=0.02)
+        nn.init.normal_(self.band_embed[0].weight, mean=0.0, std=0.02)
 
         # Zero-out adaLN modulation layers in DiT blocks:
         for block in self.blocks:
@@ -362,14 +403,14 @@ class MMDiT(Backbone):
         x1_len = self._get_len(x1, x1_len)
         x1_sco_mask = score_mask(x1_len)
         x1_pe = self.get_pos_embed(x1_start, x1_len)
-        x1 = self.m1_proj(x1) + x1_pe
+        x1 = self.m1_norm(self.m1_proj(x1)) + x1_pe
 
         if ctx is not None:
             ctx_start = self._get_start(ctx, ctx_start)
             ctx_len = self._get_len(ctx, ctx_len)
             ctx_sco_mask = score_mask(ctx_len)
             ctx_pe = self.get_pos_embed(ctx_start, ctx_len)
-            ctx = self.m1_proj(ctx) + ctx_pe
+            ctx = self.m1_norm(self.m1_proj(ctx)) + ctx_pe
             x1 = torch.cat([ctx, x1], dim=1)
             x1_sco_mask = torch.cat([ctx_sco_mask, x1_sco_mask], dim=-1)
 
@@ -377,7 +418,7 @@ class MMDiT(Backbone):
         x2_len = self._get_len(x2, x2_len)
         x2_sco_mask = score_mask(x2_len)
         x2_pe = self.get_pos_embed(x2_start, x2_len)
-        x2 = self.m2_proj(x2) + x2_pe
+        x2 = self.m2_norm(self.m2_proj(x2)) + x2_pe
 
         te = self.t_embed(t)
         be = self.band_embed(bandwidth_id)
@@ -389,11 +430,11 @@ class MMDiT(Backbone):
         x2 = self.final_layer(x2, c)
         return x2
 
-    def voc_forward(self, z_t, t, cond, bandwidth_id):
+    def voc_forward(self, z_t, t, cond, bandwidth_id, start_frame):
         # test for vocoder.
         z_t = z_t.transpose(1, 2)
         cond = cond.transpose(1, 2)
-        out = self(cond, z_t, t, bandwidth_id)
+        out = self(cond, z_t, t, bandwidth_id, x1_start=start_frame, x2_start=start_frame)
         return out.transpose(1, 2)
 
 
@@ -417,7 +458,7 @@ class MMDiTTTS(Backbone):
         self.output_channels2 = output_channels2
         self.num_bands = num_bands
         self.module = MMDiT(input_channels, output_channels1+output_channels2,
-                            hidden_size, depth, num_heads, mlp_ratio, max_seq_len, pe_scale, pe_scale)
+                            hidden_size, depth, num_heads, mlp_ratio, max_seq_len, num_bands, pe_scale)
 
     def tts_forward(self, z_t, t, cond, bandwidth_id):
         cond, cond_start, cond_len, ctx, ctx_len = cond
