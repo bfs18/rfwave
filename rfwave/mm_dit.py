@@ -64,7 +64,7 @@ def score_mask(length, max_length=None):
 
 
 class RMSNorm(torch.nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-5):
+    def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
@@ -299,6 +299,24 @@ class TimestepEmbedder(nn.Module):
         return t_emb
 
 
+class PreLayer(nn.Module):
+    def __init__(self, input_size, hidden_size, n_conv_layers, mlp_ratio):
+        super(PreLayer, self).__init__()
+        self.linear = nn.Linear(input_size, hidden_size)
+        self.norm = nn.LayerNorm(hidden_size)
+        if n_conv_layers > 0:
+            self.conv = nn.Sequential(
+                *[ConvNeXtV2Block(hidden_size, int(hidden_size * mlp_ratio)) for _ in range(n_conv_layers)])
+        else:
+            self.norm = None
+
+    def forward(self, x):
+        x = self.norm(self.linear(x))
+        if self.conv is not None:
+            x = self.conv(x.transpose(1, 2)).transpose(1, 2)
+        return x
+
+
 class FinalLayer(nn.Module):
     """
     The final layer of DiT.
@@ -339,13 +357,13 @@ class MMDiT(Backbone):
         self.t_embed = TimestepEmbedder(hidden_size, pe_scale=pe_scale)
         pos_embed = torch.from_numpy(get_1d_sincos_pos_embed(hidden_size, max_seq_len))
         self.register_buffer("pos_embed", pos_embed, persistent=False)
+        # add a Linear to avoid silu in adaLN_modulation weakening negative value in band embedding
         self.band_embed = nn.Sequential(
             nn.Embedding(num_bands, hidden_size), nn.Linear(hidden_size, hidden_size))
 
-        self.m1_proj = nn.Linear(input_channels, hidden_size)
-        self.m1_norm = nn.LayerNorm(hidden_size, eps=1e-6)
-        self.m2_proj = nn.Linear(output_channels, hidden_size)
-        self.m2_norm = nn.LayerNorm(hidden_size, eps=1e-6)
+        # make m1 scale consistent relative to positional embedding in case of m1 is raw data.
+        self.m1_pre = PreLayer(input_channels, hidden_size, n_conv_layers=2, mlp_ratio=mlp_ratio)
+        self.m2_pre = PreLayer(output_channels, hidden_size, n_conv_layers=2, mlp_ratio=mlp_ratio)
         self.blocks = nn.ModuleList([
             MMDiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
         ])
@@ -361,12 +379,21 @@ class MMDiT(Backbone):
                     nn.init.constant_(module.bias, 0)
         self.apply(_basic_init)
 
+        def _pre_init(module):
+            if isinstance(module, (nn.Conv1d, nn.Linear)):
+                nn.init.trunc_normal_(module.weight, std=0.02)
+                nn.init.constant_(module.bias, 0)
+        self.m1_pre.apply(_pre_init)
+        self.m2_pre.apply(_pre_init)
+
         # Initialize timestep embedding MLP:
         nn.init.normal_(self.t_embed.mlp[0].weight, std=0.02)
         nn.init.normal_(self.t_embed.mlp[2].weight, std=0.02)
 
         # Initialize band embedding:
         nn.init.normal_(self.band_embed[0].weight, mean=0.0, std=0.02)
+        nn.init.normal_(self.band_embed[1].weight, mean=0.0, std=0.02)
+        nn.init.constant_(self.band_embed[1].bias, 0.)
 
         # Zero-out adaLN modulation layers in DiT blocks:
         for block in self.blocks:
@@ -403,14 +430,14 @@ class MMDiT(Backbone):
         x1_len = self._get_len(x1, x1_len)
         x1_sco_mask = score_mask(x1_len)
         x1_pe = self.get_pos_embed(x1_start, x1_len)
-        x1 = self.m1_norm(self.m1_proj(x1)) + x1_pe
+        x1 = self.m1_pre(x1) + x1_pe
 
         if ctx is not None:
             ctx_start = self._get_start(ctx, ctx_start)
             ctx_len = self._get_len(ctx, ctx_len)
             ctx_sco_mask = score_mask(ctx_len)
             ctx_pe = self.get_pos_embed(ctx_start, ctx_len)
-            ctx = self.m1_norm(self.m1_proj(ctx)) + ctx_pe
+            ctx = self.m1_pre(ctx) + ctx_pe
             x1 = torch.cat([ctx, x1], dim=1)
             x1_sco_mask = torch.cat([ctx_sco_mask, x1_sco_mask], dim=-1)
 
@@ -418,7 +445,7 @@ class MMDiT(Backbone):
         x2_len = self._get_len(x2, x2_len)
         x2_sco_mask = score_mask(x2_len)
         x2_pe = self.get_pos_embed(x2_start, x2_len)
-        x2 = self.m2_norm(self.m2_proj(x2)) + x2_pe
+        x2 = self.m2_pre(x2) + x2_pe
 
         te = self.t_embed(t)
         be = self.band_embed(bandwidth_id)
