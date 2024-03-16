@@ -586,6 +586,7 @@ class VocosExp(pl.LightningModule):
         loss, loss_dict = self.reflow.compute_loss(z_t, t, target, cond, bandwidth_id=bandwidth_id)
         self.manual_backward(loss)
         self.skip_nan(opt_gen)
+        self.clip_gradients(opt_gen, gradient_clip_val=1., gradient_clip_algorithm="norm")
         opt_gen.step()
         sch_gen.step()
 
