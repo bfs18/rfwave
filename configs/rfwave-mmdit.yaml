@@ -45,7 +45,7 @@ model:
       class_path: rfwave.mm_dit.MMDiT
       init_args:
         input_channels: 100
-        output_channels: 130
+        output_channels: 160
         hidden_size: 512
         depth: 8
         mlp_ratio: 4.

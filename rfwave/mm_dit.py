@@ -308,7 +308,7 @@ class PreLayer(nn.Module):
             self.conv = nn.Sequential(
                 *[ConvNeXtV2Block(hidden_size, int(hidden_size * mlp_ratio)) for _ in range(n_conv_layers)])
         else:
-            self.norm = None
+            self.conv = None
 
     def forward(self, x):
         x = self.norm(self.linear(x))
