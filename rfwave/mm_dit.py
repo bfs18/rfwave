@@ -353,6 +353,7 @@ class MMDiT(Backbone):
         super().__init__()
         self.prev_cond = False
         self.num_bands = num_bands
+        self.depth = depth
 
         self.t_embed = TimestepEmbedder(hidden_size, pe_scale=pe_scale)
         pos_embed = torch.from_numpy(get_1d_sincos_pos_embed(hidden_size, max_seq_len))
@@ -373,26 +374,29 @@ class MMDiT(Backbone):
     def initialize_weights(self):
         # Initialize transformer layers:
         def _basic_init(module):
-            if isinstance(module, nn.Linear):
-                torch.nn.init.xavier_uniform_(module.weight)
+            if isinstance(module, (nn.Linear, nn.Conv1d)):
+                torch.nn.init.trunc_normal_(module.weight, mean=0.0, std=0.02)
                 if module.bias is not None:
-                    nn.init.constant_(module.bias, 0)
-        self.apply(_basic_init)
+                    torch.nn.init.zeros_(module.bias)
+        self.blocks.apply(_basic_init)
+        for pn, p in self.blocks.named_parameters():
+            if pn.endswith('m1_proj.weight') or pn.endswith('m2_proj.weight'):
+                torch.nn.init.trunc_normal_(p, mean=0.0, std=0.02/math.sqrt(2 * self.depth))
 
         def _pre_init(module):
             if isinstance(module, (nn.Conv1d, nn.Linear)):
-                nn.init.trunc_normal_(module.weight, std=0.02)
+                nn.init.trunc_normal_(module.weight, mean=0., std=0.02)
                 nn.init.constant_(module.bias, 0)
         self.m1_pre.apply(_pre_init)
         self.m2_pre.apply(_pre_init)
 
         # Initialize timestep embedding MLP:
-        nn.init.normal_(self.t_embed.mlp[0].weight, std=0.02)
-        nn.init.normal_(self.t_embed.mlp[2].weight, std=0.02)
+        nn.init.trunc_normal_(self.t_embed.mlp[0].weight, mean=0., std=0.02)
+        nn.init.trunc_normal_(self.t_embed.mlp[2].weight, mean=0., std=0.02)
 
         # Initialize band embedding:
-        nn.init.normal_(self.band_embed[0].weight, mean=0.0, std=0.02)
-        nn.init.normal_(self.band_embed[1].weight, mean=0.0, std=0.02)
+        nn.init.trunc_normal_(self.band_embed[0].weight, mean=0., std=0.02)
+        nn.init.trunc_normal_(self.band_embed[1].weight, mean=0., std=0.02)
         nn.init.constant_(self.band_embed[1].bias, 0.)
 
         # Zero-out adaLN modulation layers in DiT blocks:
@@ -405,7 +409,8 @@ class MMDiT(Backbone):
         # Zero-out output layers:
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
-        nn.init.constant_(self.final_layer.linear.weight, 0)
+        # nn.init.constant_(self.final_layer.linear.weight, 0)
+        nn.init.trunc_normal_(self.final_layer.linear.weight, mean=0., std=0.02)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
     def get_pos_embed(self, start, length):
