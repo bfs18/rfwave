@@ -6,25 +6,12 @@ from torch import nn
 from torch.nn import functional as F
 from rfwave.modules import GRN
 from rfwave.models import Backbone, Base2FourierFeatures
-from rfwave.input import SelfAttention, precompute_freqs_cis, ModelArgs, RMSNorm, apply_rotary_emb
+from rfwave.input import (precompute_freqs_cis,  RMSNorm, apply_rotary_emb, get_pos_embed,
+                          _get_len, _get_start, sequence_mask, score_mask)
 
 
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
-
-
-def sequence_mask(length, max_length=None):
-    if max_length is None:
-        max_length = length.max()
-    x = torch.arange(max_length, dtype=length.dtype, device=length.device)
-    return x.unsqueeze(0) < length.unsqueeze(1)
-
-
-def score_mask(length, max_length=None):
-    seq_mask = sequence_mask(length, max_length)
-    sco_mask = torch.zeros_like(seq_mask, dtype=torch.float)
-    sco_mask.masked_fill_(~seq_mask, float('-inf'))
-    return sco_mask.unsqueeze(1).unsqueeze(2)
 
 
 class ConvFF(nn.Module):
@@ -242,7 +229,7 @@ class DiTRFBackbone(Backbone):
                 nn.Embedding(encodec_num_embeddings, dim), nn.Linear(dim, dim))
         else:
             self.encodec_bandwidth_embed = None
-
+        self.register_buffer("pos_embed", precompute_freqs_cis(dim//num_heads, 4096))
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -281,21 +268,6 @@ class DiTRFBackbone(Backbone):
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
         nn.init.trunc_normal_(self.final_layer.linear.weight, mean=0., std=0.02)
 
-    def get_pos_embed(self, start, length):
-        pos = start.unsqueeze(1) + torch.arange(length.max(), device=start.device).unsqueeze(0)
-        pe = self.pos_embed[pos]
-        return pe
-
-    @staticmethod
-    def _get_start(tensor, start):
-        return (torch.zeros([tensor.size(0)], dtype=torch.long, device=tensor.device)
-                if start is None else start)
-
-    @staticmethod
-    def _get_len(tensor, length):
-        return (torch.ones([tensor.size(0)], dtype=torch.long, device=tensor.device) * tensor.size(2)
-                if length is None else length)
-
     def forward(self, z_t, t, x, bandwidth_id,
                 start=None, length=None, encodec_bandwidth_id=None):
         if self.with_fourier_features:
@@ -313,9 +285,9 @@ class DiTRFBackbone(Backbone):
             ee = 0.
         c = te + be + ee
         x = x.transpose(1, 2)
-        start = self._get_start(z_t, start)
-        length = self._get_len(z_t, None)
-        freq_cis = self.get_pos_embed(start, length)
+        start = _get_start(z_t, start)
+        length = _get_len(z_t, None)
+        freq_cis = get_pos_embed(self.pos_embed, start, length)
         for block in self.blocks:
             x = block(x, c, freq_cis, None)
         x = self.final(x)

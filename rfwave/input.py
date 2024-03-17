@@ -107,6 +107,36 @@ def sequence_mask(length, max_length=None):
     return x.unsqueeze(0) < length.unsqueeze(1)
 
 
+def score_mask(length, max_length=None):
+    seq_mask = sequence_mask(length, max_length)
+    sco_mask = torch.zeros_like(seq_mask, dtype=torch.float)
+    sco_mask.masked_fill_(~seq_mask, float('-inf'))
+    return sco_mask.unsqueeze(1).unsqueeze(2)
+
+
+def score_mask_from_bool_mask(bool_mask):
+    phone_mask = torch.zeros(*bool_mask.size(), device=bool_mask.device)
+    phone_mask.masked_fill_(bool_mask, float('-inf'))
+    phone_mask = phone_mask.unsqueeze(1).unsqueeze(2)
+    return phone_mask
+
+
+def _get_start(tensor, start):
+    return (torch.zeros([tensor.size(0)], dtype=torch.long, device=tensor.device)
+            if start is None else start)
+
+
+def _get_len(tensor, length):
+    return (torch.ones([tensor.size(0)], dtype=torch.long, device=tensor.device) * tensor.size(2)
+            if length is None else length)
+
+
+def get_pos_embed(pos_embed_table, start, length):
+    pos = start.unsqueeze(1) + torch.arange(length.max(), device=start.device).unsqueeze(0)
+    pe = pos_embed_table[pos]
+    return pe
+
+
 class Attention(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
@@ -331,13 +361,15 @@ class CrossAttTransformerBlock(nn.Module):
         )
         self.layer_id = layer_id
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
-        self.cross_attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        self.cross_attention_norm1 = RMSNorm(args.dim, eps=args.norm_eps)
+        self.cross_attention_norm2 = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
 
     def forward(self, x, context, x_freqs_cis, c_freqs_cis, x_mask, c_mask):
         h = x + self.attention.forward(self.attention_norm(x), x_freqs_cis, x_mask)
         h = h + self.cross_attention.forward(
-            self.cross_attention_norm(h), context, x_freqs_cis, c_freqs_cis, c_mask)
+            self.cross_attention_norm1(h), self.cross_attention_norm2(context),
+            x_freqs_cis, c_freqs_cis, c_mask)
         out = h + self.feed_forward.forward(self.ffn_norm(h))
         return out
 
@@ -345,16 +377,13 @@ class CrossAttTransformerBlock(nn.Module):
 class ContextBlock(nn.Module):
     def __init__(self, args: ModelArgs, ctx_dim, n_ctx_layers=4, n_attn_layers=4):
         super().__init__()
-        self.ctx_convnext = nn.Sequential(
-            nn.Conv1d(ctx_dim, args.dim, 1),
-            *[ConvNeXtV2Block(dim=args.dim, intermediate_dim=args.dim * 3)
-              for _ in range(n_ctx_layers)])
+        self.ctx_proj = nn.Conv1d(ctx_dim, args.dim, 1) if ctx_dim != args.dim else nn.Identity()
         self.ctx_attention = nn.ModuleList([CrossAttTransformerBlock(i, args) for i in range(n_attn_layers)])
         self.attn_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.attn_output = nn.Linear(args.dim, args.dim, bias=False)
 
     def forward(self, x, context, x_freqs_cis, c_freqs_cis, x_mask, c_mask):
-        c = self.ctx_convnext(context)
+        c = self.ctx_proj(context)
         c = c.transpose(1, 2)
         h = x
         for layer in self.ctx_attention:
@@ -379,8 +408,96 @@ class CtxCharInputAdaptor(InputAdaptor):
             self.layers.append(TransformerBlock(layer_id, params))
         self.attn_norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.attn_output = nn.Linear(params.dim, params.dim, bias=False)
-        self.ctx_block = ContextBlock(
+        self.ctx_proj = nn.Sequential(
+            nn.Conv1d(ctx_dim, params.dim, 1),
+            *[ConvNeXtV2Block(params.dim, params.dim*3) for _ in range(n_conv_layers)])
+        self.ctx_attn = ContextBlock(
             params, ctx_dim=ctx_dim, n_ctx_layers=n_ctx_layers, n_attn_layers=n_conv_layers)
+        self.pad_token = 0
+
+        # some useful precompute for the RoPE relative positional embeddings
+        freqs_cis = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len)
+        self.register_buffer("attn_freqs_cis", freqs_cis, persistent=False)
+
+        # init all weights
+        self.apply(self._init_weights)
+        # apply special scaled init to the residual projections, per GPT-2 paper
+        for pn, p in self.named_parameters():
+            if pn.endswith('w3.weight') or pn.endswith('wo.weight'):
+                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * params.n_layers))
+
+    def _init_weights(self, module):
+        if isinstance(module, (nn.Linear, nn.Conv1d)):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def forward_phone(self, tokens: torch.Tensor, phone_start: torch.Tensor):
+        _bsz, num_phones = tokens.shape
+        h = self.tok_embeddings(tokens)
+        h = self.dropout(h)
+
+        freqs_cis = get_pos_embed(self.attn_freqs_cis, phone_start, num_phones)
+        phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
+
+        for layer in self.layers:
+            h = layer(h, freqs_cis, mask=phone_mask)
+
+        h = self.attn_norm(h)
+        h = self.attn_output(h)
+        non_padding = (tokens != self.pad_token).float()
+        return h * non_padding.unsqueeze(2)
+
+    def expand(self, encoded_phone, lengths):
+        out = []
+        for phn, l in zip(encoded_phone, lengths):
+            out.append(phn.repeat_interleave(l, dim=0))
+        return torch.stack(out, dim=0)
+
+    def forward(self, tokens: torch.Tensor, num_tokens: torch.Tensor,
+                phone_start: torch.Tensor, frame_start: torch.Tensor,
+                context: torch.Tensor, context_lengths: torch.Tensor):
+        # context: [b, c, t]
+        encoded_phone = self.forward_phone(tokens, num_tokens, phone_start)
+        expanded_phone = self.expand(encoded_phone, num_tokens)
+        non_padding = (expanded_phone.abs().sum(2) > 0.).float()
+        num_frames = torch.sum(num_tokens, dim=1).long()
+
+        freqs_cis = get_pos_embed(self.attn_freqs_cis, frame_start, num_frames[0])
+        x_mask = score_mask_from_bool_mask(non_padding == 0)
+        ctx_freqs_cis = get_pos_embed(self.attn_ctx_freqs, frame_start, context.size(2))
+        ctx_mask = score_mask(context_lengths)
+
+        context = self.ctx_proj(context)
+        output = self.ctx_attn(
+            expanded_phone, context, freqs_cis, ctx_freqs_cis, x_mask, ctx_mask)
+
+        output = output * non_padding.unsqueeze(2)
+        return output.transpose(1, 2)
+
+
+class Ctx2CharInputAdaptor(InputAdaptor):
+    def __init__(self, embedding_dim, vocab_size, ctx_dim,
+                 n_attn_layers=4, n_conv_layers=4, n_ctx_layers=4, dropout=0.):
+        super().__init__()
+        params = ModelArgs(dim=embedding_dim, vocab_size=vocab_size,
+                           n_layers=n_attn_layers, n_heads=8, dropout=dropout)
+        self.dim = embedding_dim
+
+        self.tok_embeddings = nn.Embedding(params.vocab_size, params.dim)
+        self.dropout = nn.Dropout(params.dropout)
+        self.layers = torch.nn.ModuleList()
+        for layer_id in range(params.n_layers):
+            self.layers.append(TransformerBlock(layer_id, params))
+        self.attn_norm = RMSNorm(params.dim, eps=params.norm_eps)
+        self.attn_output = nn.Linear(params.dim, params.dim, bias=False)
+        self.ctx_proj = nn.Sequential(
+            nn.Conv1d(ctx_dim, params.dim, 1),
+            *[ConvNeXtV2Block(params.dim, params.dim*3) for _ in range(n_conv_layers)])
+        self.ctx_attn = ContextBlock(
+            params, ctx_dim=params.dim*2, n_ctx_layers=n_ctx_layers, n_attn_layers=n_conv_layers)
         self.pad_token = 0
 
         # some useful precompute for the RoPE relative positional embeddings
@@ -428,7 +545,8 @@ class CtxCharInputAdaptor(InputAdaptor):
 
     def forward(self, tokens: torch.Tensor, num_tokens: torch.Tensor,
                 phone_start: torch.Tensor, frame_start: torch.Tensor,
-                context: torch.Tensor, context_lengths: torch.Tensor):
+                context: torch.Tensor, context_lengths: torch.Tensor,
+                ctx_tokens: torch.Tensor, ctx_num_tokens: torch.Tensor):
         # context: [b, c, t]
         encoded_phone = self.forward_phone(tokens, phone_start)
         expanded_phone = self.expand(encoded_phone, num_tokens)
@@ -447,7 +565,7 @@ class CtxCharInputAdaptor(InputAdaptor):
         ctx_mask.masked_fill_(~sequence_mask(context_lengths), float('-inf'))
         ctx_mask = ctx_mask.unsqueeze(1).unsqueeze(2)
 
-        output = self.ctx_block(
+        output = self.ctx_attn(
             expanded_phone, context, freqs_cis, ctx_freqs_cis, x_mask, ctx_mask)
 
         output = output * non_padding.unsqueeze(2)
