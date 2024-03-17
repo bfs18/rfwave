@@ -540,16 +540,17 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         return h * non_padding.unsqueeze(2)
 
     def expand(self, encoded_phone, lengths):
-        out = []
-        for phn, l in zip(encoded_phone, lengths):
-            out.append(phn.repeat_interleave(l, dim=0))
-        return torch.stack(out, dim=0)
+        l = torch.max(lengths.sum(1))
+        out = torch.zeros([encoded_phone.size(0), l, encoded_phone.size(2)], device=encoded_phone.device)
+        for i, (phn, l) in enumerate(zip(encoded_phone, lengths)):
+            out[i, :l.sum()] = phn.repeat_interleave(l, dim=0)
+        return out
 
     def forward(self, tokens: torch.Tensor, token_frames: torch.Tensor,
                 phone_start: torch.Tensor, frame_start: torch.Tensor,
                 context: torch.Tensor, context_lengths: torch.Tensor,
                 ctx_tokens: torch.Tensor, ctx_token_frames: torch.Tensor):
-        assert context_lengths == ctx_token_frames.sum(1)
+        assert torch.all(context_lengths == ctx_token_frames.sum(1))
         # context: [b, c, t]
         encoded_phone = self.forward_phone(tokens, phone_start)
         expanded_phone = self.expand(encoded_phone, token_frames)
@@ -571,6 +572,7 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         if not drop_tok:
             encoded_ctx_phone = self.forward_phone(ctx_tokens, _get_start(tokens, None))
             expanded_ctx_phone = self.expand(encoded_ctx_phone, ctx_token_frames)
+            expanded_ctx_phone = expanded_ctx_phone.transpose(1, 2)
         else:
             expanded_ctx_phone = torch.zeros([bs, self.dim, l], device=tokens.device)
         context = torch.cat([expanded_ctx_phone, context], dim=1)

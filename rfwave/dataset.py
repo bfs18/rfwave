@@ -489,15 +489,15 @@ class TTSCtxDatasetSegment(Dataset):
             start_phone_idx = 0
             end_phone_idx = torch.searchsorted(cs_durations, end_frame, right=False)
 
-        token_ids = token_ids[start_phone_idx: end_phone_idx + 1]
-        durations = up_durations[start_phone_idx: end_phone_idx + 1].detach().clone()
+        seg_token_ids = token_ids[start_phone_idx: end_phone_idx + 1].detach().clone()
+        seg_durations = up_durations[start_phone_idx: end_phone_idx + 1].detach().clone()
         if end_phone_idx != start_phone_idx:
             first_num_frames = cs_durations[start_phone_idx] - start_frame
             last_num_frames = end_frame - cs_durations[end_phone_idx - 1]
-            durations[0] = first_num_frames
-            durations[-1] = last_num_frames
+            seg_durations[0] = first_num_frames
+            seg_durations[-1] = last_num_frames
         else:
-            durations[0] = end_frame - start_frame
+            seg_durations[0] = end_frame - start_frame
 
         # get context
         if start_frame > self.min_context:
@@ -515,16 +515,30 @@ class TTSCtxDatasetSegment(Dataset):
         ctx_end = (ctx_start_frame + ctx_n_frame) * self.hop_length
         y_ctx = y[:, ctx_start: ctx_end]
         ctx_n_frame = ctx_n_frame + 1 if self.padding == 'center' else ctx_n_frame
+        ctx_start_phone_idx = torch.searchsorted(cs_durations, ctx_start_frame, right=True)
+        ctx_end_phone_idx = torch.searchsorted(cs_durations, ctx_start_frame + ctx_n_frame, right=False)
+        ctx_token_ids = token_ids[ctx_start_phone_idx: ctx_end_phone_idx + 1].detach().clone()
+        ctx_durations = up_durations[ctx_start_phone_idx: ctx_end_phone_idx + 1].detach().clone()
+        if ctx_end_phone_idx != ctx_start_phone_idx:
+            first_num_frames = cs_durations[ctx_start_phone_idx] - ctx_start_frame
+            last_num_frames = ctx_start_frame + ctx_n_frame - cs_durations[ctx_end_phone_idx - 1]
+            ctx_durations[0] = first_num_frames
+            ctx_durations[-1] = last_num_frames
+        else:
+            ctx_durations[0] = ctx_n_frame
 
         gain = np.random.uniform(-1, -6) if self.train else -3
         y_seg, _ = torchaudio.sox_effects.apply_effects_tensor(
             y_seg, self.sampling_rate, [["norm", f"{gain:.2f}"]])
         y_ctx, _ = torchaudio.sox_effects.apply_effects_tensor(
             y_ctx, self.sampling_rate, [["norm", f"{gain:.2f}"]])
-        assert torch.sum(durations) == num_frames, (
-            f"{k}, sum durations {torch.sum(durations)}, num frames: {num_frames}, "
-            f"start_phone_idx: {start_phone_idx}, start_frame: {start_frame}, durations: {durations}")
-        return y_seg[0], (token_ids, durations, start_phone_idx, start_frame, y_ctx[0], ctx_n_frame)
+        assert torch.sum(seg_durations) == num_frames, (
+            f"{k}, sum durations {torch.sum(seg_durations)}, num frames: {num_frames}, "
+            f"start_phone_idx: {start_phone_idx}, start_frame: {start_frame}, durations: {seg_durations}")
+        assert torch.sum(ctx_durations) == ctx_n_frame, (
+            f"{k}, ctx sum durations {torch.sum(ctx_durations)}, ctx num_frames: {ctx_n_frame}")
+        return y_seg[0], (seg_token_ids, seg_durations, start_phone_idx, start_frame,
+                          y_ctx[0], ctx_n_frame, ctx_token_ids, ctx_durations)
 
 
 class DurDataset(Dataset):
@@ -602,17 +616,24 @@ def tts_ctx_collate_segment(data):
     max_num = max(num_phones)
     y_ctx = [ti[4] for ti in token_info]
     max_ctx_len = max([y.size(0) for y in y_ctx])
+    num_ctx_phones = [ti[6].size(0) for ti in token_info]
+    max_ctx_num = max(num_ctx_phones)
     token_ids = torch.zeros([len(data), max_num], dtype=torch.long)
     durations = torch.zeros([len(data), max_num], dtype=torch.long)
     y_ctx_pad = torch.zeros([len(data), max_ctx_len], dtype=torch.float)
-    for i, (ti, d, _, _, ctx, _) in enumerate(token_info):
+    ctx_token_ids = torch.zeros([len(data), max_ctx_num], dtype=torch.long)
+    ctx_durations = torch.zeros([len(data), max_ctx_num], dtype=torch.long)
+    for i, (ti, d, _, _, ctx, _, cti, cd) in enumerate(token_info):
         token_ids[i, :ti.size(0)] = ti
         durations[i, :ti.size(0)] = d
         y_ctx_pad[i, :ctx.size(0)] = ctx
+        ctx_token_ids[i, :cti.size(0)] = cti
+        ctx_durations[i, :cd.size(0)] = cd
     start_phone_idx = torch.tensor([ti[2] for ti in token_info])
     start_frame = torch.tensor([ti[3] for ti in token_info])
     ctx_n_frame = torch.tensor([ti[5] for ti in token_info])
-    return y, (token_ids, durations, start_phone_idx, start_frame, y_ctx_pad, ctx_n_frame)
+    return y, (token_ids, durations, start_phone_idx, start_frame,
+               y_ctx_pad, ctx_n_frame, ctx_token_ids, ctx_durations)
 
 
 def dur_collate(data):
@@ -678,7 +699,7 @@ if __name__ == "__main__":
         return fig
 
     cfg = DataConfig(
-        filelist_path="/Users/liupeng/wd_disk/dataset/LJSpeech-1.1/synta_filelist.valid",
+        filelist_path="/data/corpus/LJSpeech-1.1/synta_filelist.valid",
         sampling_rate=22050,
         num_samples=65280,
         batch_size=8,
@@ -687,7 +708,7 @@ if __name__ == "__main__":
         task="tts",
         hop_length=256,
         padding="center",
-        phoneset="/Users/liupeng/wd_disk/dataset/LJSpeech-1.1/synta_phoneset.th",
+        phoneset="/data/corpus/LJSpeech-1.1/synta_phoneset.th",
     )
 
     mel_extractor = MelSpectrogramFeatures(22050)
