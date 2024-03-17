@@ -57,7 +57,9 @@ class RectifiedFlow(nn.Module):
         self.output_channels1 = self.backbone.output_channels1
         self.output_channels2 = self.backbone.output_channels2
         self.intt = intt  # resemble cascade system
-        assert self.backbone.output_channels == self.head.n_fft // self.num_bands + 2 * self.overlap
+        out_ch = (self.backbone.output_channels if hasattr(self.backbone, 'output_channels')
+                  else self.backbone.output_channels2)
+        assert out_ch == self.head.n_fft // self.num_bands + 2 * self.overlap
         assert self.wave ^ self.stft_norm
         assert self.right_overlap >= 1  # at least one to deal with the last dimension of fft feature.
         if self.stft_norm:
