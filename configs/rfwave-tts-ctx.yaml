@@ -73,7 +73,7 @@ model:
         padding: center
 
     input_adaptor:
-      class_path: rfwave.input.CtxCharInputTransformerAdaptor
+      class_path: rfwave.input.CtxCharInputAdaptor
       init_args:
         embedding_dim: 512
         vocab_size: 78

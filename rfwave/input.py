@@ -234,7 +234,7 @@ class TransformerBlock(nn.Module):
         return out
 
 
-class CharInputTransformerAdaptor(InputAdaptor):
+class CharInputAdaptor(InputAdaptor):
     def __init__(self, embedding_dim, vocab_size, n_attn_layers=4, n_conv_layers=4,
                  dropout=0., dilation=1):
         super().__init__()
@@ -300,12 +300,12 @@ class CharInputTransformerAdaptor(InputAdaptor):
             out.append(phn.repeat_interleave(l, dim=0))
         return torch.stack(out, dim=0)
 
-    def forward(self, tokens: torch.Tensor, lengths: torch.Tensor,
+    def forward(self, tokens: torch.Tensor, num_tokens: torch.Tensor,
                 phone_start: torch.Tensor, frame_start: torch.Tensor):
         encoded_phone = self.forward_phone(tokens, phone_start)
-        expanded_phone = self.expand(encoded_phone, lengths)
+        expanded_phone = self.expand(encoded_phone, num_tokens)
         non_padding = (expanded_phone.abs().sum(2) > 0.).float()
-        num_frames = torch.sum(lengths, dim=1).long()
+        num_frames = torch.sum(num_tokens, dim=1).long()
         freqs_ids = frame_start.unsqueeze(1) + torch.arange(num_frames[0], device=tokens.device).unsqueeze(0)
         freqs_cis = self.conv_freqs_cis[freqs_ids]
         expanded_phone = apply_rotary_emb(expanded_phone, freqs_cis)
@@ -364,7 +364,7 @@ class ContextBlock(nn.Module):
         return h
 
 
-class CtxCharInputTransformerAdaptor(InputAdaptor):
+class CtxCharInputAdaptor(InputAdaptor):
     def __init__(self, embedding_dim, vocab_size, ctx_dim,
                  n_attn_layers=4, n_conv_layers=4, n_ctx_layers=4, dropout=0.):
         super().__init__()
@@ -426,14 +426,14 @@ class CtxCharInputTransformerAdaptor(InputAdaptor):
             out.append(phn.repeat_interleave(l, dim=0))
         return torch.stack(out, dim=0)
 
-    def forward(self, tokens: torch.Tensor, lengths: torch.Tensor,
+    def forward(self, tokens: torch.Tensor, num_tokens: torch.Tensor,
                 phone_start: torch.Tensor, frame_start: torch.Tensor,
                 context: torch.Tensor, context_lengths: torch.Tensor):
         # context: [b, c, t]
         encoded_phone = self.forward_phone(tokens, phone_start)
-        expanded_phone = self.expand(encoded_phone, lengths)
+        expanded_phone = self.expand(encoded_phone, num_tokens)
         non_padding = (expanded_phone.abs().sum(2) > 0.).float()
-        num_frames = torch.sum(lengths, dim=1).long()
+        num_frames = torch.sum(num_tokens, dim=1).long()
 
         freqs_ids = frame_start.unsqueeze(1) + torch.arange(num_frames[0], device=tokens.device).unsqueeze(0)
         freqs_cis = self.attn_freqs_cis[freqs_ids]
@@ -454,7 +454,7 @@ class CtxCharInputTransformerAdaptor(InputAdaptor):
         return output.transpose(1, 2)
 
 
-class DurInputTransformerAdaptor(InputAdaptor):
+class DurInputAdaptor(InputAdaptor):
     def __init__(self, embedding_dim, vocab_size, n_attn_layers=4, dropout=0.):
         super().__init__()
         params = ModelArgs(dim=embedding_dim, vocab_size=vocab_size,
