@@ -6,6 +6,7 @@ from rfwave.models import ConvNeXtV2Block
 import torch
 import torch.nn.functional as F
 import math
+import numpy as np
 
 
 class InputAdaptor(nn.Module):
@@ -132,7 +133,8 @@ def _get_len(tensor, length):
 
 
 def get_pos_embed(pos_embed_table, start, length):
-    pos = start.unsqueeze(1) + torch.arange(length.max(), device=start.device).unsqueeze(0)
+    length = length if isinstance(length, int) else length.max()
+    pos = start.unsqueeze(1) + torch.arange(length, device=start.device).unsqueeze(0)
     pe = pos_embed_table[pos]
     return pe
 
@@ -412,7 +414,7 @@ class CtxCharInputAdaptor(InputAdaptor):
             nn.Conv1d(ctx_dim, params.dim, 1),
             *[ConvNeXtV2Block(params.dim, params.dim*3) for _ in range(n_conv_layers)])
         self.ctx_attn = ContextBlock(
-            params, ctx_dim=ctx_dim, n_ctx_layers=n_ctx_layers, n_attn_layers=n_conv_layers)
+            params, ctx_dim=params.dim, n_ctx_layers=n_ctx_layers, n_attn_layers=n_conv_layers)
         self.pad_token = 0
 
         # some useful precompute for the RoPE relative positional embeddings
@@ -456,18 +458,18 @@ class CtxCharInputAdaptor(InputAdaptor):
             out.append(phn.repeat_interleave(l, dim=0))
         return torch.stack(out, dim=0)
 
-    def forward(self, tokens: torch.Tensor, num_tokens: torch.Tensor,
+    def forward(self, tokens: torch.Tensor, token_frames: torch.Tensor,
                 phone_start: torch.Tensor, frame_start: torch.Tensor,
-                context: torch.Tensor, context_lengths: torch.Tensor):
+                context: torch.Tensor, context_lengths: torch.Tensor, *args):
         # context: [b, c, t]
-        encoded_phone = self.forward_phone(tokens, num_tokens, phone_start)
-        expanded_phone = self.expand(encoded_phone, num_tokens)
+        encoded_phone = self.forward_phone(tokens, phone_start)
+        expanded_phone = self.expand(encoded_phone, token_frames)
         non_padding = (expanded_phone.abs().sum(2) > 0.).float()
-        num_frames = torch.sum(num_tokens, dim=1).long()
+        num_frames = torch.sum(token_frames, dim=1).long()
 
         freqs_cis = get_pos_embed(self.attn_freqs_cis, frame_start, num_frames[0])
         x_mask = score_mask_from_bool_mask(non_padding == 0)
-        ctx_freqs_cis = get_pos_embed(self.attn_ctx_freqs, frame_start, context.size(2))
+        ctx_freqs_cis = get_pos_embed(self.attn_freqs_cis, frame_start, context.size(2))
         ctx_mask = score_mask(context_lengths)
 
         context = self.ctx_proj(context)
@@ -480,11 +482,13 @@ class CtxCharInputAdaptor(InputAdaptor):
 
 class Ctx2CharInputAdaptor(InputAdaptor):
     def __init__(self, embedding_dim, vocab_size, ctx_dim,
-                 n_attn_layers=4, n_conv_layers=4, n_ctx_layers=4, dropout=0.):
+                 n_attn_layers=4, n_conv_layers=4, n_ctx_layers=4,
+                 dropout=0., drop_ctx=0.5):
         super().__init__()
         params = ModelArgs(dim=embedding_dim, vocab_size=vocab_size,
                            n_layers=n_attn_layers, n_heads=8, dropout=dropout)
         self.dim = embedding_dim
+        self.drop_ctx = drop_ctx
 
         self.tok_embeddings = nn.Embedding(params.vocab_size, params.dim)
         self.dropout = nn.Dropout(params.dropout)
@@ -523,15 +527,13 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         _bsz, num_phones = tokens.shape
         h = self.tok_embeddings(tokens)
         h = self.dropout(h)
-        freqs_ids = phone_start.unsqueeze(1) + torch.arange(num_phones, device=tokens.device).unsqueeze(0)
-        freqs_cis = self.attn_freqs_cis[freqs_ids]
 
-        phone_mask = torch.zeros(*tokens.size(), device=tokens.device)
-        phone_mask.masked_fill_(tokens == self.pad_token, float('-inf'))
-        phone_mask = phone_mask.unsqueeze(1).unsqueeze(2)
+        freqs_cis = get_pos_embed(self.attn_freqs_cis, phone_start, num_phones)
+        phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
 
         for layer in self.layers:
             h = layer(h, freqs_cis, mask=phone_mask)
+
         h = self.attn_norm(h)
         h = self.attn_output(h)
         non_padding = (tokens != self.pad_token).float()
@@ -543,27 +545,35 @@ class Ctx2CharInputAdaptor(InputAdaptor):
             out.append(phn.repeat_interleave(l, dim=0))
         return torch.stack(out, dim=0)
 
-    def forward(self, tokens: torch.Tensor, num_tokens: torch.Tensor,
+    def forward(self, tokens: torch.Tensor, token_frames: torch.Tensor,
                 phone_start: torch.Tensor, frame_start: torch.Tensor,
                 context: torch.Tensor, context_lengths: torch.Tensor,
-                ctx_tokens: torch.Tensor, ctx_num_tokens: torch.Tensor):
+                ctx_tokens: torch.Tensor, ctx_token_frames: torch.Tensor):
+        assert context_lengths == ctx_token_frames.sum(1)
         # context: [b, c, t]
         encoded_phone = self.forward_phone(tokens, phone_start)
-        expanded_phone = self.expand(encoded_phone, num_tokens)
+        expanded_phone = self.expand(encoded_phone, token_frames)
         non_padding = (expanded_phone.abs().sum(2) > 0.).float()
-        num_frames = torch.sum(num_tokens, dim=1).long()
+        num_frames = torch.sum(token_frames, dim=1).long()
 
-        freqs_ids = frame_start.unsqueeze(1) + torch.arange(num_frames[0], device=tokens.device).unsqueeze(0)
-        freqs_cis = self.attn_freqs_cis[freqs_ids]
-        x_mask = torch.zeros_like(non_padding)
-        x_mask.masked_fill_(non_padding == 0, float('-inf'))
-        x_mask = x_mask.unsqueeze(1).unsqueeze(2)
-        ctx_freqs_ids = (torch.zeros_like(frame_start).unsqueeze(1) +
-                         torch.arange(context.size(2), device=tokens.device).unsqueeze(0))
-        ctx_freqs_cis = self.attn_freqs_cis[ctx_freqs_ids]
-        ctx_mask = torch.zeros((context.size(0), context.size(2)), device=tokens.device)
-        ctx_mask.masked_fill_(~sequence_mask(context_lengths), float('-inf'))
-        ctx_mask = ctx_mask.unsqueeze(1).unsqueeze(2)
+        freqs_cis = get_pos_embed(self.attn_freqs_cis, frame_start, num_frames[0])
+        x_mask = score_mask_from_bool_mask(non_padding == 0)
+        ctx_freqs_cis = get_pos_embed(self.attn_freqs_cis, frame_start, context.size(2))
+        ctx_mask = score_mask(context_lengths)
+
+        if np.random.uniform() < self.drop_ctx:
+            drop_ctx, drop_tok = (True, False) if np.random.uniform() < 0.5 else (False, True)
+        else:
+            drop_ctx, drop_tok = False, False
+        bs, _, l = context.shape
+        context = (self.ctx_proj(context) if not drop_ctx else
+                   torch.zeros([bs, self.dim, l], device=tokens.device))
+        if not drop_tok:
+            encoded_ctx_phone = self.forward_phone(ctx_tokens, _get_start(tokens, None))
+            expanded_ctx_phone = self.expand(encoded_ctx_phone, ctx_token_frames)
+        else:
+            expanded_ctx_phone = torch.zeros([bs, self.dim, l], device=tokens.device)
+        context = torch.cat([expanded_ctx_phone, context], dim=1)
 
         output = self.ctx_attn(
             expanded_phone, context, freqs_cis, ctx_freqs_cis, x_mask, ctx_mask)
