@@ -88,7 +88,7 @@ class ConvNeXtBlock(nn.Module):
 class GRN(nn.Module):
     """ GRN (Global Response Normalization) layer
     """
-    def __init__(self, dim, groups):
+    def __init__(self, dim, groups=1):
         super().__init__()
         self.gamma = nn.Parameter(torch.zeros(1, 1, dim))
         self.beta = nn.Parameter(torch.zeros(1, 1, dim))
