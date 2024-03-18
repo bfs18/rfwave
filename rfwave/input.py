@@ -30,6 +30,7 @@ class ModelArgs:
     norm_eps: float = 1e-5
     max_seq_len: int = 2048
     dropout: float = 0.0
+    qk_norm: bool = True
 
 
 class RMSNorm(torch.nn.Module):
@@ -153,6 +154,8 @@ class Attention(nn.Module):
         self.wk = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
         self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
         self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False)
+        self.q_norm = RMSNorm(self.head_dim) if args.qk_norm else nn.Identity()
+        self.k_norm = RMSNorm(self.head_dim) if args.qk_norm else nn.Identity()
         self.attn_dropout = nn.Dropout(args.dropout)
         self.resid_dropout = nn.Dropout(args.dropout)
         self.dropout = args.dropout
@@ -178,7 +181,7 @@ class Attention(nn.Module):
         xq = xq.view(bsz, q_seqlen, self.n_local_heads, self.head_dim)
         xk = xk.view(bsz, kv_seqlen, self.n_local_kv_heads, self.head_dim)
         xv = xv.view(bsz, kv_seqlen, self.n_local_kv_heads, self.head_dim)
-
+        xq, xk = self.q_norm(xq), self.k_norm(xk)
         # RoPE relative positional embeddings
         xq = apply_rotary_emb(xq, q_freqs_cis)
         xk = apply_rotary_emb(xk, k_freqs_cis)
@@ -332,12 +335,12 @@ class CharInputAdaptor(InputAdaptor):
             out.append(phn.repeat_interleave(l, dim=0))
         return torch.stack(out, dim=0)
 
-    def forward(self, tokens: torch.Tensor, num_tokens: torch.Tensor,
+    def forward(self, tokens: torch.Tensor, token_frames: torch.Tensor,
                 phone_start: torch.Tensor, frame_start: torch.Tensor):
         encoded_phone = self.forward_phone(tokens, phone_start)
-        expanded_phone = self.expand(encoded_phone, num_tokens)
+        expanded_phone = self.expand(encoded_phone, token_frames)
         non_padding = (expanded_phone.abs().sum(2) > 0.).float()
-        num_frames = torch.sum(num_tokens, dim=1).long()
+        num_frames = torch.sum(token_frames, dim=1).long()
         freqs_ids = frame_start.unsqueeze(1) + torch.arange(num_frames[0], device=tokens.device).unsqueeze(0)
         freqs_cis = self.conv_freqs_cis[freqs_ids]
         expanded_phone = apply_rotary_emb(expanded_phone, freqs_cis)
@@ -363,21 +366,19 @@ class CrossAttTransformerBlock(nn.Module):
         )
         self.layer_id = layer_id
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
-        self.cross_attention_norm1 = RMSNorm(args.dim, eps=args.norm_eps)
-        self.cross_attention_norm2 = RMSNorm(args.dim, eps=args.norm_eps)
+        self.cross_attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
 
     def forward(self, x, context, x_freqs_cis, c_freqs_cis, x_mask, c_mask):
         h = x + self.attention.forward(self.attention_norm(x), x_freqs_cis, x_mask)
         h = h + self.cross_attention.forward(
-            self.cross_attention_norm1(h), self.cross_attention_norm2(context),
-            x_freqs_cis, c_freqs_cis, c_mask)
+            self.cross_attention_norm(h), context, x_freqs_cis, c_freqs_cis, c_mask)
         out = h + self.feed_forward.forward(self.ffn_norm(h))
         return out
 
 
 class ContextBlock(nn.Module):
-    def __init__(self, args: ModelArgs, ctx_dim, n_ctx_layers=4, n_attn_layers=4):
+    def __init__(self, args: ModelArgs, ctx_dim, n_attn_layers=4):
         super().__init__()
         self.ctx_proj = nn.Conv1d(ctx_dim, args.dim, 1) if ctx_dim != args.dim else nn.Identity()
         self.ctx_attention = nn.ModuleList([CrossAttTransformerBlock(i, args) for i in range(n_attn_layers)])
@@ -412,9 +413,9 @@ class CtxCharInputAdaptor(InputAdaptor):
         self.attn_output = nn.Linear(params.dim, params.dim, bias=False)
         self.ctx_proj = nn.Sequential(
             nn.Conv1d(ctx_dim, params.dim, 1),
-            *[ConvNeXtV2Block(params.dim, params.dim*3) for _ in range(n_conv_layers)])
+            *[ConvNeXtV2Block(params.dim, params.dim*3) for _ in range(n_ctx_layers)])
         self.ctx_attn = ContextBlock(
-            params, ctx_dim=params.dim, n_ctx_layers=n_ctx_layers, n_attn_layers=n_conv_layers)
+            params, ctx_dim=params.dim, n_attn_layers=n_conv_layers)
         self.pad_token = 0
 
         # some useful precompute for the RoPE relative positional embeddings
@@ -499,9 +500,9 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         self.attn_output = nn.Linear(params.dim, params.dim, bias=False)
         self.ctx_proj = nn.Sequential(
             nn.Conv1d(ctx_dim, params.dim, 1),
-            *[ConvNeXtV2Block(params.dim, params.dim*3) for _ in range(n_conv_layers)])
+            *[ConvNeXtV2Block(params.dim, params.dim*3) for _ in range(n_ctx_layers)])
         self.ctx_attn = ContextBlock(
-            params, ctx_dim=params.dim*2, n_ctx_layers=n_ctx_layers, n_attn_layers=n_conv_layers)
+            params, ctx_dim=params.dim*2, n_attn_layers=n_conv_layers)
         self.pad_token = 0
 
         # some useful precompute for the RoPE relative positional embeddings
@@ -546,6 +547,24 @@ class Ctx2CharInputAdaptor(InputAdaptor):
             out[i, :l.sum()] = phn.repeat_interleave(l, dim=0)
         return out
 
+    def forward_ctx(self, context: torch.Tensor, context_lengths: torch.Tensor,
+                    ctx_tokens: torch.Tensor, ctx_token_frames: torch.Tensor):
+        if np.random.uniform() < self.drop_ctx:
+            drop_ctx, drop_tok = (True, False) if np.random.uniform() < 0.5 else (False, True)
+        else:
+            drop_ctx, drop_tok = False, False
+        bs, _, l = context.shape
+        context = (self.ctx_proj(context) if not drop_ctx else
+                   torch.zeros([bs, self.dim, l], device=context.device))
+        if not drop_tok:
+            encoded_ctx_phone = self.forward_phone(ctx_tokens, _get_start(ctx_tokens, None))
+            expanded_ctx_phone = self.expand(encoded_ctx_phone, ctx_token_frames)
+            expanded_ctx_phone = expanded_ctx_phone.transpose(1, 2)
+        else:
+            expanded_ctx_phone = torch.zeros([bs, self.dim, l], device=context.device)
+        context = torch.cat([expanded_ctx_phone, context], dim=1)
+        return context
+
     def forward(self, tokens: torch.Tensor, token_frames: torch.Tensor,
                 phone_start: torch.Tensor, frame_start: torch.Tensor,
                 context: torch.Tensor, context_lengths: torch.Tensor,
@@ -562,21 +581,7 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         ctx_freqs_cis = get_pos_embed(self.attn_freqs_cis, frame_start, context.size(2))
         ctx_mask = score_mask(context_lengths)
 
-        if np.random.uniform() < self.drop_ctx:
-            drop_ctx, drop_tok = (True, False) if np.random.uniform() < 0.5 else (False, True)
-        else:
-            drop_ctx, drop_tok = False, False
-        bs, _, l = context.shape
-        context = (self.ctx_proj(context) if not drop_ctx else
-                   torch.zeros([bs, self.dim, l], device=tokens.device))
-        if not drop_tok:
-            encoded_ctx_phone = self.forward_phone(ctx_tokens, _get_start(tokens, None))
-            expanded_ctx_phone = self.expand(encoded_ctx_phone, ctx_token_frames)
-            expanded_ctx_phone = expanded_ctx_phone.transpose(1, 2)
-        else:
-            expanded_ctx_phone = torch.zeros([bs, self.dim, l], device=tokens.device)
-        context = torch.cat([expanded_ctx_phone, context], dim=1)
-
+        context = self.forward_ctx(context, context_lengths, ctx_tokens, ctx_token_frames)
         output = self.ctx_attn(
             expanded_phone, context, freqs_cis, ctx_freqs_cis, x_mask, ctx_mask)
 
