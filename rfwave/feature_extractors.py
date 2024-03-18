@@ -116,7 +116,8 @@ class EncodecFeatures(FeatureExtractor):
         codes = self.encodec.quantizer.encode(emb, self.encodec.frame_rate, self.encodec.bandwidth)
         return codes
 
-    def forward(self, audio: torch.Tensor, encodec_bandwidth_id: torch.Tensor):
+    def forward(self, audio: torch.Tensor, **kwargs):
+        encodec_bandwidth_id = kwargs['encodec_bandwidth_id']
         self.encodec.eval()  # Force eval mode as Pytorch Lightning automatically sets child modules to training mode
         self.encodec.set_target_bandwidth(self.bandwidths[encodec_bandwidth_id])
         codes = self.get_encodec_codes(audio)
