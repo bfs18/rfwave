@@ -28,14 +28,14 @@ model:
     num_warmup_steps: 10_000 # Optimizers warmup steps
 
     backbone:
-      class_path: rfwave.models.VocosRFBackbone
+      class_path: rfwave.dit.DiTRFBackbone
       init_args:
         input_channels: 256
         output_channels: 1
         dim: 256
         intermediate_dim: 768
         num_layers: 4
-        prev_cond: False
+        num_heads: 4
         num_bands: null
 
     input_adaptor:

@@ -223,9 +223,11 @@ class DiTRFBackbone(Backbone):
             DiTBlock(dim, num_heads, intermediate_dim, dropout) for _ in range(num_layers)])
         self.final = FinalLayer(dim, output_channels)
         self.time_embed = TimestepEmbedder(dim, pe_scale=pe_scale)
-        self.band_embed = nn.Sequential(nn.Embedding(num_bands, dim), nn.Linear(dim, dim))
-
-        if encodec_num_embeddings is not None:
+        if self.num_bands is not None and self.num_bands > 0:
+            self.band_embed = nn.Sequential(nn.Embedding(num_bands, dim), nn.Linear(dim, dim))
+        else:
+            self.band_embed = None
+        if encodec_num_embeddings is not None and encodec_num_embeddings > 0:
             self.encodec_bandwidth_embed = nn.Sequential(
                 nn.Embedding(encodec_num_embeddings, dim), nn.Linear(dim, dim))
         else:
@@ -253,8 +255,9 @@ class DiTRFBackbone(Backbone):
         nn.init.trunc_normal_(self.time_embed.mlp[2].weight, mean=0., std=0.02)
 
         # Initialize band embedding:
-        nn.init.trunc_normal_(self.band_embed[0].weight, mean=0., std=0.02)
-        nn.init.trunc_normal_(self.band_embed[1].weight, mean=0., std=0.02)
+        if self.band_embed is not None:
+            nn.init.trunc_normal_(self.band_embed[0].weight, mean=0., std=0.02)
+            nn.init.trunc_normal_(self.band_embed[1].weight, mean=0., std=0.02)
         if self.encodec_bandwidth_embed is not None:
             nn.init.trunc_normal_(self.encodec_bandwidth_embed[0].weight, mean=0., std=0.02)
             nn.init.trunc_normal_(self.encodec_bandwidth_embed[1].weight, mean=0., std=0.02)
@@ -269,7 +272,7 @@ class DiTRFBackbone(Backbone):
         nn.init.constant_(self.final.adaLN_modulation[-1].bias, 0)
         nn.init.trunc_normal_(self.final.linear.weight, mean=0., std=0.02)
 
-    def forward(self, z_t, t, x, bandwidth_id,
+    def forward(self, z_t, t, x, bandwidth_id=None,
                 start=None, length=None, encodec_bandwidth_id=None):
         if self.with_fourier_features:
             z_t_f = self.fourier_module(z_t)
@@ -278,13 +281,18 @@ class DiTRFBackbone(Backbone):
             x = self.embed(torch.cat([z_t, x], dim=1))
 
         te = self.time_embed(t)
-        be = self.band_embed(bandwidth_id)
+        if self.band_embed is not None:
+            assert bandwidth_id is not None
+            be = self.band_embed(bandwidth_id)
+        else:
+            be = 0.
         if self.encodec_bandwidth_embed is not None:
             assert encodec_bandwidth_id is not None
             ee = self.encodec_bandwidth_embed(encodec_bandwidth_id)
         else:
             ee = 0.
         c = te + be + ee
+
         x = x.transpose(1, 2)
         start = _get_start(z_t, start)
         length = _get_len(z_t, None)
@@ -331,5 +339,5 @@ class DiTRFTTSMultiTaskBackbone(Backbone):
             with_fourier_features=with_fourier_features)
 
     def forward(self, z_t: torch.Tensor, t: torch.Tensor, x: torch.Tensor,
-                bandwidth_id: torch.Tensor, start=None, length=None):
+                bandwidth_id: torch.Tensor=None, start=None, length=None):
         return self.module(z_t, t, x, bandwidth_id, start=start, length=length)
