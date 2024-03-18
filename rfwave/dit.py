@@ -85,7 +85,7 @@ class Attention(nn.Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        if self.flase:
+        if self.flash:
             x = F.scaled_dot_product_attention(
                 q, k, v, attn_mask=mask, dropout_p=self.attn_drop.p if self.training else 0.)
         else:
@@ -115,7 +115,7 @@ class DiTBlock(nn.Module):
         self.attention = Attention(dim=dim, num_heads=num_heads, qkv_bias=False, qk_norm=True,
                                    norm_layer=RMSNorm, attn_drop=dropout, proj_drop=dropout)
         self.norm2 = nn.LayerNorm(self.dim, elementwise_affine=False, eps=1e-6)
-        self.feed_forward = ConvFF(dim=dim, hidden_dim=self.hidden_dim,
+        self.feed_forward = ConvFF(dim=dim, hidden_dim=self.intermediate_dim,
                                    multiple_of=256, dropout=dropout)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(), nn.Linear(self.dim, 6 * self.dim, bias=True))
@@ -126,7 +126,7 @@ class DiTBlock(nn.Module):
         h = x + (gate_msa.unsqueeze(1) *
                  self.attention(modulate(self.norm1(x), shift_msa, scale_msa), freqs_cis, mask))
         out = h + (gate_mlp.unsqueeze(1) *
-                   self.feed_forward(modulate(self.ffn_norm(h), shift_mlp, scale_mlp)))
+                   self.feed_forward(modulate(self.norm2(h), shift_mlp, scale_mlp)))
         return out
 
 
@@ -248,8 +248,8 @@ class DiTRFBackbone(Backbone):
         nn.init.trunc_normal_(self.embed.weight, std=0.02)
 
         # Initialize timestep embedding MLP:
-        nn.init.trunc_normal_(self.t_embed.mlp[0].weight, mean=0., std=0.02)
-        nn.init.trunc_normal_(self.t_embed.mlp[2].weight, mean=0., std=0.02)
+        nn.init.trunc_normal_(self.time_embed.mlp[0].weight, mean=0., std=0.02)
+        nn.init.trunc_normal_(self.time_embed.mlp[2].weight, mean=0., std=0.02)
 
         # Initialize band embedding:
         nn.init.trunc_normal_(self.band_embed[0].weight, mean=0., std=0.02)
@@ -264,9 +264,9 @@ class DiTRFBackbone(Backbone):
             nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
 
         # Zero-out output layers:
-        nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
-        nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
-        nn.init.trunc_normal_(self.final_layer.linear.weight, mean=0., std=0.02)
+        nn.init.constant_(self.final.adaLN_modulation[-1].weight, 0)
+        nn.init.constant_(self.final.adaLN_modulation[-1].bias, 0)
+        nn.init.trunc_normal_(self.final.linear.weight, mean=0., std=0.02)
 
     def forward(self, z_t, t, x, bandwidth_id,
                 start=None, length=None, encodec_bandwidth_id=None):
@@ -277,7 +277,7 @@ class DiTRFBackbone(Backbone):
             x = self.embed(torch.cat([z_t, x], dim=1))
 
         te = self.time_embed(t)
-        be = self.bandwidth_embed(bandwidth_id)
+        be = self.band_embed(bandwidth_id)
         if self.encodec_bandwidth_embed is not None:
             assert encodec_bandwidth_id is not None
             ee = self.encodec_bandwidth_embed(encodec_bandwidth_id)
@@ -290,7 +290,7 @@ class DiTRFBackbone(Backbone):
         freq_cis = get_pos_embed(self.pos_embed, start, length)
         for block in self.blocks:
             x = block(x, c, freq_cis, None)
-        x = self.final(x)
+        x = self.final(x, c)
         return x.transpose(1, 2)
 
 
