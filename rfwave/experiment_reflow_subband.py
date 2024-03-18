@@ -195,13 +195,19 @@ class RectifiedFlow(nn.Module):
         target = z1 - z0
         return mel, bandwidth_id, (z_t, t, target)
 
-    def get_pred(self, z_t, t, mel, bandwidth_id, encodec_bandwidth_id=None):
-        pred = self.backbone(z_t, t, mel, bandwidth_id, encodec_bandwidth_id)
+    def get_pred(self, z_t, t, mel, bandwidth_id, encodec_bandwidth_id=None, **kwargs):
+        if 'start' in kwargs and kwargs['start'] is not None:
+            n_rpt = z_t.size(0) // kwargs['start'].size(0)
+            start = torch.repeat_interleave(kwargs['start'], n_rpt, 0)
+        else:
+            start = None
+        backbone_kwargs = {'start': start, 'encodec_bandwidth_id': encodec_bandwidth_id}
+        pred = self.backbone(z_t, t, mel, bandwidth_id, **backbone_kwargs)
         return pred
 
     @torch.no_grad()
     def sample_ode_subband(self, mel, band, bandwidth_id,
-                           encodec_bandwidth_id=None, N=None, keep_traj=False):
+                           encodec_bandwidth_id=None, N=None, keep_traj=False, **kwargs):
         ### NOTE: Use Euler method to sample from the learned flow
         if N is None:
             N = self.N
@@ -228,11 +234,11 @@ class RectifiedFlow(nn.Module):
             if self.cfg:
                 mel_ = torch.cat([mel, torch.ones_like(mel) * mel.mean(dim=(0, 2), keepdim=True)], dim=0)
                 (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t, bandwidth_id)]
-                pred = self.get_pred(z_, t_.to(mel.device), mel_, bandwidth_id_, encodec_bandwidth_id)
+                pred = self.get_pred(z_, t_.to(mel.device), mel_, bandwidth_id_, encodec_bandwidth_id, **kwargs)
                 pred, uncond_pred = torch.chunk(pred, 2, dim=0)
                 pred = uncond_pred + self.guidance_scale * (pred - uncond_pred)
             else:
-                pred = self.get_pred(z, t.to(mel.device), mel, bandwidth_id, encodec_bandwidth_id)
+                pred = self.get_pred(z, t.to(mel.device), mel, bandwidth_id, encodec_bandwidth_id, **kwargs)
             if self.wave:
                 if self.prev_cond or not self.parallel_uncond:
                     pred = self.place_subband(pred, bandwidth_id)
@@ -273,14 +279,15 @@ class RectifiedFlow(nn.Module):
 
         return c_traj
 
-    def sample_ode(self, mel, encodec_bandwidth_id=None, N=None, keep_traj=False):
+    def sample_ode(self, mel, encodec_bandwidth_id=None, N=None, keep_traj=False, **kwargs):
         traj = []
         if self.prev_cond or not self.parallel_uncond:
             band = mel.new_zeros((mel.shape[0], 2 * (self.num_bins + self.overlap), mel.shape[2]), device=mel.device)
             for i in range(self.num_bands):
                 bandwidth_id = torch.ones([mel.shape[0]], dtype=torch.long, device=mel.device) * i
                 traj_i = self.sample_ode_subband(
-                    mel, band, bandwidth_id, encodec_bandwidth_id=encodec_bandwidth_id, N=N, keep_traj=keep_traj)
+                    mel, band, bandwidth_id, encodec_bandwidth_id=encodec_bandwidth_id,
+                    N=N, keep_traj=keep_traj, **kwargs)
                 band = traj_i[-1]
                 if self.prev_cond:
                     band = torch.zeros_like(band)
@@ -291,7 +298,7 @@ class RectifiedFlow(nn.Module):
         else:
             traj_f = self.sample_ode_subband(
                 mel, None, None,
-                encodec_bandwidth_id=encodec_bandwidth_id, N=N, keep_traj=keep_traj)
+                encodec_bandwidth_id=encodec_bandwidth_id, N=N, keep_traj=keep_traj, **kwargs)
             traj = [self.place_joint_subband(tt.reshape(tt.size(0) // self.num_bands, -1, tt.size(2)))
                     for tt in traj_f]
         return [self.get_wave(tt) for tt in traj]
@@ -410,10 +417,10 @@ class RectifiedFlow(nn.Module):
                 loss = F.mse_loss(pred, target)
         return loss
 
-    def compute_loss(self, z_t, t, target, mel, bandwidth_id, encodec_bandwidth_id=None):
+    def compute_loss(self, z_t, t, target, mel, bandwidth_id, encodec_bandwidth_id=None, **kwargs):
         if self.cfg and np.random.uniform() < self.p_uncond:
             mel = torch.ones_like(mel) * mel.mean(dim=(0, 2), keepdim=True)
-        pred = self.get_pred(z_t, t, mel, bandwidth_id, encodec_bandwidth_id=encodec_bandwidth_id)
+        pred = self.get_pred(z_t, t, mel, bandwidth_id, encodec_bandwidth_id=encodec_bandwidth_id, **kwargs)
         stft_loss = self.compute_stft_loss(z_t, t, target, pred, bandwidth_id) if self.stft_loss else 0.
         phase_loss = self.compute_phase_loss(z_t, t, target, pred, bandwidth_id) if self.phase_loss else 0.
         overlap_loss = self.compute_overlap_loss(pred) if self.overlap_loss else 0.
@@ -520,8 +527,10 @@ class VocosExp(pl.LightningModule):
         if self.task == 'tts':
             audio_input, phone_info = batch
             phone_info = self.process_context(phone_info)
+            start = None
         else:
-            audio_input = batch
+            audio_input, audio_start = batch
+            start = audio_start // self.reflow.head.hop_length
         mel = self.feature_extractor(audio_input, **kwargs)
         # train generator
         opt_gen = self.optimizers()
@@ -536,11 +545,13 @@ class VocosExp(pl.LightningModule):
             cond_mel_loss = 0.
         features_ext, bandwidth_id, (z_t, t, target) = self.reflow.get_train_tuple(features, audio_input)
         bi = kwargs.get("encodec_bandwidth_id", None)
+        kwargs['start'] = start
         loss, loss_dict = self.reflow.compute_loss(
-            z_t, t, target, features_ext, bandwidth_id=bandwidth_id, encodec_bandwidth_id=bi)
+            z_t, t, target, features_ext, bandwidth_id=bandwidth_id, encodec_bandwidth_id=bi, start=start)
         loss = loss + cond_mel_loss
         self.manual_backward(loss)
         self.skip_nan(opt_gen)
+        self.clip_gradients(opt_gen, gradient_clip_val=5., gradient_clip_algorithm="norm")
         opt_gen.step()
         sch_gen.step()
 
@@ -564,9 +575,10 @@ class VocosExp(pl.LightningModule):
     def validation_step(self, batch, batch_idx, **kwargs):
         if self.task == 'tts':
             audio_input, phone_info = batch
-            phone_info = self.process_context(phone_info)
+            phone_info, start = self.process_context(phone_info)
         else:
-            audio_input = batch
+            audio_input, start = batch
+        kwargs['start'] = None
         with torch.no_grad():
             features = self.feature_extractor(audio_input, **kwargs)
             cond = self.input_adaptor(*phone_info) if self.task == 'tts' else features
@@ -713,7 +725,7 @@ if __name__ == '__main__':
     feature_extractor = MelSpectrogramFeatures(
         sample_rate=24000, n_fft=1024, hop_length=256, n_mels=100, padding='center')
     backbone = VocosRFBackbone(
-        input_channels=100, output_channels=130, dim=512, intermediate_dim=1536, num_layers=8, num_bands=8,
+        input_channels=100, output_channels=160, dim=512, intermediate_dim=1536, num_layers=8, num_bands=8,
         with_fourier_features=False, encodec_num_embeddings=None, prev_cond=False)
     head = RFSTFTHead(dim=512, n_fft=1024, hop_length=256, padding='center')
     # head = RawFFTHead(n_fft=1024, hop_length=256)
@@ -735,7 +747,7 @@ if __name__ == '__main__':
 
     pred = exp.reflow.get_pred(z_t, t, cond, bandwidth_id)
 
-    loss = exp.reflow.compute_loss(z_t, t, target, cond, bandwidth_id)
+    loss, _ = exp.reflow.compute_loss(z_t, t, target, cond, bandwidth_id)
     print(loss)
     print('grad norm', torch.norm(torch.autograd.grad(loss, z_t)[0]))
 

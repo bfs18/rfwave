@@ -7,7 +7,7 @@ data:
       filelist_path: wav_filelist.train
       sampling_rate: 24000
       num_samples: 32512
-      batch_size: 64
+      batch_size: 56
       num_workers: 8
       cache: True
 
@@ -41,15 +41,15 @@ model:
         padding: center
 
     backbone:
-      class_path: rfwave.models.VocosRFBackbone
+      class_path: rfwave.dit.DiTRFBackbone
       init_args:
         input_channels: 100
         output_channels: 160
-        dim: 512
-        intermediate_dim: 1536
+        dim: 384
+        intermediate_dim: 1152
         num_layers: 8
         num_bands: 8
-        prev_cond: False
+        num_heads: 6
         encodec_num_embeddings: null
 
     head:

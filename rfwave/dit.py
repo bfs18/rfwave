@@ -206,6 +206,7 @@ class DiTRFBackbone(Backbone):
         with_fourier_features: bool = True
     ):
         super().__init__()
+        self.prev_cond = False
         self.output_channels = output_channels
         self.with_fourier_features = with_fourier_features
         self.num_bands = num_bands

@@ -667,6 +667,7 @@ class VocosExp(pl.LightningModule):
         loss = loss + cond_mel_loss
         self.manual_backward(loss)
         self.skip_nan(opt_gen)
+        self.clip_gradients(opt_gen, gradient_clip_val=5., gradient_clip_algorithm="norm")
         opt_gen.step()
         sch_gen.step()
 
