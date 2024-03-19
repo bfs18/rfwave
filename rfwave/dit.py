@@ -42,6 +42,22 @@ class ConvFF(nn.Module):
         return x
 
 
+class FeedForward(nn.Module):
+    def __init__(self, dim: int, hidden_dim: int, multiple_of: int, dropout: float):
+        super().__init__()
+        if hidden_dim is None:
+            hidden_dim = 4 * dim
+            hidden_dim = int(2 * hidden_dim / 3)
+            hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
+        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
+        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
+        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
+
+
 class Attention(nn.Module):
     def __init__(
             self,
@@ -115,8 +131,10 @@ class DiTBlock(nn.Module):
         self.attention = Attention(dim=dim, num_heads=num_heads, qkv_bias=False, qk_norm=True,
                                    norm_layer=RMSNorm, attn_drop=dropout, proj_drop=dropout)
         self.norm2 = nn.LayerNorm(self.dim, elementwise_affine=False, eps=1e-6)
-        self.feed_forward = ConvFF(dim=dim, hidden_dim=self.intermediate_dim,
-                                   multiple_of=256, dropout=dropout)
+        # self.feed_forward = ConvFF(dim=dim, hidden_dim=self.intermediate_dim,
+        #                            multiple_of=256, dropout=dropout)
+        self.feed_forward = FeedForward(dim=dim, hidden_dim=self.intermediate_dim,
+                                        multiple_of=256, dropout=dropout)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(), nn.Linear(self.dim, 6 * self.dim, bias=True))
 
