@@ -251,6 +251,8 @@ class DiTRFBackbone(Backbone):
         else:
             self.encodec_bandwidth_embed = None
         self.register_buffer("pos_embed", precompute_freqs_cis(dim//num_heads, 4096))
+        self.register_buffer("pos_embed_eval",
+                             precompute_freqs_cis(dim//num_heads, 4096, theta_rescale_factor=8.))
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -314,7 +316,7 @@ class DiTRFBackbone(Backbone):
         x = x.transpose(1, 2)
         start = _get_start(z_t, start)
         length = _get_len(z_t, None)
-        freq_cis = get_pos_embed(self.pos_embed, start, length)
+        freq_cis = get_pos_embed(self.pos_embed if self.training else self.pos_embed_eval, start, length)
         for block in self.blocks:
             x = block(x, c, freq_cis, None)
         x = self.final(x, c)

@@ -47,7 +47,12 @@ class RMSNorm(torch.nn.Module):
         return output * self.weight
 
 
-def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
+def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0, theta_rescale_factor=1.):
+    # proposed by reddit user bloc97, to rescale rotary embeddings to longer sequence length without fine-tuning
+    # has some connection to NTK literature
+    # https://www.reddit.com/r/LocalLLaMA/comments/14lz7j5/ntkaware_scaled_rope_allows_llama_models_to_have/
+    # https://github.com/lucidrains/rotary-embedding-torch/blob/main/rotary_embedding_torch/rotary_embedding_torch.py
+    theta *= theta_rescale_factor ** (dim / (dim - 2))
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
     t = torch.arange(end, device=freqs.device)  # type: ignore
     freqs = torch.outer(t, freqs).float()  # type: ignore
@@ -421,6 +426,8 @@ class CtxCharInputAdaptor(InputAdaptor):
         # some useful precompute for the RoPE relative positional embeddings
         freqs_cis = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len)
         self.register_buffer("attn_freqs_cis", freqs_cis, persistent=False)
+        freqs_cis = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len, theta_rescale_factor=8.)
+        self.register_buffer("attn_freqs_cis_eval", freqs_cis, persistent=False)
 
         # init all weights
         self.apply(self._init_weights)
@@ -468,9 +475,11 @@ class CtxCharInputAdaptor(InputAdaptor):
         non_padding = (expanded_phone.abs().sum(2) > 0.).float()
         num_frames = torch.sum(token_frames, dim=1).long()
 
-        freqs_cis = get_pos_embed(self.attn_freqs_cis, frame_start, num_frames[0])
+        freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
+                                  frame_start, num_frames[0])
         x_mask = score_mask_from_bool_mask(non_padding == 0)
-        ctx_freqs_cis = get_pos_embed(self.attn_freqs_cis, frame_start, context.size(2))
+        ctx_freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
+                                      frame_start, context.size(2))
         ctx_mask = score_mask(context_lengths)
 
         context = self.ctx_proj(context)
@@ -508,6 +517,8 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         # some useful precompute for the RoPE relative positional embeddings
         freqs_cis = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len)
         self.register_buffer("attn_freqs_cis", freqs_cis, persistent=False)
+        freqs_cis = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len, theta_rescale_factor=8.)
+        self.register_buffer("attn_freqs_cis_eval", freqs_cis, persistent=False)
 
         # init all weights
         self.apply(self._init_weights)
@@ -576,9 +587,11 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         non_padding = (expanded_phone.abs().sum(2) > 0.).float()
         num_frames = torch.sum(token_frames, dim=1).long()
 
-        freqs_cis = get_pos_embed(self.attn_freqs_cis, frame_start, num_frames[0])
+        freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
+                                  frame_start, num_frames[0])
         x_mask = score_mask_from_bool_mask(non_padding == 0)
-        ctx_freqs_cis = get_pos_embed(self.attn_freqs_cis, frame_start, context.size(2))
+        ctx_freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
+                                      frame_start, context.size(2))
         ctx_mask = score_mask(context_lengths)
 
         context = self.forward_ctx(context, context_lengths, ctx_tokens, ctx_token_frames)
