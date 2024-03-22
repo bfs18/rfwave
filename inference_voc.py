@@ -34,7 +34,7 @@ def load_model(model_dir, device, last=False):
             raise ValueError(f"No checkpoint found in {model_dir}")
         elif len(ckpt_fp) > 1:
             warnings.warn(f"More than 1 checkpoints found in {model_dir}")
-            ckpt_fp = sorted([fp for fp in ckpt_fp], key=lambda x: ckpt_fp.stat().st_ctime)[-1:]
+            ckpt_fp = sorted([fp for fp in ckpt_fp], key=lambda x: x.stat().st_ctime)[-1:]
         ckpt_fp = ckpt_fp[0]
         print(f'using last ckpt form {str(ckpt_fp)}')
     else:
@@ -46,6 +46,8 @@ def load_model(model_dir, device, last=False):
     exp = create_instance(config['model'])
 
     model_dict = torch.load(ckpt_fp, map_location='cpu')
+    if "reflow.backbone.module.pos_embed" in model_dict['state_dict']:
+        del model_dict['state_dict']["reflow.backbone.module.pos_embed"]
     exp.load_state_dict(model_dict['state_dict'])
     exp.eval()
     exp.to(device)

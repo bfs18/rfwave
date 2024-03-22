@@ -6,9 +6,11 @@ import time
 import torchaudio
 import rfwave
 import numpy as np
+import warnings
 
 from pathlib import Path
 from argparse import ArgumentParser
+from rfwave.dataset import upsample_durations
 
 from inference_voc import load_config, create_instance, load_model
 
@@ -31,17 +33,35 @@ def dur(model_dir, text_lines, phone2id, scale, num_samples=1):
     return phone_info
 
 
-def get_random_ref(ref_audio, hop_length, padding):
+def get_random_ref(ref_audio, ref_align, hop_length, padding):
     ctx_n_frame = np.random.randint(200, 300)
     ctx_start_frame = np.random.randint(0, ref_y.size(1) // hop_length - ctx_n_frame)
     ctx_start = ctx_start_frame * hop_length
     ctx_end = (ctx_start_frame + ctx_n_frame) * hop_length
     y_ctx = ref_audio[0, ctx_start: ctx_end]
     ctx_n_frame = torch.tensor(ctx_n_frame + 1 if padding == 'center' else ctx_n_frame)
-    return y_ctx, ctx_n_frame
+    if ref_align is not None:
+        up_durations = upsample_durations(
+            ref_align['durations'], ref_audio.size(1), hop_length, padding)
+        cs_durations = torch.cumsum(up_durations, 0)
+        ctx_end_frame = ctx_start_frame + ctx_n_frame
+        start_phone_idx = torch.searchsorted(cs_durations, ctx_start_frame, right=True)
+        end_phone_idx = torch.searchsorted(cs_durations, ctx_end_frame, right=False)
+        token_ids = ref_align['tokens'][start_phone_idx: end_phone_idx + 1]
+        durations = up_durations[start_phone_idx: end_phone_idx + 1].detach().clone()
+        if end_phone_idx != start_phone_idx:
+            first_num_frames = cs_durations[start_phone_idx] - ctx_start_frame
+            last_num_frames = ctx_end_frame - cs_durations[end_phone_idx - 1]
+            durations[0] = first_num_frames
+            durations[-1] = last_num_frames
+        else:
+            durations[0] = ctx_end_frame - ctx_start_frame
+    else:
+        token_ids, durations = None, None
+    return y_ctx, ctx_n_frame, token_ids, durations
 
 
-def tts(model_dir, phone_info, save_dir, ref_audio, sr):
+def tts(model_dir, phone_info, save_dir, ref_audio, ref_align, sr):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     exp = load_model(model_dir, device=device, last=True)
     config_yaml = Path(model_dir) / 'config.yaml'
@@ -49,13 +69,20 @@ def tts(model_dir, phone_info, save_dir, ref_audio, sr):
     hop_length = config['data']['init_args']['train_params']['hop_length']
     padding = config['data']['init_args']['train_params']['padding']
     for k, phone_info in phone_info.items():
-        y_ctx, ctx_n_frame = get_random_ref(ref_audio, hop_length, padding)
+        (y_ctx, ctx_n_frame, token_ids, durations
+         ) = get_random_ref(ref_audio, ref_align, hop_length, padding)
         y_ctx = y_ctx
         ctx_n_frame = torch.tensor(ctx_n_frame)
-        phone_info = [v.unsqueeze(0).to(device) for v in phone_info + [y_ctx, ctx_n_frame]]
+        if token_ids is not None and durations is not None:
+            ref_info = [y_ctx, ctx_n_frame, token_ids, durations]
+        else:
+            ref_info = [y_ctx, ctx_n_frame]
+        phone_info = [v.unsqueeze(0).to(device) for v in phone_info + ref_info]
         phone_info = exp.process_context(phone_info)
         cond = exp.input_adaptor(*phone_info)
-        mel, wave = exp.reflow.sample_ode(cond, N=10)
+        start = torch.tensor([0])
+        length = torch.tensor([phone_info[1].sum()])
+        mel, wave = exp.reflow.sample_ode(cond, N=10, start=start, length=length)
         mel = mel[-1].detach().cpu()
         wave = wave[-1].detach().cpu()
         torch.save(mel, Path(save_dir) / f'{k}.th')
@@ -67,6 +94,7 @@ if __name__ == '__main__':
     parser.add_argument('--dur_model_dir', type=str, required=True)
     parser.add_argument('--tts_model_dir', type=str, required=True)
     parser.add_argument('--ref_audio', type=str, required=True)
+    parser.add_argument('--ref_align', type=str, required=False, default='')
     parser.add_argument('--phoneset', type=str, required=True)
     parser.add_argument('--test_txt', type=str, required=True)
     parser.add_argument('--save_dir', type=str, required=True)
@@ -79,7 +107,13 @@ if __name__ == '__main__':
     phone2id = dict([(p, i) for i, p in enumerate(phoneset)])
 
     ref_y, sr = torchaudio.load(args.ref_audio)
+    if Path(args.ref_align).exists():
+        ref_align = torch.load(args.ref_align)
+        ref_align['tokens'] = torch.tensor([phone2id[str(tk)] for tk in ref_align['tokens']])
+    else:
+        warnings.warn("No reference alignment provided")
+        ref_align = None
 
     lines = dict([l.strip().split('|') for l in Path(args.test_txt).open()])
     phone_info = dur(args.dur_model_dir, lines, phone2id, 240/256, num_samples=8)
-    tts(args.tts_model_dir, phone_info, args.save_dir, ref_y, sr)
+    tts(args.tts_model_dir, phone_info, args.save_dir, ref_y, ref_align, sr)

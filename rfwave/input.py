@@ -343,7 +343,7 @@ class CharInputAdaptor(InputAdaptor):
         return torch.stack(out, dim=0)
 
     def forward(self, tokens: torch.Tensor, token_frames: torch.Tensor,
-                phone_start: torch.Tensor, frame_start: torch.Tensor):
+                phone_start: torch.Tensor, frame_start: torch.Tensor, *args):
         encoded_phone = self.forward_phone(tokens, phone_start)
         expanded_phone = self.expand(encoded_phone, token_frames)
         non_padding = (expanded_phone.abs().sum(2) > 0.).float()
