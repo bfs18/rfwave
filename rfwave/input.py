@@ -564,10 +564,15 @@ class Ctx2CharInputAdaptor(InputAdaptor):
 
     def forward_ctx(self, context: torch.Tensor, context_lengths: torch.Tensor,
                     ctx_tokens: torch.Tensor, ctx_token_frames: torch.Tensor):
-        if np.random.uniform() < self.drop_ctx:
-            drop_ctx, drop_tok = (True, False) if np.random.uniform() < 0.5 else (False, True)
+        if self.training:
+            if np.random.uniform() < self.drop_ctx:
+                drop_ctx, drop_tok = (True, False) if np.random.uniform() < 0.5 else (False, True)
+            else:
+                drop_ctx, drop_tok = False, False
         else:
-            drop_ctx, drop_tok = False, False
+            drop_ctx = ctx_tokens is None
+            drop_tok = ctx_tokens is None
+            assert not (drop_ctx and drop_tok)
         bs, _, l = context.shape
         context = (self.ctx_proj(context) if not drop_ctx else
                    torch.zeros([bs, self.dim, l], device=context.device))
