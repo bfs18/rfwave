@@ -298,8 +298,12 @@ class CharInputAdaptor(InputAdaptor):
         # some useful precompute for the RoPE relative positional embeddings
         freqs_cis = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len)
         self.register_buffer("attn_freqs_cis", freqs_cis, persistent=False)
+        freqs_cis = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len, theta_rescale_factor=8.)
+        self.register_buffer("attn_freqs_cis_eval", freqs_cis, persistent=False)
         freqs_cis = precompute_freqs_cis(params.dim, params.max_seq_len)
         self.register_buffer("conv_freqs_cis", freqs_cis, persistent=False)
+        freqs_cis = precompute_freqs_cis(params.dim, params.max_seq_len, theta_rescale_factor=8.)
+        self.register_buffer("conv_freqs_cis_eval", freqs_cis, persistent=False)
 
         # init all weights
         self.apply(self._init_weights)
@@ -320,12 +324,10 @@ class CharInputAdaptor(InputAdaptor):
         _bsz, num_phones = tokens.shape
         h = self.tok_embeddings(tokens)
         h = self.dropout(h)
-        freqs_ids = phone_start.unsqueeze(1) + torch.arange(num_phones, device=tokens.device).unsqueeze(0)
-        freqs_cis = self.attn_freqs_cis[freqs_ids]
 
-        phone_mask = torch.zeros(*tokens.size(), device=tokens.device)
-        phone_mask.masked_fill_(tokens == self.pad_token, float('-inf'))
-        phone_mask = phone_mask.unsqueeze(1).unsqueeze(2)
+        freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
+                                  phone_start, num_phones)
+        phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
 
         for layer in self.layers:
             h = layer(h, freqs_cis, mask=phone_mask)
@@ -346,8 +348,8 @@ class CharInputAdaptor(InputAdaptor):
         expanded_phone = self.expand(encoded_phone, token_frames)
         non_padding = (expanded_phone.abs().sum(2) > 0.).float()
         num_frames = torch.sum(token_frames, dim=1).long()
-        freqs_ids = frame_start.unsqueeze(1) + torch.arange(num_frames[0], device=tokens.device).unsqueeze(0)
-        freqs_cis = self.conv_freqs_cis[freqs_ids]
+        freqs_cis = get_pos_embed(self.conv_freqs_cis if self.training else self.conv_freqs_cis_eval,
+                                  frame_start, num_frames)
         expanded_phone = apply_rotary_emb(expanded_phone, freqs_cis)
         output = self.convnext(expanded_phone.transpose(1, 2))
         output = self.output(output.transpose(1, 2))
@@ -449,7 +451,8 @@ class CtxCharInputAdaptor(InputAdaptor):
         h = self.tok_embeddings(tokens)
         h = self.dropout(h)
 
-        freqs_cis = get_pos_embed(self.attn_freqs_cis, phone_start, num_phones)
+        freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
+                                  phone_start, num_phones)
         phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
 
         for layer in self.layers:
@@ -540,7 +543,8 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         h = self.tok_embeddings(tokens)
         h = self.dropout(h)
 
-        freqs_cis = get_pos_embed(self.attn_freqs_cis, phone_start, num_phones)
+        freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
+                                  phone_start, num_phones)
         phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
 
         for layer in self.layers:
@@ -619,6 +623,9 @@ class DurInputAdaptor(InputAdaptor):
         self.pad_token = 0
         freqs_cis = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len)
         self.register_buffer("attn_freqs_cis", freqs_cis, persistent=False)
+        freqs_cis = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len, theta_rescale_factor=8.)
+        self.register_buffer("attn_freqs_cis_eval", freqs_cis, persistent=False)
+
         # init all weights
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
@@ -639,12 +646,10 @@ class DurInputAdaptor(InputAdaptor):
         h = self.tok_embeddings(tokens)
         h = self.dropout(h)
         phone_start = torch.zeros([_bsz], dtype=torch.long, device=h.device)
-        freqs_ids = phone_start.unsqueeze(1) + torch.arange(num_phones, device=tokens.device).unsqueeze(0)
-        freqs_cis = self.attn_freqs_cis[freqs_ids]
 
-        phone_mask = torch.zeros(*tokens.size(), device=tokens.device)
-        phone_mask.masked_fill_(tokens == self.pad_token, float('-inf'))
-        phone_mask = phone_mask.unsqueeze(1).unsqueeze(2)
+        freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
+                                  phone_start, num_phones)
+        phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
 
         for layer in self.layers:
             h = layer(h, freqs_cis, mask=phone_mask)
