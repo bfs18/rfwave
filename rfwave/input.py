@@ -482,7 +482,7 @@ class CtxCharInputAdaptor(InputAdaptor):
                                   frame_start, num_frames[0])
         x_mask = score_mask_from_bool_mask(non_padding == 0)
         ctx_freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
-                                      frame_start, context.size(2))
+                                      torch.zeros_like(frame_start), context.size(2))
         ctx_mask = score_mask(context_lengths)
 
         context = self.ctx_proj(context)
@@ -600,7 +600,7 @@ class Ctx2CharInputAdaptor(InputAdaptor):
                                   frame_start, num_frames[0])
         x_mask = score_mask_from_bool_mask(non_padding == 0)
         ctx_freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
-                                      frame_start, context.size(2))
+                                      torch.zeros_like(frame_start), context.size(2))
         ctx_mask = score_mask(context_lengths)
 
         context = self.forward_ctx(context, context_lengths, ctx_tokens, ctx_token_frames)
