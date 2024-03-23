@@ -14,7 +14,7 @@ def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
-class ConvFF(nn.Module):
+class ConvFeedForward(nn.Module):
     def __init__(self, dim: int, hidden_dim: int, multiple_of: int, dropout: float):
         super().__init__()
         if hidden_dim is None:
@@ -131,8 +131,8 @@ class DiTBlock(nn.Module):
         self.attention = Attention(dim=dim, num_heads=num_heads, qkv_bias=False, qk_norm=True,
                                    norm_layer=RMSNorm, attn_drop=dropout, proj_drop=dropout)
         self.norm2 = nn.LayerNorm(self.dim, elementwise_affine=False, eps=1e-6)
-        # self.feed_forward = ConvFF(dim=dim, hidden_dim=self.intermediate_dim,
-        #                            multiple_of=256, dropout=dropout)
+        # self.feed_forward = ConvFeedForward(dim=dim, hidden_dim=self.intermediate_dim,
+        #                                     multiple_of=256, dropout=dropout)
         self.feed_forward = FeedForward(dim=dim, hidden_dim=self.intermediate_dim,
                                         multiple_of=256, dropout=dropout)
         self.adaLN_modulation = nn.Sequential(
