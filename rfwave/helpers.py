@@ -81,10 +81,11 @@ def save_code(exp_name, save_dir):
     temp = tempfile.NamedTemporaryFile('wb', suffix='.tar.gz', delete=False)
     tar = tarfile.open(fileobj=temp, mode='w:gz')
     proj_dir = Path(__file__).absolute().parent.parent
-    for py in chain(Path(proj_dir).glob('**/*.py'), Path(proj_dir).glob('**/*.yaml')):
+    for py in chain(Path(proj_dir).rglob('*.py'), Path(proj_dir).rglob('*.yaml')):
         py_name = py.relative_to(proj_dir.parent).as_posix()
         tar.add(py, arcname=py_name)
     tar.close()
+    temp.close()
     time_str = time.strftime("%Y_%m_%d-%H_%M_%S")
     shutil.copyfile(temp.name, Path(save_dir) / f'code-{time_str}.tar.gz')
 
