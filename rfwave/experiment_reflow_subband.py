@@ -22,6 +22,8 @@ from rfwave.input import InputAdaptor, InputAdaptorProject
 from rfwave.helpers import save_code
 from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_error, compute_instantaneous_frequency
 from rfwave.feature_weight import get_feature_weight, get_feature_weight2
+from rfwave.logit_normal import LogitNormal
+from rfwave.dit import DiTRFBackbone
 
 
 class RectifiedFlow(nn.Module):
@@ -57,6 +59,8 @@ class RectifiedFlow(nn.Module):
         assert self.prev_cond == self.backbone.prev_cond
         assert self.wave ^ self.stft_norm
         assert self.right_overlap >= 1  # at least one to deal with the last dimension of fft feature.
+        t_sampling = 'logit_normal' if isinstance(backbon, DiTRFBackbone) else 'uniform'
+        self.t_dist = LogitNormal(mu=0., sigma=1.) if t_sampling == 'logit_normal' else None
         if self.stft_norm:
             self.stft_processor = STFTProcessor(self.head.n_fft + 2)
         if self.equalizer:
@@ -176,16 +180,22 @@ class RectifiedFlow(nn.Module):
             x = self.eq_processor.return_sample(x.unsqueeze(1)).squeeze(1)
         return x
 
+    def sample_t(self, shape, device):
+        if self.t_dist is not None:
+            return self.t_dist.sample(shape).to(device)
+        else:
+            return torch.rand(shape, device=device)
+
     def get_train_tuple(self, mel, audio_input):
         if self.prev_cond or not self.parallel_uncond:
-            t = torch.rand((mel.size(0),), device=mel.device)
+            t = self.sample_t((mel.size(0),), device=mel.device)
             bandwidth_id = torch.tile(torch.randint(0, self.num_bands, (), device=mel.device), (mel.size(0),))
             bandwidth_id = torch.ones([mel.shape[0]], dtype=torch.long, device=mel.device) * bandwidth_id
             z0 = self.get_z0(mel, bandwidth_id)
             z1, cond_band = self.get_z1(audio_input, bandwidth_id)
             mel = torch.cat([mel, cond_band], 1) if self.prev_cond else mel
         else:
-            t = torch.rand((mel.size(0),), device=mel.device).repeat_interleave(self.num_bands, 0)
+            t = self.sample_t((mel.size(0),), device=mel.device).repeat_interleave(self.num_bands, 0)
             z0 = self.get_joint_z0(mel)
             z1 = self.get_joint_z1(audio_input)
             bandwidth_id = torch.tile(torch.arange(self.num_bands, device=mel.device), (mel.size(0),))
@@ -204,6 +214,12 @@ class RectifiedFlow(nn.Module):
         backbone_kwargs = {'start': start, 'encodec_bandwidth_id': encodec_bandwidth_id}
         pred = self.backbone(z_t, t, mel, bandwidth_id, **backbone_kwargs)
         return pred
+
+    def get_ts(self, N):
+        ts = torch.linspace(0., 1., N + 1)
+        # if self.t_dist is not None:
+        #     ts = self.t_dist.inv_cdf(ts)
+        return ts
 
     @torch.no_grad()
     def sample_ode_subband(self, mel, band, bandwidth_id,
@@ -226,19 +242,21 @@ class RectifiedFlow(nn.Module):
             z0 = self.get_joint_z0(mel)  # get z0 must be called before pre-processing mel
             mel = torch.repeat_interleave(mel, self.num_bands, 0)
 
+        ts = self.get_ts(N)
         z = z0.detach()
         fs = (z.size(0) // self.num_bands, z.size(1) * self.num_bands, z.size(2))
         ss = z.shape
-        for i in range(N):
-            t = torch.ones(z.size(0)) * i / N
+        for i, t in enumerate(ts[:-1]):
+            dt = ts[i + 1] - t
+            t_ = torch.ones(z.size(0)) * t
             if self.cfg:
                 mel_ = torch.cat([mel, torch.ones_like(mel) * mel.mean(dim=(0, 2), keepdim=True)], dim=0)
-                (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t, bandwidth_id)]
+                (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t_, bandwidth_id)]
                 pred = self.get_pred(z_, t_.to(mel.device), mel_, bandwidth_id_, encodec_bandwidth_id, **kwargs)
                 pred, uncond_pred = torch.chunk(pred, 2, dim=0)
                 pred = uncond_pred + self.guidance_scale * (pred - uncond_pred)
             else:
-                pred = self.get_pred(z, t.to(mel.device), mel, bandwidth_id, encodec_bandwidth_id, **kwargs)
+                pred = self.get_pred(z, t_.to(mel.device), mel, bandwidth_id, encodec_bandwidth_id, **kwargs)
             if self.wave:
                 if self.prev_cond or not self.parallel_uncond:
                     pred = self.place_subband(pred, bandwidth_id)

@@ -23,6 +23,8 @@ from rfwave.input import InputAdaptor, InputAdaptorProject
 from rfwave.helpers import save_code
 from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_error, compute_instantaneous_frequency
 from rfwave.feature_weight import get_feature_weight, get_feature_weight2
+from rfwave.dit import DiTRFTTSMultiTaskBackbone
+from rfwave.logit_normal import LogitNormal
 
 
 class RectifiedFlow(nn.Module):
@@ -62,6 +64,8 @@ class RectifiedFlow(nn.Module):
         assert out_ch == self.head.n_fft // self.num_bands + 2 * self.overlap
         assert self.wave ^ self.stft_norm
         assert self.right_overlap >= 1  # at least one to deal with the last dimension of fft feature.
+        t_sampling = 'logit_normal' if isinstance(backbon, DiTRFTTSMultiTaskBackbone) else 'uniform'
+        self.t_dist = LogitNormal(mu=0., sigma=1.) if t_sampling == 'logit_normal' else None
         if self.stft_norm:
             self.stft_processor = STFTProcessor(self.head.n_fft + 2)
         if self.equalizer:
@@ -229,16 +233,27 @@ class RectifiedFlow(nn.Module):
         target = torch.cat([target_1, target_2], dim=1)
         return target
 
+    def sample_t(self, shape, device):
+        if self.t_dist is not None:
+            if self.intt == 0:
+                return self.t_dist.sample(shape).to(device)
+            else:
+                return torch.where(
+                    torch.rand(shape) < self.intt, self.t_dist.sample(shape) * self.intt,
+                    self.intt + self.t_dist.sample(shape) * (1 - self.intt)).to(device)
+        else:
+            return torch.rand(shape, device=device)
+
     def get_train_tuple(self, text, mel, audio_input):
         if self.prev_cond or not self.parallel_uncond:
-            t = torch.rand((mel.size(0),), device=mel.device)
+            t = self.sample_t((mel.size(0),), device=mel.device)
             bandwidth_id = torch.tile(torch.randint(0, self.num_bands, (), device=mel.device), (mel.size(0),))
             bandwidth_id = torch.ones([mel.shape[0]], dtype=torch.long, device=mel.device) * bandwidth_id
             z0 = self.get_z0(text, bandwidth_id)
             z1, cond_band = self.get_z1(audio_input, mel, bandwidth_id)
             text = torch.cat([text, cond_band], 1) if self.prev_cond else mel
         else:
-            t = torch.rand((mel.size(0),), device=mel.device).repeat_interleave(self.num_bands, 0)
+            t = self.sample_t((mel.size(0),), device=mel.device).repeat_interleave(self.num_bands, 0)
             z0 = self.get_joint_z0(text)
             z1 = self.get_joint_z1(audio_input, mel)
             bandwidth_id = torch.tile(torch.arange(self.num_bands, device=mel.device), (mel.size(0),))

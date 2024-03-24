@@ -13,6 +13,8 @@ from rfwave.multi_band_processor import STFTProcessor
 from rfwave.input import InputAdaptor
 from rfwave.models import Backbone
 from rfwave.lr_schedule import get_cosine_schedule_with_warmup
+from rfwave.logit_normal import LogitNormal
+from rfwave.dit import DiTRFBackbone
 
 
 class RectifiedFlow(nn.Module):
@@ -26,6 +28,8 @@ class RectifiedFlow(nn.Module):
         self.dur_processor = STFTProcessor(1)
         self.validation_step_outputs = []
         self.automatic_optimization = False
+        t_sampling = 'logit_normal' if isinstance(backbone, DiTRFBackbone) else 'uniform'
+        self.t_dist = LogitNormal(mu=0., sigma=1.) if t_sampling == 'logit_normal' else None
 
     def get_z0(self, text):
         return torch.randn(text.size(0), 1, text.size(2), device=text.device)
@@ -33,10 +37,16 @@ class RectifiedFlow(nn.Module):
     def get_z1(self, dur):
         return self.dur_processor.project_sample(dur)
 
+    def sample_t(self, shape, device):
+        if self.t_dist is not None:
+            return self.t_dist.sample(shape).to(device)
+        else:
+            return torch.rand(shape, device=device)
+
     def get_train_tuple(self, text, dur):
         z0 = self.get_z0(text)
         z1 = self.get_z1(dur)
-        t = torch.rand((z1.shape[0]), device=z1.device)
+        t = self.sample_t((z1.size(0),), device=z1.device)
         t_ = t.view(-1, 1, 1)
         z_t = t_ * z1 + (1. - t_) * z0
         target = z1 - z0
