@@ -588,7 +588,7 @@ class VocosExp(pl.LightningModule):
         self.aux_type = 'mel'
         self.tandem_type = 'mel'
         feat_dim = feature_extractor.dim if self.aux_type == 'mel' else self.reflow.head.n_fft // 2 + 1
-        self.input_adaptor_proj = InputAdaptorProject(self.input_adaptor.dim, feat_dim)
+        self.input_adaptor_proj = InputAdaptorProject(self.input_adaptor.dim, feat_dim) if self.aux_loss else None
 
         self.melspec_loss = MelSpecReconstructionLoss(sample_rate=sample_rate)
         self.rvm = RelativeVolumeMel(sample_rate=sample_rate)
@@ -603,8 +603,9 @@ class VocosExp(pl.LightningModule):
             {"params": self.reflow.backbone.parameters()},
             {"params": self.reflow.head.parameters()},
             {"params": self.input_adaptor.parameters()},
-            {"params": self.input_adaptor_proj.parameters()}
         ]
+        if self.input_adaptor_proj is not None:
+            gen_params.append({"params": self.input_adaptor_proj.parameters()})
         opt_gen = torch.optim.AdamW(gen_params, lr=self.hparams.initial_learning_rate)
 
         max_steps = self.trainer.max_steps  # // 2  # Max steps per optimizer

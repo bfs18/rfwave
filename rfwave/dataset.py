@@ -300,7 +300,8 @@ class TTSDatasetSegment(Dataset):
         if self._cache is None or k not in self._cache:
             alignment = torch.load(alignment_fp, map_location="cpu")
             token_ids = torch.tensor([self.phone2id[str(tk)] for tk in alignment['tokens']])
-            durations = alignment['durations']
+            durations = (alignment['durations'] if isinstance(alignment['durations'], torch.Tensor)
+                         else torch.tensor(alignment['durations']))
             y, sr = torchaudio.load(audio_fp)
             if y.size(0) > 1:
                 # mix to mono
@@ -389,7 +390,8 @@ class TTSDataset(Dataset):
         if self._cache is None or k not in self._cache:
             alignment = torch.load(alignment_fp, map_location="cpu")
             token_ids = torch.tensor([self.phone2id[str(tk)] for tk in alignment['tokens']])
-            durations = alignment['durations']
+            durations = (alignment['durations'] if isinstance(alignment['durations'], torch.Tensor)
+                         else torch.tensor(alignment['durations']))
             y, sr = torchaudio.load(audio_fp)
             if y.size(0) > 1:
                 # mix to mono
@@ -446,7 +448,8 @@ class TTSCtxDatasetSegment(Dataset):
         if self._cache is None or k not in self._cache:
             alignment = torch.load(alignment_fp, map_location="cpu")
             token_ids = torch.tensor([self.phone2id[str(tk)] for tk in alignment['tokens']])
-            durations = alignment['durations']
+            durations = (alignment['durations'] if isinstance(alignment['durations'], torch.Tensor)
+                         else torch.tensor(alignment['durations']))
             y, sr = torchaudio.load(audio_fp)
             if y.size(0) > 1:
                 # mix to mono
@@ -564,7 +567,8 @@ class DurDataset(Dataset):
         if self._cache is None or k not in self._cache:
             alignment = torch.load(alignment_fp, map_location="cpu")
             token_ids = torch.tensor([self.phone2id[str(tk)] for tk in alignment['tokens']])
-            durations = alignment['durations']
+            durations = (alignment['durations'] if isinstance(alignment['durations'], torch.Tensor)
+                         else torch.tensor(alignment['durations']))
             if self._cache is not None:
                 self._cache[k] = (token_ids, durations)
         else:

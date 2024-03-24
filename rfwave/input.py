@@ -28,7 +28,7 @@ class ModelArgs:
     hidden_dim: Optional[int] = None
     multiple_of: int = 256  # MLP hidden layer size will be multiple of
     norm_eps: float = 1e-5
-    max_seq_len: int = 2048
+    max_seq_len: int = 8192
     dropout: float = 0.0
     qk_norm: bool = True
 

@@ -57,12 +57,12 @@ model:
         input_channels: 512
         output_channels1: 100
         output_channels2: 160
-        dim: 512
-        intermediate_dim: 1536
+        dim: 384
+        intermediate_dim: 1152
         num_layers1: 4
         num_layers2: 8
         num_bands: 8
-        prev_cond: False
+        num_heads: 6
 
     head:
       class_path: rfwave.heads.RFSTFTHead
