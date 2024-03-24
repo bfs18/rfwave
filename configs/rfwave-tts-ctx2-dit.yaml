@@ -19,7 +19,7 @@ data:
     val_params:
       filelist_path: LJSpeech/synta_filelist.valid
       sampling_rate: 22050
-      num_samples: 65280
+      num_samples: 130560
       batch_size: 16
       num_workers: 4
       cache: True
