@@ -481,8 +481,9 @@ class CtxCharInputAdaptor(InputAdaptor):
         non_padding = (expanded_phone.abs().sum(2) > 0.).float()
         num_frames = torch.sum(token_frames, dim=1).long()
 
-        freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
-                                  frame_start, num_frames[0])
+        # freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
+        #                           frame_start, num_frames[0])
+        freqs_cis = get_pos_embed(self.attn_freqs_cis, frame_start, num_frames[0])
         x_mask = score_mask_from_bool_mask(non_padding == 0)
         # ctx_freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
         #                               torch.zeros_like(frame_start), context.size(2))
@@ -600,8 +601,9 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         non_padding = (expanded_phone.abs().sum(2) > 0.).float()
         num_frames = torch.sum(token_frames, dim=1).long()
 
-        freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
-                                  frame_start, num_frames[0])
+        # freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
+        #                           frame_start, num_frames[0])
+        freqs_cis = get_pos_embed(self.attn_freqs_cis, frame_start, num_frames[0])
         x_mask = score_mask_from_bool_mask(non_padding == 0)
         # ctx_freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
         #                               torch.zeros_like(frame_start), context.size(2))
