@@ -479,6 +479,7 @@ class VocosExp(pl.LightningModule):
         self.aux_type = 'mel'
         if self.task == "tts":
             assert input_adaptor is not None
+            self.input_adaptor = torch.compile(self.input_adaptor)
             if self.aux_loss:
                 feat_dim = feature_extractor.dim if self.aux_type == 'mel' else self.reflow.head.n_fft // 2 + 1
                 self.input_adaptor_proj = InputAdaptorProject(self.input_adaptor.dim, feat_dim)

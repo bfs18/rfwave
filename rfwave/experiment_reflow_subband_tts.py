@@ -594,7 +594,7 @@ class VocosExp(pl.LightningModule):
             print(f"using intt {intt:.2f}")
         self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head", "input_adaptor"])
         self.feature_extractor = feature_extractor
-        self.input_adaptor = input_adaptor
+        self.input_adaptor = torch.compile(input_adaptor)
         self.reflow = RectifiedFlow(
             backbone, head, feature_loss=feature_loss, wave=wave, num_bands=num_bands, intt=intt,
             guidance_scale=guidance_scale, p_uncond=p_uncond)
