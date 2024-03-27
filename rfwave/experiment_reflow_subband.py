@@ -30,7 +30,7 @@ class RectifiedFlow(nn.Module):
     def __init__(self, backbon: Backbone, head: FourierHead,
                  num_steps=10, feature_loss=False, wave=False, num_bands=8, p_uncond=0., guidance_scale=1.):
         super().__init__()
-        self.backbone = backbon
+        self.backbone = torch.compile(backbon)
         self.head = head
         self.N = num_steps
         self.feature_loss = feature_loss

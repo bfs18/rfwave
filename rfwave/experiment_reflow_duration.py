@@ -20,7 +20,7 @@ from rfwave.dit import DiTRFBackbone
 class RectifiedFlow(nn.Module):
     def __init__(self, backbone, num_steps=10., p_uncond=0., guidance_scale=1.):
         super().__init__()
-        self.backbone = backbone
+        self.backbone = torch.compile(backbone)
         self.N = num_steps
         self.cfg = guidance_scale > 1.
         self.p_uncond = p_uncond
