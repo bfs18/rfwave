@@ -104,8 +104,8 @@ class PQMFProcessor(SampleProcessor):
         if self.training:
             audio_subbands_mean = [torch.mean(x) for x in torch.unbind(audio_subbands, dim=1)]
             audio_subbands_var = [torch.var(x) for x in torch.unbind(audio_subbands, dim=1)]
-            self.mean_ema.lerp_(torch.stack(audio_subbands_mean).detach(), 0.01)
-            self.var_ema.lerp_(torch.stack(audio_subbands_var).detach(), 0.01)
+            self.mean_ema.lerp_(torch.stack(audio_subbands_mean).detach().float(), 0.01)
+            self.var_ema.lerp_(torch.stack(audio_subbands_var).detach().float(), 0.01)
         audio_subbands = (audio_subbands - self.mean_ema.unsqueeze(-1)) / torch.sqrt(self.var_ema.unsqueeze(-1) + 1e-6)
         audio = self.pqmf.synthesis(audio_subbands)
         return audio
@@ -127,8 +127,8 @@ class STFTProcessor(SampleProcessor):
         if self.training:
             mean = torch.mean(x, dim=(0, 2))
             var = torch.var(x, dim=(0, 2))
-            self.mean_ema.lerp_(mean.detach(), 0.01)
-            self.var_ema.lerp_(var.detach(), 0.01)
+            self.mean_ema.lerp_(mean.detach().float(), 0.01)
+            self.var_ema.lerp_(var.detach().float(), 0.01)
         return (x - self.mean_ema[None, :, None]) / torch.sqrt(self.var_ema[None, :, None] + 1e-6)
 
     def return_sample(self, x: torch.Tensor):

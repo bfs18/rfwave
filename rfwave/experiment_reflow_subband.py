@@ -322,14 +322,14 @@ class RectifiedFlow(nn.Module):
         return [self.get_wave(tt) for tt in traj]
 
     def stft(self, wave):
-        S = self.head.get_spec(wave) / np.sqrt(self.head.n_fft).astype(np.float32)
-        return torch.cat([S.real, S.imag], dim=1)
+        S = self.head.get_spec(wave.float()) / np.sqrt(self.head.n_fft).astype(np.float32)
+        return torch.cat([S.real, S.imag], dim=1).type_as(wave.dtype)
 
     def istft(self, S):
-       S = S * np.sqrt(self.head.n_fft).astype(np.float32)
-       r, i = torch.chunk(S, 2, dim=1)
-       c = r + 1j * i
-       return self.head.get_wave(c)
+        S = S * np.sqrt(self.head.n_fft).astype(np.float32)
+        r, i = torch.chunk(S.float(), 2, dim=1)
+        c = r + 1j * i
+        return self.head.get_wave(c).type_as(S.dtype)
 
     def time_balance_for_loss(self, pred, target):
         v = target.var(dim=1, keepdim=True)
@@ -635,7 +635,7 @@ class VocosExp(pl.LightningModule):
 
         self.log("val_loss", mel_loss, sync_dist=True, logger=False)
         if self.global_rank == 0:
-            audio_in, audio_pred = outputs[0]['audio_input'], outputs[0]['audio_pred']
+            audio_in, audio_pred = outputs[0]['audio_input'].float(), outputs[0]['audio_pred'].float()
             mel_target = self.feature_extractor(audio_in.unsqueeze(0), **kwargs)[0]
             mel_hat = self.feature_extractor(audio_pred.unsqueeze(0), **kwargs)[0]
             metrics = {
