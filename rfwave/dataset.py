@@ -468,32 +468,93 @@ class TTSCtxDatasetSegment(Dataset):
         up_durations = up_durations.detach().clone()
         cs_durations = torch.cumsum(up_durations, 0)
 
-        if y.size(-1) < self.num_samples + self.hop_length:
-            repeats = np.ceil((self.num_samples + self.hop_length) / y.size(-1)).astype(np.int64)
-            y = y.repeat(1, repeats)
-            token_ids = token_ids.repeat(repeats)
-            up_durations = up_durations.repeat(repeats)
-            cs_durations = torch.cumsum(up_durations, 0)
-
-        total_frames = y.size(-1) // self.hop_length
-        assert total_frames - num_frames + 1 > 0, (
-            f"y length {y.size(-1)}, total_frames {total_frames}, num_frames {num_frames}")
-        if self.train:
-            start_frame = np.random.randint(low=0, high=total_frames - num_frames + 1)
-            start = start_frame * self.hop_length
-            end_frame = start_frame + num_frames
-            y_seg = y[:, start: start + self.num_samples]
-            start_phone_idx = torch.searchsorted(cs_durations, start_frame, right=True)
-            end_phone_idx = torch.searchsorted(cs_durations, end_frame, right=False)
+        if y.size(-1) < self.num_samples + self.hop_length + self.min_context * self.hop_length:
+            # deal with short sentence carefully
+            if cs_durations.size(0) < 2:
+                repeats = np.ceil((self.num_samples + self.hop_length) / y.size(-1)).astype(np.int64)
+                y = y.repeat(1, repeats)
+                token_ids = token_ids.repeat(repeats)
+                up_durations = up_durations.repeat(repeats)
+                cs_durations = torch.cumsum(up_durations, 0)
+                start = 0
+                start_frame = 0
+                end_frame = num_frames
+                ctx_start_frame = 0
+                ctx_n_frame = self.min_context
+                y_seg = y[:, : self.num_samples]
+            else:
+                half_frames = num_frames // 2
+                hf = torch.searchsorted(cs_durations, half_frames, right=False)
+                hf = hf - 1 if hf == cs_durations.size(0) - 1 else hf
+                half_frames = torch.sum(up_durations[:hf])
+                lo_up_duration = up_durations[:hf]
+                hi_up_duration = up_durations[hf:]
+                lo_y = y[:, :half_frames * self.hop_length]
+                hi_y = y[:, half_frames * self.hop_length:]
+                lo_token_ids = token_ids[:hf]
+                hi_token_ids = token_ids[hf:]
+                repeats = np.ceil((self.num_samples + self.hop_length) / lo_y.size(-1)).astype(np.int64)
+                lo_y = lo_y.repeat(1, repeats)
+                hi_y = hi_y.repeat(1, repeats)
+                lo_up_duration = lo_up_duration.repeat(repeats)
+                hi_up_duration = hi_up_duration.repeat(repeats)
+                lo_token_ids = lo_token_ids.repeat(repeats)
+                hi_token_ids = hi_token_ids.repeat(repeats)
+                y = torch.cat([lo_y, hi_y], dim=-1)
+                up_durations = torch.cat([lo_up_duration, hi_up_duration], dim=0)
+                token_ids = torch.cat([lo_token_ids, hi_token_ids], dim=0)
+                cs_durations = torch.cumsum(up_durations, dim=0)
+                if np.random.uniform() < 0.5:
+                    start = 0
+                    start_frame = 0
+                    end_frame = num_frames
+                    y_seg = y[:, :self.num_samples]
+                    ctx_start_frame = half_frames
+                else:
+                    start = half_frames * self.hop_length
+                    start_frame = half_frames
+                    end_frame = num_frames + half_frames
+                    y_seg = y[:, start: start + self.num_samples]
+                    ctx_start_frame = 0
+                ctx_n_frame = self.min_context
         else:
-            # During validation, take always the first segment for determinism
-            y_seg = y[:, : self.num_samples]
-            start = 0
-            start_frame = 0
-            end_frame = start_frame + num_frames
-            start_phone_idx = 0
-            end_phone_idx = torch.searchsorted(cs_durations, end_frame, right=False)
+            total_frames = y.size(-1) // self.hop_length
+            assert total_frames - num_frames + 1 > 0, (
+                f"y length {y.size(-1)}, total_frames {total_frames}, num_frames {num_frames}")
+            if self.train:
+                start_frame = np.random.randint(low=0, high=total_frames - num_frames + 1)
+                start = start_frame * self.hop_length
+                end_frame = start_frame + num_frames
+                y_seg = y[:, start: start + self.num_samples]
+            else:
+                # During validation, take always the first segment for determinism
+                y_seg = y[:, : self.num_samples]
+                start = 0
+                start_frame = 0
+                end_frame = start_frame + num_frames
 
+            # get context
+            if start_frame > self.min_context:
+                max_context = np.minimum(start_frame, self.max_context)
+                ctx_n_frame = np.random.randint(self.min_context, max_context)
+                ctx_start_frame = np.random.randint(0, start_frame - ctx_n_frame)
+            elif total_frames - (start_frame + num_frames) > self.min_context:
+                max_context = np.minimum(total_frames - (start_frame + num_frames), self.max_context)
+                ctx_n_frame = np.random.randint(self.min_context, max_context)
+                ctx_start_frame = np.random.randint(start_frame + num_frames, total_frames - ctx_n_frame)
+            else:
+                # ctx_start_frame = 0
+                # ctx_n_frame = self.min_context
+                if start_frame > total_frames - (start_frame + num_frames):
+                    ctx_start_frame = 0
+                    ctx_n_frame = start_frame
+                else:
+                    ctx_start_frame = start_frame + num_frames
+                    ctx_n_frame = total_frames - ctx_start_frame
+
+        # get tokens
+        start_phone_idx = torch.searchsorted(cs_durations, start_frame, right=True)
+        end_phone_idx = torch.searchsorted(cs_durations, end_frame, right=False)
         seg_token_ids = token_ids[start_phone_idx: end_phone_idx + 1].detach().clone()
         seg_durations = up_durations[start_phone_idx: end_phone_idx + 1].detach().clone()
         if end_phone_idx != start_phone_idx:
@@ -505,17 +566,6 @@ class TTSCtxDatasetSegment(Dataset):
             seg_durations[0] = end_frame - start_frame
 
         # get context
-        if start_frame > self.min_context:
-            max_context = np.minimum(start_frame, self.max_context)
-            ctx_n_frame = np.random.randint(self.min_context, max_context)
-            ctx_start_frame = np.random.randint(0, start_frame - ctx_n_frame)
-        elif total_frames - (start_frame + num_frames) > self.min_context:
-            max_context = np.minimum(total_frames - (start_frame + num_frames), self.max_context)
-            ctx_n_frame = np.random.randint(self.min_context, max_context)
-            ctx_start_frame = np.random.randint(start_frame + num_frames, total_frames - ctx_n_frame)
-        else:
-            ctx_start_frame = 0
-            ctx_n_frame = self.min_context
         ctx_start = ctx_start_frame * self.hop_length
         ctx_end = (ctx_start_frame + ctx_n_frame) * self.hop_length
         y_ctx = y[:, ctx_start: ctx_end]
