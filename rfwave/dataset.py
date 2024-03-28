@@ -486,13 +486,13 @@ class TTSCtxDatasetSegment(Dataset):
                 half_frames = cs_durations[-1] // 2
                 hf = torch.searchsorted(cs_durations, half_frames, right=False)
                 hf = hf - 1 if hf == cs_durations.size(0) - 1 else hf
-                half_frames = torch.sum(up_durations[:hf])
-                lo_up_duration = up_durations[:hf]
-                hi_up_duration = up_durations[hf:]
+                half_frames = torch.sum(up_durations[:hf + 1])
+                lo_up_duration = up_durations[:hf + 1]
+                hi_up_duration = up_durations[hf + 1:]
                 lo_y = y[:, :half_frames * self.hop_length]
                 hi_y = y[:, half_frames * self.hop_length:]
-                lo_token_ids = token_ids[:hf]
-                hi_token_ids = token_ids[hf:]
+                lo_token_ids = token_ids[:hf + 1]
+                hi_token_ids = token_ids[hf + 1:]
                 repeats = np.ceil(
                     (self.num_samples + self.hop_length) / min(lo_y.size(-1), hi_y.size(-1))).astype(np.int64)
                 lo_y = lo_y.repeat(1, repeats)
