@@ -29,7 +29,7 @@ class DataConfig:
     padding: str = None
     phoneset: str = None
     segment: bool = True
-    min_context: int = 0
+    min_context: int = 50
     max_context: int = 300
 
 
@@ -483,7 +483,7 @@ class TTSCtxDatasetSegment(Dataset):
                 ctx_n_frame = self.min_context
                 y_seg = y[:, : self.num_samples]
             else:
-                half_frames = num_frames // 2
+                half_frames = cs_durations[-1] // 2
                 hf = torch.searchsorted(cs_durations, half_frames, right=False)
                 hf = hf - 1 if hf == cs_durations.size(0) - 1 else hf
                 half_frames = torch.sum(up_durations[:hf])
@@ -493,7 +493,8 @@ class TTSCtxDatasetSegment(Dataset):
                 hi_y = y[:, half_frames * self.hop_length:]
                 lo_token_ids = token_ids[:hf]
                 hi_token_ids = token_ids[hf:]
-                repeats = np.ceil((self.num_samples + self.hop_length) / lo_y.size(-1)).astype(np.int64)
+                repeats = np.ceil(
+                    (self.num_samples + self.hop_length) / min(lo_y.size(-1), hi_y.size(-1))).astype(np.int64)
                 lo_y = lo_y.repeat(1, repeats)
                 hi_y = hi_y.repeat(1, repeats)
                 lo_up_duration = lo_up_duration.repeat(repeats)
@@ -509,15 +510,16 @@ class TTSCtxDatasetSegment(Dataset):
                     start_frame = 0
                     end_frame = num_frames
                     y_seg = y[:, :self.num_samples]
-                    ctx_start_frame = half_frames
+                    ctx_start_frame = torch.sum(lo_up_duration)
                 else:
-                    start = half_frames * self.hop_length
-                    start_frame = half_frames
-                    end_frame = num_frames + half_frames
+                    start_frame = torch.sum(lo_up_duration)
+                    start = start_frame * self.hop_length
+                    end_frame = num_frames + start_frame
                     y_seg = y[:, start: start + self.num_samples]
                     ctx_start_frame = 0
                 ctx_n_frame = self.min_context
         else:
+            print("long")
             total_frames = y.size(-1) // self.hop_length
             assert total_frames - num_frames + 1 > 0, (
                 f"y length {y.size(-1)}, total_frames {total_frames}, num_frames {num_frames}")
@@ -553,7 +555,7 @@ class TTSCtxDatasetSegment(Dataset):
                     ctx_n_frame = total_frames - ctx_start_frame
 
         # get tokens
-        start_phone_idx = torch.searchsorted(cs_durations, start_frame, right=True)
+        start_phone_idx = torch.searchsorted(cs_durations, start_frame, right=True) if start_frame > 0 else 0
         end_phone_idx = torch.searchsorted(cs_durations, end_frame, right=False)
         seg_token_ids = token_ids[start_phone_idx: end_phone_idx + 1].detach().clone()
         seg_durations = up_durations[start_phone_idx: end_phone_idx + 1].detach().clone()
@@ -570,7 +572,7 @@ class TTSCtxDatasetSegment(Dataset):
         ctx_end = (ctx_start_frame + ctx_n_frame) * self.hop_length
         y_ctx = y[:, ctx_start: ctx_end]
         ctx_n_frame = ctx_n_frame + 1 if self.padding == 'center' else ctx_n_frame
-        ctx_start_phone_idx = torch.searchsorted(cs_durations, ctx_start_frame, right=True)
+        ctx_start_phone_idx = torch.searchsorted(cs_durations, ctx_start_frame, right=True) if start_frame > 0 else 0
         ctx_end_phone_idx = torch.searchsorted(cs_durations, ctx_start_frame + ctx_n_frame, right=False)
         ctx_token_ids = token_ids[ctx_start_phone_idx: ctx_end_phone_idx + 1].detach().clone()
         ctx_durations = up_durations[ctx_start_phone_idx: ctx_end_phone_idx + 1].detach().clone()
@@ -791,16 +793,18 @@ if __name__ == "__main__":
 
     data = [dataset[0], dataset[1]]
     tts_ctx_collate_segment(data)
+    for d in dataset:
+        print(d[0].shape)
 
-    dur_cfg = DataConfig(
-        filelist_path="/Users/liupeng/wd_disk/dataset/LJSpeech-1.1/synta_filelist.valid",
-        batch_size=8,
-        num_workers=0,
-        cache=True,
-        task="dur",
-        phoneset="/Users/liupeng/wd_disk/dataset/LJSpeech-1.1/synta_phoneset.th",
-    )
-    dur_dataset = DurDataset(dur_cfg, train=False)
-    print(dur_dataset[0])
-    data = [dur_dataset[0], dur_dataset[1]]
-    dur_collate(data)
+    # dur_cfg = DataConfig(
+    #     filelist_path="/data/corpus/LJSpeech-1.1/synta_filelist.valid",
+    #     batch_size=8,
+    #     num_workers=0,
+    #     cache=True,
+    #     task="dur",
+    #     phoneset="/data/corpus/LJSpeech-1.1/synta_phoneset.th",
+    # )
+    # dur_dataset = DurDataset(dur_cfg, train=False)
+    # print(dur_dataset[0])
+    # data = [dur_dataset[0], dur_dataset[1]]
+    # dur_collate(data)
