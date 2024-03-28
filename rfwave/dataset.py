@@ -519,7 +519,6 @@ class TTSCtxDatasetSegment(Dataset):
                     ctx_start_frame = 0
                 ctx_n_frame = self.min_context
         else:
-            print("long")
             total_frames = y.size(-1) // self.hop_length
             assert total_frames - num_frames + 1 > 0, (
                 f"y length {y.size(-1)}, total_frames {total_frames}, num_frames {num_frames}")
