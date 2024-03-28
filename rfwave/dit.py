@@ -316,7 +316,7 @@ class DiTRFBackbone(Backbone):
         x = x.transpose(1, 2)
         start = _get_start(z_t, start)
         length = _get_len(z_t, None)
-        freq_cis = get_pos_embed(self.pos_embed if self.training else self.pos_embed_eval, start, length)
+        freq_cis = get_pos_embed(self.pos_embed if self.training else self.pos_embed_eval, start, length.max())
         for block in self.blocks:
             x = block(x, c, freq_cis, None)
         x = self.final(x, c)
