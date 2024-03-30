@@ -76,8 +76,8 @@ class RectifiedFlow(nn.Module):
         self.tandem_processor = STFTProcessor(self.output_channels1)
 
     def get_subband(self, S, i):
-        if i.numel() > 1:
-            i = i[0]
+        # if i.numel() > 1:
+        #     i = i[0]
         S = torch.stack(torch.chunk(S, 2, dim=1), dim=-1)
         if i == -1:
             sS = S.new_zeros((S.shape[0], (self.num_bins + self.overlap) * 2, S.shape[2]))
@@ -88,8 +88,8 @@ class RectifiedFlow(nn.Module):
         return sS
 
     def place_subband(self, sS, i):
-        if i.numel() > 1:
-            i = i[0]
+        # if i.numel() > 1:
+        #     i = i[0]
         S = sS.new_zeros([sS.size(0), self.head.n_fft // 2 + self.overlap, sS.size(2), 2])
         rsS, isS = torch.chunk(sS, 2, dim=1)
         S[:, i * self.num_bins: (i + 1) * self.num_bins + self.overlap, :, 0] = rsS
@@ -127,8 +127,7 @@ class RectifiedFlow(nn.Module):
         return torch.cat([cond[..., 0], cond[..., 1]], dim=1)
 
     def get_z0(self, text, bandwidth_id):
-        if bandwidth_id.numel() > 1:
-            bandwidth_id = bandwidth_id[0]
+        bandwidth_id = bandwidth_id[0]
         # for training var pred.
         if self.wave:
             nf = text.shape[2] if self.head.padding == "same" else (text.shape[2] - 1)
@@ -171,8 +170,7 @@ class RectifiedFlow(nn.Module):
         return S
 
     def get_z1(self, audio, mel, bandwidth_id):
-        if bandwidth_id.numel() > 1:
-            bandwidth_id = bandwidth_id[0]
+        bandwidth_id = bandwidth_id[0]
         S = self.get_eq_norm_stft(audio)
         z1_2 = self.get_subband(S, bandwidth_id)
         if self.prev_cond:
@@ -304,7 +302,7 @@ class RectifiedFlow(nn.Module):
             assert band is not None
             assert bandwidth_id is not None
             # get z0 must be called before pre-processing text
-            z0 = self.get_z0(text, torch.tensor(0, dtype=torch.long, device=text.device))
+            z0 = self.get_z0(text, bandwidth_id)
             text = torch.cat([text, band], 1) if self.prev_cond else text
         else:
             assert band is None
@@ -333,9 +331,9 @@ class RectifiedFlow(nn.Module):
             if self.wave:
                 pred1, pred2 = self.split(pred)
                 if self.prev_cond or not self.parallel_uncond:
-                    pred2 = self.place_subband(pred2, bandwidth_id)
+                    pred2 = self.place_subband(pred2, bandwidth_id[0])
                     pred2 = self.stft(self.istft(pred2))
-                    pred2 = self.get_subband(pred2, bandwidth_id)
+                    pred2 = self.get_subband(pred2, bandwidth_id[0])
                 else:
                     pred2 = self.place_joint_subband(pred2.reshape(fs))
                     pred2 = self.stft(self.istft(pred2))
@@ -425,7 +423,7 @@ class RectifiedFlow(nn.Module):
 
     def _place_diff(self, diff, bandwidth_id):
         if self.prev_cond or not self.parallel_uncond:
-            diff = self.place_subband(diff, bandwidth_id)
+            diff = self.place_subband(diff, bandwidth_id[0])
         else:
             diff = diff.reshape(diff.shape[0] // self.num_bands, -1, diff.shape[2])
             diff = self.place_joint_subband(diff)

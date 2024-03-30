@@ -70,8 +70,8 @@ class RectifiedFlow(nn.Module):
                 "feature_weight", get_feature_weight2(self.head.n_fft, self.head.hop_length))
 
     def get_subband(self, S, i):
-        if i.numel() > 1:
-            i = i[0]
+        # if i.numel() > 1:
+        #     i = i[0]
         S = torch.stack(torch.chunk(S, 2, dim=1), dim=-1)
         if i == -1:
             sS = S.new_zeros((S.shape[0], (self.num_bins + self.overlap) * 2, S.shape[2]))
@@ -82,8 +82,8 @@ class RectifiedFlow(nn.Module):
         return sS
 
     def place_subband(self, sS, i):
-        if i.numel() > 1:
-            i = i[0]
+        # if i.numel() > 1:
+        #     i = i[0]
         S = sS.new_zeros([sS.size(0), self.head.n_fft // 2 + self.overlap, sS.size(2), 2])
         rsS, isS = torch.chunk(sS, 2, dim=1)
         S[:, i * self.num_bins: (i + 1) * self.num_bins + self.overlap, :, 0] = rsS
@@ -121,8 +121,7 @@ class RectifiedFlow(nn.Module):
         return torch.cat([cond[..., 0], cond[..., 1]], dim=1)
 
     def get_z0(self, mel, bandwidth_id):
-        if bandwidth_id.numel() > 1:
-            bandwidth_id = bandwidth_id[0]
+        bandwidth_id = bandwidth_id[0]
         if self.wave:
             nf = mel.shape[2] if self.head.padding == "same" else (mel.shape[2] - 1)
             r = torch.randn([mel.shape[0], self.head.hop_length * nf], device=mel.device)
@@ -154,8 +153,7 @@ class RectifiedFlow(nn.Module):
         return S
 
     def get_z1(self, audio, bandwidth_id):
-        if bandwidth_id.numel() > 1:
-            bandwidth_id = bandwidth_id[0]
+        bandwidth_id = bandwidth_id[0]
         S = self.get_eq_norm_stft(audio)
         z1 = self.get_subband(S, bandwidth_id)
         if self.prev_cond:
@@ -233,7 +231,7 @@ class RectifiedFlow(nn.Module):
             assert band is not None
             assert bandwidth_id is not None
             # get z0 must be called before pre-processing mel
-            _, z0 = self.get_z0(mel, torch.tensor(0, dtype=torch.long, device=mel.device))
+            z0 = self.get_z0(mel, bandwidth_id)
             mel = torch.cat([mel, band], 1) if self.prev_cond else mel
         else:
             assert band is None
@@ -259,9 +257,9 @@ class RectifiedFlow(nn.Module):
                 pred = self.get_pred(z, t_.to(mel.device), mel, bandwidth_id, encodec_bandwidth_id, **kwargs)
             if self.wave:
                 if self.prev_cond or not self.parallel_uncond:
-                    pred = self.place_subband(pred, bandwidth_id)
+                    pred = self.place_subband(pred, bandwidth_id[0])
                     pred = self.stft(self.istft(pred))
-                    pred = self.get_subband(pred, bandwidth_id)
+                    pred = self.get_subband(pred, bandwidth_id[0])
                     z = z.detach() + pred * dt
                 else:
                     pred = self.place_joint_subband(pred.reshape(fs))
@@ -339,7 +337,7 @@ class RectifiedFlow(nn.Module):
 
     def _place_diff(self, diff, bandwidth_id):
         if self.prev_cond or not self.parallel_uncond:
-            diff = self.place_subband(diff, bandwidth_id)
+            diff = self.place_subband(diff, bandwidth_id[0])
         else:
             diff = diff.reshape(diff.shape[0] // self.num_bands, -1, diff.shape[2])
             diff = self.place_joint_subband(diff)
@@ -770,4 +768,4 @@ if __name__ == '__main__':
     print(loss)
     print('grad norm', torch.norm(torch.autograd.grad(loss, z_t)[0]))
 
-    # y = exp.reflow.sample_ode(features)
+    y = exp.reflow.sample_ode(features)
