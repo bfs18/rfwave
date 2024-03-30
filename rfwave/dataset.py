@@ -61,6 +61,9 @@ class VocosDataModule(LightningDataModule):
         elif cfg.task == "dur":
             dataset = DurDataset(cfg, train=train)
             collate_fn = dur_collate
+        elif cfg.task == "e2e":
+            dataset = E2ETTSCtxDataset(cfg, train=train)
+            collate_fn = e2e_tts_ctx_collate_segment
         else:
             raise ValueError(f"Unknown task: {cfg.task}")
         if cfg.task == 'tts' and not cfg.segment:
@@ -598,6 +601,115 @@ class TTSCtxDatasetSegment(Dataset):
                           y_ctx[0], ctx_n_frame, ctx_token_ids, ctx_durations)
 
 
+class E2ETTSCtxDataset(Dataset):
+    def __init__(self, cfg: DataConfig, train: bool):
+        assert cfg.task == "tts"
+        assert cfg.hop_length is not None
+        assert cfg.phoneset is not None
+        assert cfg.padding is not None
+        with open(cfg.filelist_path) as f:
+            self.filelist = f.read().splitlines()
+        self.sampling_rate = cfg.sampling_rate
+        self.num_samples = cfg.num_samples
+        self.train = train
+        self.hop_length = cfg.hop_length
+        self.padding = cfg.padding
+        phoneset = torch.load(cfg.phoneset)
+        self.phoneset = ["_PAD_"] + phoneset
+        self.phone2id = dict([(p, i) for i, p in enumerate(self.phoneset)])
+        self._cache = dict() if getattr(cfg, 'cache', False) else None
+        self.min_context = cfg.min_context
+        self.max_context = cfg.max_context
+
+    def __len__(self):
+        return len(self.filelist)
+
+    def __getitem__(self, index):
+        k, audio_fp, phone_fp, *_ = self.filelist[index].split("|")
+        if self._cache is None or k not in self._cache:
+            alignment = torch.load(phone_fp, map_location="cpu")
+            token_ids = torch.tensor([self.phone2id[str(tk)] for tk in alignment['tokens']])
+            y, sr = torchaudio.load(audio_fp)
+            if y.size(0) > 1:
+                # mix to mono
+                y = y.mean(dim=0, keepdim=True)
+            if sr != self.sampling_rate:
+                y = torchaudio.functional.resample(y, orig_freq=sr, new_freq=self.sampling_rate)
+            if self._cache is not None:
+                self._cache[k] = (y, token_ids)
+        else:
+            y, token_ids = self._cache[k]
+
+        num_frames = self.num_samples // self.hop_length + (1 if self.padding == "center" else 0)
+        y = y.detach().clone()[:, :y.size(1) // self.hop_length * self.hop_length]
+        total_frames = y.size(1) // self.hop_length + (1 if self.padding == "center" else 0)
+        token_ids = token_ids.detach().clone()
+
+        if y.size(-1) < self.num_samples + self.hop_length + self.min_context * self.hop_length:
+            half_frames = total_frames // 2
+            lo_y = y[:, :half_frames * self.hop_length]
+            hi_y = y[:, half_frames * self.hop_length:]
+            repeats = np.ceil(
+                (self.num_samples + self.hop_length) / min(lo_y.size(-1), hi_y.size(-1))).astype(np.int64)
+            lo_y = lo_y.repeat(1, repeats)
+            hi_y = hi_y.repeat(1, repeats)
+            y = torch.cat([lo_y, hi_y], dim=-1)
+            if np.random.uniform() < 0.5:
+                start = 0
+                start_frame = 0
+                end_frame = num_frames
+                y_seg = y[:, :self.num_samples]
+                ctx_start_frame = half_frames
+            else:
+                start_frame = half_frames
+                start = start_frame * self.hop_length
+                end_frame = num_frames + start_frame
+                y_seg = y[:, start: start + self.num_samples]
+                ctx_start_frame = 0
+            ctx_n_frame = self.min_context
+        else:
+            assert total_frames - num_frames + 1 > 0, (
+                f"y length {y.size(-1)}, total_frames {total_frames}, num_frames {num_frames}")
+            if self.train:
+                start_frame = np.random.randint(low=0, high=total_frames - num_frames + 1)
+                start = start_frame * self.hop_length
+                end_frame = start_frame + num_frames
+                y_seg = y[:, start: start + self.num_samples]
+            else:
+                # During validation, take always the first segment for determinism
+                y_seg = y[:, : self.num_samples]
+                start = 0
+                start_frame = 0
+                end_frame = start_frame + num_frames
+
+                # get context
+                if start_frame > self.min_context:
+                    max_context = np.minimum(start_frame, self.max_context)
+                    ctx_n_frame = np.random.randint(self.min_context, max_context)
+                    ctx_start_frame = np.random.randint(0, start_frame - ctx_n_frame)
+                elif total_frames - (start_frame + num_frames) > self.min_context:
+                    max_context = np.minimum(total_frames - (start_frame + num_frames), self.max_context)
+                    ctx_n_frame = np.random.randint(self.min_context, max_context)
+                    ctx_start_frame = np.random.randint(start_frame + num_frames, total_frames - ctx_n_frame)
+                else:
+                    # ctx_start_frame = 0
+                    # ctx_n_frame = self.min_context
+                    if start_frame > total_frames - (start_frame + num_frames):
+                        ctx_start_frame = 0
+                        ctx_n_frame = start_frame
+                    else:
+                        ctx_start_frame = start_frame + num_frames
+                        ctx_n_frame = total_frames - ctx_start_frame
+
+        # get context
+        ctx_start = ctx_start_frame * self.hop_length
+        ctx_end = (ctx_start_frame + ctx_n_frame) * self.hop_length
+        y_ctx = y[:, ctx_start: ctx_end]
+        ctx_n_frame = ctx_n_frame + 1 if self.padding == 'center' else ctx_n_frame
+        return y_seg[0], (token_ids, start_frame, y_ctx,
+                          torch.tensor([len(token_ids), ctx_n_frame], dtype=torch.long))
+
+
 class DurDataset(Dataset):
     def __init__(self, cfg: DataConfig, train: bool):
         assert cfg.task == "dur"
@@ -692,6 +804,23 @@ def tts_ctx_collate_segment(data):
     ctx_n_frame = torch.tensor([ti[5] for ti in token_info])
     return y, (token_ids, durations, start_phone_idx, start_frame,
                y_ctx_pad, ctx_n_frame, ctx_token_ids, ctx_durations)
+
+
+def e2e_tts_ctx_collate_segment(data):
+    y = torch.stack([d[0] for d in data])
+    token_info = [d[1] for d in data]
+    num_phones = [ti[0].size(0) for ti in token_info]
+    max_num = max(num_phones)
+    y_ctx = [ti[2] for ti in token_info]
+    max_ctx_len = max([y.size(0) for y in y_ctx])
+    token_ids = torch.zeros([len(data), max_num], dtype=torch.long)
+    y_ctx_pad = torch.zeros([len(data), max_ctx_len], dtype=torch.float)
+    for i, (ti, _, ctx, _) in enumerate(token_info):
+        token_ids[i, :ti.size(0)] = ti
+        y_ctx_pad[i, :ctx.size(0)] = ctx
+    start_frame = torch.tensor([ti[1] for ti in token_info])
+    ctx_n_frame = torch.stack([ti[3] for ti in token_info])
+    return y, (token_ids, start_frame, y_ctx_pad, ctx_n_frame)
 
 
 def dur_collate(data):

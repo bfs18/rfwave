@@ -9,6 +9,10 @@ import math
 import numpy as np
 
 
+def modulate(x, shift, scale):
+    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+
+
 class InputAdaptor(nn.Module):
     def __init__(self, *args):
         super().__init__(*args)
@@ -361,7 +365,7 @@ class CharInputAdaptor(InputAdaptor):
 
 
 class CrossAttTransformerBlock(nn.Module):
-    def __init__(self, layer_id, args: ModelArgs):
+    def __init__(self, layer_id, args: ModelArgs, modulate=False):
         super().__init__()
         self.n_heads = args.n_heads
         self.dim = args.dim
@@ -375,34 +379,67 @@ class CrossAttTransformerBlock(nn.Module):
             dropout=args.dropout,
         )
         self.layer_id = layer_id
-        self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
-        self.cross_attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
-        self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        if modulate:
+            self.adaLN_modulation = nn.Sequential(
+                nn.SiLU(), nn.Linear(self.dim, 9 * self.dim, bias=True))
+            self.attention_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
+            self.cross_attention_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
+            self.ffn_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
+        else:
+            self.adaLN_modulation = None
+            self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
+            self.cross_attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
+            self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
 
-    def forward(self, x, context, x_freqs_cis, c_freqs_cis, x_mask, c_mask):
-        h = x + self.attention.forward(self.attention_norm(x), x_freqs_cis, x_mask)
-        h = h + self.cross_attention.forward(
-            self.cross_attention_norm(h), context, x_freqs_cis, c_freqs_cis, c_mask)
-        out = h + self.feed_forward.forward(self.ffn_norm(h))
+    def forward(self, x, context, x_freqs_cis, c_freqs_cis, x_mask, c_mask, mod_c=None):
+        if self.adaLN_modulation is None:
+            h = x + self.attention(self.attention_norm(x), x_freqs_cis, x_mask)
+            h = h + self.cross_attention(
+                self.cross_attention_norm(h), context, x_freqs_cis, c_freqs_cis, c_mask)
+            out = h + self.feed_forward(self.ffn_norm(h))
+        else:
+            assert mod_c is not None
+            (shift_msa, scale_msa, gate_msa, shift_crs, scale_crs, gate_crs,
+             shift_mlp, scale_mlp, gate_mlp) = self.adaLN_modulation(mod_c).chunk(9, dim=1)
+            h = x + (gate_msa.unsqueeze(1) * self.attention(
+                modulate(self.attention_norm(x), shift_msa, scale_msa), x_freqs_cis, x_mask))
+            h = h + (gate_crs.unsqueeze(1) * self.cross_attention(
+                modulate(self.cross_attention_norm(h), shift_crs, scale_crs),
+                context, x_freqs_cis, c_freqs_cis, c_mask))
+            out = h + (gate_mlp.unsqueeze(1) * self.feed_forward(
+                modulate(self.ffn_norm(h), shift_mlp, scale_mlp)))
         return out
 
 
 class ContextBlock(nn.Module):
-    def __init__(self, args: ModelArgs, ctx_dim, n_attn_layers=4):
+    def __init__(self, args: ModelArgs, ctx_dim, n_attn_layers=4, modulate=False):
         super().__init__()
         self.ctx_proj = nn.Conv1d(ctx_dim, args.dim, 1) if ctx_dim != args.dim else nn.Identity()
-        self.ctx_attention = nn.ModuleList([CrossAttTransformerBlock(i, args) for i in range(n_attn_layers)])
-        self.attn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        self.ctx_attention = nn.ModuleList([CrossAttTransformerBlock(i, args, modulate=modulate)
+                                            for i in range(n_attn_layers)])
+        if modulate:
+            self.attn_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
+            self.adaLN_modulation = nn.Sequential(
+                nn.SiLU(), nn.Linear(args.dim, 2 * args.dim, bias=True))
+        else:
+            self.attn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+            self.adaLN_modulation = None
         self.attn_output = nn.Linear(args.dim, args.dim, bias=False)
 
-    def forward(self, x, context, x_freqs_cis, c_freqs_cis, x_mask, c_mask):
+    def forward(self, x, context, x_freqs_cis, c_freqs_cis, x_mask, c_mask, mod_c=None):
         c = self.ctx_proj(context)
         c = c.transpose(1, 2)
         h = x
+
         for layer in self.ctx_attention:
-            h = layer(h, c, x_freqs_cis, c_freqs_cis, x_mask, c_mask)
-        h = self.attn_norm(h)
-        h = self.attn_output(h)
+            h = layer(h, c, x_freqs_cis, c_freqs_cis, x_mask, c_mask, mod_c=mod_c)
+
+        if self.adaLN_modulation is None:
+            h = self.attn_output(self.attn_norm(h))
+        else:
+            assert mod_c is not None
+            shift, scale = self.adaLN_modulation(mod_c).chunk(2, dim=1)
+            h = self.attn_output(modulate(self.attn_norm(h), shift, scale))
         return h
 
 
@@ -666,6 +703,22 @@ class DurInputAdaptor(InputAdaptor):
         non_padding = (tokens != self.pad_token).float()
         out = h * non_padding.unsqueeze(2)
         return out.transpose(1, 2)
+
+
+class E2ECtxCharInputAdaptor(InputAdaptor):
+    def __init__(self, embedding_dim, vocab_size, ctx_dim, num_layers=4):
+        super().__init__()
+        self.tok_embeddings = nn.Embedding(vocab_size, embedding_dim)
+        self.ctx_proj = nn.Conv1d(ctx_dim, embedding_dim, kernel_size=1)
+        self.tok_blocks = nn.Sequential(*[ConvNeXtV2Block(embedding_dim, embedding_dim*3) for _ in range(num_layers)])
+        self.ctx_blocks = nn.Sequential(*[ConvNeXtV2Block(embedding_dim, embedding_dim*3) for _ in range(num_layers)])
+
+    def forward(self, tokens, ctx):
+        te = self.tok_embeddings(tokens).transpose(1, 2)
+        ce = self.ctx_proj(ctx)
+        te = self.tok_blocks(te)
+        ce = self.ctx_blocks(ce)
+        return torch.cat([te, ce], dim=1)
 
 
 class InputAdaptorProject(nn.Module):

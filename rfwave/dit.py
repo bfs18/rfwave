@@ -6,12 +6,8 @@ from torch import nn
 from torch.nn import functional as F
 from rfwave.modules import GRN
 from rfwave.models import Backbone, Base2FourierFeatures
-from rfwave.input import (precompute_freqs_cis,  RMSNorm, apply_rotary_emb, get_pos_embed,
-                          _get_len, _get_start, sequence_mask, score_mask)
-
-
-def modulate(x, shift, scale):
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+from rfwave.input import (precompute_freqs_cis,  RMSNorm, apply_rotary_emb, get_pos_embed, modulate,
+                          _get_len, _get_start, sequence_mask, score_mask, ContextBlock, ModelArgs)
 
 
 class ConvFeedForward(nn.Module):
@@ -292,8 +288,7 @@ class DiTRFBackbone(Backbone):
         nn.init.constant_(self.final.adaLN_modulation[-1].bias, 0)
         nn.init.trunc_normal_(self.final.linear.weight, mean=0., std=0.02)
 
-    def forward(self, z_t, t, x, bandwidth_id=None,
-                start=None, length=None, encodec_bandwidth_id=None):
+    def forward(self, z_t, t, x, bandwidth_id=None, start=None, encodec_bandwidth_id=None):
         if self.with_fourier_features:
             z_t_f = self.fourier_module(z_t)
             x = self.embed(torch.cat([z_t, x, z_t_f], dim=1))
@@ -315,7 +310,7 @@ class DiTRFBackbone(Backbone):
 
         x = x.transpose(1, 2)
         start = _get_start(z_t, start)
-        length = _get_len(z_t, None)
+        length = _get_len(z_t, None)  # length is None
         freq_cis = get_pos_embed(self.pos_embed if self.training else self.pos_embed_eval, start, length.max())
         for block in self.blocks:
             x = block(x, c, freq_cis, None)
@@ -359,5 +354,76 @@ class DiTRFTTSMultiTaskBackbone(Backbone):
             with_fourier_features=with_fourier_features)
 
     def forward(self, z_t: torch.Tensor, t: torch.Tensor, x: torch.Tensor,
-                bandwidth_id: torch.Tensor=None, start=None, length=None):
-        return self.module(z_t, t, x, bandwidth_id, start=start, length=length)
+                bandwidth_id: torch.Tensor=None, start=None):
+        return self.module(z_t, t, x, bandwidth_id, start=start)
+
+
+class DiTRFE2ETTSMultiTaskBackbone(Backbone):
+    def __init__(
+        self,
+        input_channels: int,
+        output_channels1: int,
+        output_channels2: int,
+        dim: int,
+        intermediate_dim: int,
+        num_layers1: int,
+        num_layers2: int,
+        num_ctx_layers: int,
+        num_bands: int,
+        num_heads: int = 6,
+        dropout: float = 0.,
+        pe_scale: float = 1000.,
+        with_fourier_features: bool = True,
+    ):
+        super().__init__()
+        self.input_channels = input_channels
+        self.output_channels1 = output_channels1
+        self.output_channels2 = output_channels2
+        self.num_bands = num_bands
+
+        params = ModelArgs(dim=dim, n_heads=num_heads, dropout=dropout)
+        self.ctx_proj = nn.Conv1d(output_channels1, dim, 1)
+        self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
+
+        self.module = DiTRFBackbone(
+            input_channels=input_channels,
+            output_channels=output_channels1 + output_channels2,
+            dim=dim,
+            intermediate_dim=intermediate_dim,
+            num_layers=num_layers1 + num_layers2,
+            num_bands=num_bands,
+            encodec_num_embeddings=None,
+            num_heads=num_heads,
+            dropout=dropout,
+            pe_scale=pe_scale,
+            with_fourier_features=with_fourier_features)
+
+    @property
+    def pos_embed(self):
+        return self.module.pos_embed if self.training else self.module.pos_embed_eval
+
+    def time_embed(self, t):
+        return self.module.time_embed(t)
+
+    def forward(self, z_t: torch.Tensor, t: torch.Tensor, x: torch.Tensor,
+                bandwidth_id: torch.Tensor=None, start=None, token_ref_length=None):
+        z_t1, z_t2 = torch.split(z_t, [self.output_channels1, self.output_channels2], dim=1)
+        ctx = self.ctx_proj(x)
+
+        # pos_embed for z_t1
+        start = _get_start(z_t, start)
+        length = _get_len(z_t, None)  # length is None
+        z_freq_cis = get_pos_embed(self.pos_embed, start, length.max())
+        # pos_embed for token and ref
+        token_length, ref_length = token_ref_length.unbind(1)
+        token_mask = score_mask(token_length)
+        ref_mask = score_mask(ref_length)
+        zero_start = _get_start(z_t, None)
+        token_freq_cis = get_pos_embed(self.pos_embed, zero_start, token_length.max())
+        ref_freq_cis = get_pos_embed(self.pos_embed, zero_start, ref_length.max())
+        ctx_mask = torch.cat([token_mask, ref_mask], dim=-1)
+        ctx_freq_cis = torch.cat([token_freq_cis, ref_freq_cis], dim=1)
+
+        te = self.time_embed(t)
+        ctx = self.cross_attn(z_t1, ctx, z_freq_cis, ctx_freq_cis, None, ctx_mask, mod_c=te)
+        return self.module(z_t, t, ctx, bandwidth_id, start=start, length=length)

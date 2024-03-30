@@ -19,7 +19,8 @@ from rfwave.modules import safe_log, safe_log10, pseudo_huber_loss
 from rfwave.multi_band_processor import MultiBandProcessor, PQMFProcessor, STFTProcessor
 from rfwave.rvm import RelativeVolumeMel
 from rfwave.lr_schedule import get_cosine_schedule_with_warmup
-from rfwave.input import InputAdaptor, InputAdaptorProject
+from rfwave.input import (InputAdaptor, InputAdaptorProject, CtxCharInputAdaptor, Ctx2CharInputAdaptor,
+                          E2ECtxCharInputAdaptor, CharInputAdaptor)
 from rfwave.helpers import save_code
 from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_error, compute_instantaneous_frequency
 from rfwave.feature_weight import get_feature_weight, get_feature_weight2
@@ -267,11 +268,9 @@ class RectifiedFlow(nn.Module):
 
     def get_pred(self, z_t, t, text, bandwidth_id, **kwargs):
         backbone_kwargs = {}
-        n_rpt = z_t.size(0) // kwargs['length'].size(0)
+        n_rpt = z_t.size(0) // kwargs['start'].size(0)
         if 'start' in kwargs:
             backbone_kwargs['start'] = torch.repeat_interleave(kwargs['start'], n_rpt, 0)
-        if 'length' in kwargs:
-            backbone_kwargs['length'] = torch.repeat_interleave(kwargs['length'], n_rpt, 0)
         pred = self.backbone(z_t, t, text, bandwidth_id, **backbone_kwargs)
         return pred
 
@@ -653,18 +652,30 @@ class VocosExp(pl.LightningModule):
         return loss
 
     def process_context(self, phone_info):
-        if len(phone_info) == 4:
-            return phone_info
-        elif len(phone_info) == 6 or len(phone_info) == 8:
-            # phone_info[4] = self.reflow.get_eq_norm_stft(phone_info[4])
+        pi_kwargs = {}
+        if isinstance(self.input_adaptor, CharInputAdaptor):
+            assert len(phone_info) == 4
+            pi_kwargs['start'] = phone_info[3]
+        elif isinstance(self.input_adaptor, E2ECtxCharInputAdaptor):
+            assert len(phone_info) == 4
+            phone_info[2] = self.feature_extractor(phone_info[2])
+            pi_kwargs['start'] = phone_info[1]
+            pi_kwargs['token_ref_length'] = phone_info[3]
+        elif isinstance(self.input_adaptor, CtxCharInputAdaptor):
+            assert len(phone_info) == 6
             phone_info[4] = self.feature_extractor(phone_info[4])
+            pi_kwargs['start'] = phone_info[3]
+        elif isinstance(self.input_adaptor, Ctx2CharInputAdaptor):
+            assert len(phone_info) == 8
+            phone_info[4] = self.reflow.get_eq_norm_stft(phone_info[4])
+            pi_kwargs['start'] = phone_info[3]
         else:
             raise ValueError(f"Invalid phone_info, #fields {len(phone_info)}")
-        return phone_info
+        return phone_info, pi_kwargs
 
     def training_step(self, batch, batch_idx, **kwargs):
         audio_input, phone_info = batch
-        phone_info = self.process_context(phone_info)
+        phone_info, pi_kwargs = self.process_context(phone_info)
         mel = self.feature_extractor(audio_input, **kwargs)
         tandem_feat = mel if self.tandem_type == 'mel' else self.get_log_spec(audio_input)
         # train generator
@@ -675,13 +686,13 @@ class VocosExp(pl.LightningModule):
         text = self.input_adaptor(*phone_info)
         cond_mel_loss = self.compute_aux_loss(text, audio_input, self.aux_type) if self.aux_loss else 0.
         text_ext, bandwidth_id, (z_t, t, target) = self.reflow.get_train_tuple(text, tandem_feat, audio_input)
-        kwargs['start'], kwargs['length'] = phone_info[3], phone_info[5]
+        kwargs.update(**pi_kwargs)
         loss, loss_dict = self.reflow.compute_loss(
             z_t, t, target, text_ext, bandwidth_id=bandwidth_id, **kwargs)
         loss = loss + cond_mel_loss
         self.manual_backward(loss)
         self.skip_nan(opt_gen)
-        self.clip_gradients(opt_gen, gradient_clip_val=5., gradient_clip_algorithm="norm")
+        self.clip_gradients(opt_gen, gradient_clip_val=1., gradient_clip_algorithm="norm")
         opt_gen.step()
         sch_gen.step()
 

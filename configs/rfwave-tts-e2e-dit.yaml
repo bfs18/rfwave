@@ -10,11 +10,11 @@ data:
       batch_size: 22
       num_workers: 8
       cache: True
-      task: tts
+      task: e2e
       hop_length: 256
       padding: "center"
       phoneset: synta_phoneset.th
-      min_context: 200
+      min_context: 50
 
     val_params:
       filelist_path: synta_filelist.valid
@@ -23,11 +23,11 @@ data:
       batch_size: 16
       num_workers: 4
       cache: True
-      task: tts
+      task: e2e
       hop_length: 256
       padding: "center"
       phoneset: synta_phoneset.th
-      min_context: 200
+      min_context: 50
 
 model:
   class_path: rfwave.experiment_reflow_subband_tts.VocosExp
@@ -52,17 +52,17 @@ model:
         padding: center
 
     backbone:
-      class_path: rfwave.models.VocosRFTTSMultiTaskBackbone
+      class_path: rfwave.dit.DiTRFE2ETTSMultiTaskBackbone
       init_args:
         input_channels: 512
         output_channels1: 100
         output_channels2: 160
-        dim: 512
-        intermediate_dim: 1536
+        dim: 384
+        intermediate_dim: 1152
         num_layers1: 4
         num_layers2: 8
         num_bands: 8
-        prev_cond: False
+        num_heads: 6
 
     head:
       class_path: rfwave.heads.RFSTFTHead
@@ -73,7 +73,7 @@ model:
         padding: center
 
     input_adaptor:
-      class_path: rfwave.input.CtxCharInputAdaptor
+      class_path: rfwave.input.E2ECtxCharInputAdaptor
       init_args:
         embedding_dim: 512
         vocab_size: 78
