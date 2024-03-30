@@ -382,7 +382,7 @@ class CrossAttTransformerBlock(nn.Module):
     def forward(self, x, context, x_freqs_cis, c_freqs_cis, x_mask, c_mask):
         h = x + self.attention.forward(self.attention_norm(x), x_freqs_cis, x_mask)
         h = h + self.cross_attention.forward(
-            self.cross_attention_norm(h), context, None, None, c_mask)
+            self.cross_attention_norm(h), context, x_freqs_cis, c_freqs_cis, c_mask)
         out = h + self.feed_forward.forward(self.ffn_norm(h))
         return out
 
@@ -481,13 +481,11 @@ class CtxCharInputAdaptor(InputAdaptor):
         non_padding = (expanded_phone.abs().sum(2) > 0.).float()
         num_frames = torch.sum(token_frames, dim=1).long()
 
-        # freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
-        #                           frame_start, num_frames.max())
-        freqs_cis = get_pos_embed(self.attn_freqs_cis, frame_start, num_frames.max())
+        freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
+                                  frame_start, num_frames.max())
         x_mask = score_mask_from_bool_mask(non_padding == 0)
-        # ctx_freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
-        #                               torch.zeros_like(frame_start), context.size(2))
-        ctx_freqs_cis = None
+        ctx_freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
+                                      torch.zeros_like(frame_start), context.size(2))
         ctx_mask = score_mask(context_lengths)
 
         context = self.ctx_proj(context)
@@ -601,13 +599,11 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         non_padding = (expanded_phone.abs().sum(2) > 0.).float()
         num_frames = torch.sum(token_frames, dim=1).long()
 
-        # freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
-        #                           frame_start, num_frames.max())
-        freqs_cis = get_pos_embed(self.attn_freqs_cis, frame_start, num_frames.max())
+        freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
+                                  frame_start, num_frames.max())
         x_mask = score_mask_from_bool_mask(non_padding == 0)
-        # ctx_freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
-        #                               torch.zeros_like(frame_start), context.size(2))
-        ctx_freqs_cis = None
+        ctx_freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
+                                      torch.zeros_like(frame_start), context.size(2))
         ctx_mask = score_mask(context_lengths)
 
         context = self.forward_ctx(context, context_lengths, ctx_tokens, ctx_token_frames)
