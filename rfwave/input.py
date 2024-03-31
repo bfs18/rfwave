@@ -718,7 +718,7 @@ class E2ECtxCharInputAdaptor(InputAdaptor):
         ce = self.ctx_proj(ctx)
         te = self.tok_blocks(te)
         ce = self.ctx_blocks(ce)
-        return torch.cat([te, ce], dim=1)
+        return torch.cat([te, ce], dim=2)
 
 
 class InputAdaptorProject(nn.Module):

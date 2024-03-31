@@ -61,6 +61,7 @@ model:
         intermediate_dim: 1152
         num_layers1: 4
         num_layers2: 8
+        num_ctx_layers: 4
         num_bands: 8
         num_heads: 6
 
@@ -78,8 +79,7 @@ model:
         embedding_dim: 512
         vocab_size: 78
         ctx_dim: 100
-        n_attn_layers: 4
-        n_conv_layers: 4
+        num_layers: 4
 
 trainer:
   check_val_every_n_epoch: 10

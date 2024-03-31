@@ -603,7 +603,7 @@ class TTSCtxDatasetSegment(Dataset):
 
 class E2ETTSCtxDataset(Dataset):
     def __init__(self, cfg: DataConfig, train: bool):
-        assert cfg.task == "tts"
+        assert cfg.task == "e2e"
         assert cfg.hop_length is not None
         assert cfg.phoneset is not None
         assert cfg.padding is not None
@@ -682,31 +682,31 @@ class E2ETTSCtxDataset(Dataset):
                 start_frame = 0
                 end_frame = start_frame + num_frames
 
-                # get context
-                if start_frame > self.min_context:
-                    max_context = np.minimum(start_frame, self.max_context)
-                    ctx_n_frame = np.random.randint(self.min_context, max_context)
-                    ctx_start_frame = np.random.randint(0, start_frame - ctx_n_frame)
-                elif total_frames - (start_frame + num_frames) > self.min_context:
-                    max_context = np.minimum(total_frames - (start_frame + num_frames), self.max_context)
-                    ctx_n_frame = np.random.randint(self.min_context, max_context)
-                    ctx_start_frame = np.random.randint(start_frame + num_frames, total_frames - ctx_n_frame)
+            # get context
+            if start_frame > self.min_context:
+                max_context = np.minimum(start_frame, self.max_context)
+                ctx_n_frame = np.random.randint(self.min_context, max_context)
+                ctx_start_frame = np.random.randint(0, start_frame - ctx_n_frame)
+            elif total_frames - (start_frame + num_frames) > self.min_context:
+                max_context = np.minimum(total_frames - (start_frame + num_frames), self.max_context)
+                ctx_n_frame = np.random.randint(self.min_context, max_context)
+                ctx_start_frame = np.random.randint(start_frame + num_frames, total_frames - ctx_n_frame)
+            else:
+                # ctx_start_frame = 0
+                # ctx_n_frame = self.min_context
+                if start_frame > total_frames - (start_frame + num_frames):
+                    ctx_start_frame = 0
+                    ctx_n_frame = start_frame
                 else:
-                    # ctx_start_frame = 0
-                    # ctx_n_frame = self.min_context
-                    if start_frame > total_frames - (start_frame + num_frames):
-                        ctx_start_frame = 0
-                        ctx_n_frame = start_frame
-                    else:
-                        ctx_start_frame = start_frame + num_frames
-                        ctx_n_frame = total_frames - ctx_start_frame
+                    ctx_start_frame = start_frame + num_frames
+                    ctx_n_frame = total_frames - ctx_start_frame
 
         # get context
         ctx_start = ctx_start_frame * self.hop_length
         ctx_end = (ctx_start_frame + ctx_n_frame) * self.hop_length
         y_ctx = y[:, ctx_start: ctx_end]
         ctx_n_frame = ctx_n_frame + 1 if self.padding == 'center' else ctx_n_frame
-        return y_seg[0], (token_ids, start_frame, y_ctx,
+        return y_seg[0], (token_ids, start_frame, y_ctx[0],
                           torch.tensor([len(token_ids), ctx_n_frame], dtype=torch.long))
 
 

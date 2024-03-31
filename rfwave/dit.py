@@ -382,11 +382,11 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         self.num_bands = num_bands
 
         params = ModelArgs(dim=dim, n_heads=num_heads, dropout=dropout)
-        self.ctx_proj = nn.Conv1d(output_channels1, dim, 1)
+        self.z_t1_proj = nn.Conv1d(output_channels1, dim, 1)
         self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
 
         self.module = DiTRFBackbone(
-            input_channels=input_channels,
+            input_channels=dim,
             output_channels=output_channels1 + output_channels2,
             dim=dim,
             intermediate_dim=intermediate_dim,
@@ -408,9 +408,11 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
     def forward(self, z_t: torch.Tensor, t: torch.Tensor, x: torch.Tensor,
                 bandwidth_id: torch.Tensor=None, start=None, token_ref_length=None):
         z_t1, z_t2 = torch.split(z_t, [self.output_channels1, self.output_channels2], dim=1)
-        ctx = self.ctx_proj(x)
+        z_t1 = self.z_t1_proj(z_t1)
 
         # pos_embed for z_t1
+        assert start is not None
+        assert token_ref_length is not None
         start = _get_start(z_t, start)
         length = _get_len(z_t, None)  # length is None
         z_freq_cis = get_pos_embed(self.pos_embed, start, length.max())
@@ -425,5 +427,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         ctx_freq_cis = torch.cat([token_freq_cis, ref_freq_cis], dim=1)
 
         te = self.time_embed(t)
-        ctx = self.cross_attn(z_t1, ctx, z_freq_cis, ctx_freq_cis, None, ctx_mask, mod_c=te)
-        return self.module(z_t, t, ctx, bandwidth_id, start=start, length=length)
+        z_t1 = z_t1.transpose(1, 2)
+        ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, None, ctx_mask, mod_c=te)
+        ctx = ctx.transpose(1, 2)
+        return self.module(z_t, t, ctx, bandwidth_id, start=start)

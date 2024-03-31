@@ -82,7 +82,7 @@ def tts(model_dir, phone_info, save_dir, ref_audio, ref_align, sr):
         cond = exp.input_adaptor(*phone_info)
         start = torch.tensor([0])
         length = torch.tensor([phone_info[1].sum()])
-        mel, wave = exp.reflow.sample_ode(cond, N=10, start=start, length=length)
+        mel, wave = exp.reflow.sample_ode(cond, N=10, start=start, out_length=length)
         mel = mel[-1].detach().cpu()
         wave = wave[-1].detach().cpu()
         torch.save(mel, Path(save_dir) / f'{k}.th')

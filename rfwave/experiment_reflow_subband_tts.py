@@ -127,18 +127,18 @@ class RectifiedFlow(nn.Module):
         cond[:, cond.size(1) - self.right_overlap:] = 0.
         return torch.cat([cond[..., 0], cond[..., 1]], dim=1)
 
-    def get_z0(self, text, bandwidth_id):
+    def get_z0(self, text, bandwidth_id, length):
         bandwidth_id = bandwidth_id[0]
         # for training var pred.
         if self.wave:
-            nf = text.shape[2] if self.head.padding == "same" else (text.shape[2] - 1)
+            nf = length if self.head.padding == "same" else (length - 1)
             r = torch.randn([text.shape[0], self.head.hop_length * nf], device=text.device)
             rf = self.stft(r)
             z0_2 = self.get_subband(rf, bandwidth_id)
         else:
-            r = torch.randn([text.shape[0], self.head.n_fft + 2, text.shape[2]], device=text.device)
+            r = torch.randn([text.shape[0], self.head.n_fft + 2, length], device=text.device)
             z0_2 = self.get_subband(r, bandwidth_id)
-        z0_1 = torch.randn([text.shape[0], self.output_channels1, text.shape[1]], device=text.device)
+        z0_1 = torch.randn([text.shape[0], self.output_channels1, length], device=text.device)
         return torch.cat([z0_1, z0_2], dim=1)
 
     def same_noise_for_bands(self, noise):
@@ -147,17 +147,17 @@ class RectifiedFlow(nn.Module):
         noise = noise[:, 0]
         return noise.repeat_interleave(self.num_bands, dim=0)
 
-    def get_joint_z0(self, text):
+    def get_joint_z0(self, text, length):
         if self.wave:
-            nf = text.shape[2] if self.head.padding == "same" else (text.shape[2] - 1)
+            nf = length if self.head.padding == "same" else (length - 1)
             r = torch.randn([text.shape[0], self.head.hop_length * nf], device=text.device)
             rf = self.stft(r)
             z0_2 = self.get_joint_subband(rf)
         else:
-            r = torch.randn([text.shape[0], self.head.n_fft + 2, text.shape[2]], device=text.device)
+            r = torch.randn([text.shape[0], self.head.n_fft + 2, length], device=text.device)
             z0_2 = self.get_joint_subband(r)
         z0_2 = z0_2.reshape(z0_2.size(0) * self.num_bands, z0_2.size(1) // self.num_bands, z0_2.size(2))
-        z0_1 = torch.randn((text.size(0) * self.num_bands, self.output_channels1, text.shape[2]),
+        z0_1 = torch.randn((text.size(0) * self.num_bands, self.output_channels1, length),
                            device=text.device)
         z0_1 = self.same_noise_for_bands(z0_1)
         return torch.cat([z0_1, z0_2], dim=1)
@@ -248,12 +248,12 @@ class RectifiedFlow(nn.Module):
             t = self.sample_t((mel.size(0),), device=mel.device)
             bandwidth_id = torch.tile(torch.randint(0, self.num_bands, (), device=mel.device), (mel.size(0),))
             bandwidth_id = torch.ones([mel.shape[0]], dtype=torch.long, device=mel.device) * bandwidth_id
-            z0 = self.get_z0(text, bandwidth_id)
+            z0 = self.get_z0(text, bandwidth_id, mel.size(2))
             z1, cond_band = self.get_z1(audio_input, mel, bandwidth_id)
             text = torch.cat([text, cond_band], 1) if self.prev_cond else mel
         else:
             t = self.sample_t((mel.size(0),), device=mel.device).repeat_interleave(self.num_bands, 0)
-            z0 = self.get_joint_z0(text)
+            z0 = self.get_joint_z0(text, mel.size(2))
             z1 = self.get_joint_z1(audio_input, mel)
             bandwidth_id = torch.tile(torch.arange(self.num_bands, device=mel.device), (mel.size(0),))
             text = torch.repeat_interleave(text, self.num_bands, 0)
@@ -271,6 +271,8 @@ class RectifiedFlow(nn.Module):
         n_rpt = z_t.size(0) // kwargs['start'].size(0)
         if 'start' in kwargs:
             backbone_kwargs['start'] = torch.repeat_interleave(kwargs['start'], n_rpt, 0)
+        if 'token_ref_length' in kwargs:
+            backbone_kwargs['token_ref_length'] = torch.repeat_interleave(kwargs['token_ref_length'], n_rpt, 0)
         pred = self.backbone(z_t, t, text, bandwidth_id, **backbone_kwargs)
         return pred
 
@@ -301,13 +303,13 @@ class RectifiedFlow(nn.Module):
             assert band is not None
             assert bandwidth_id is not None
             # get z0 must be called before pre-processing text
-            z0 = self.get_z0(text, bandwidth_id)
+            z0 = self.get_z0(text, bandwidth_id, kwargs['out_length'])
             text = torch.cat([text, band], 1) if self.prev_cond else text
         else:
             assert band is None
             assert bandwidth_id is None
             bandwidth_id = torch.tile(torch.arange(self.num_bands, device=text.device), (text.size(0),))
-            z0 = self.get_joint_z0(text)  # get z0 must be called before pre-processing text
+            z0 = self.get_joint_z0(text, kwargs['out_length'])  # get z0 must be called before pre-processing text
             text = torch.repeat_interleave(text, self.num_bands, 0)
 
         z = z0.detach()
@@ -378,6 +380,7 @@ class RectifiedFlow(nn.Module):
         return c_traj
 
     def sample_ode(self, text, N=None, keep_traj=False, **kwargs):
+        assert 'out_length' in kwargs, "out_length (#output frames) must be kwargs in sample ode"
         traj_1 = []
         traj_2 = []
         if self.prev_cond or not self.parallel_uncond:
@@ -653,19 +656,22 @@ class VocosExp(pl.LightningModule):
 
     def process_context(self, phone_info):
         pi_kwargs = {}
-        if isinstance(self.input_adaptor, CharInputAdaptor):
+        input_adaptor = (self.input_adaptor._orig_mod if hasattr(self.input_adaptor, '_orig_mod')
+                         else self.input_adaptor)
+        if isinstance(input_adaptor, CharInputAdaptor):
             assert len(phone_info) == 4
             pi_kwargs['start'] = phone_info[3]
-        elif isinstance(self.input_adaptor, E2ECtxCharInputAdaptor):
+        elif isinstance(input_adaptor, E2ECtxCharInputAdaptor):
             assert len(phone_info) == 4
             phone_info[2] = self.feature_extractor(phone_info[2])
             pi_kwargs['start'] = phone_info[1]
             pi_kwargs['token_ref_length'] = phone_info[3]
-        elif isinstance(self.input_adaptor, CtxCharInputAdaptor):
-            assert len(phone_info) == 6
+            phone_info = [phone_info[0], phone_info[2]]
+        elif isinstance(input_adaptor, CtxCharInputAdaptor):
+            assert len(phone_info) == 8
             phone_info[4] = self.feature_extractor(phone_info[4])
             pi_kwargs['start'] = phone_info[3]
-        elif isinstance(self.input_adaptor, Ctx2CharInputAdaptor):
+        elif isinstance(input_adaptor, Ctx2CharInputAdaptor):
             assert len(phone_info) == 8
             phone_info[4] = self.reflow.get_eq_norm_stft(phone_info[4])
             pi_kwargs['start'] = phone_info[3]
@@ -699,6 +705,7 @@ class VocosExp(pl.LightningModule):
         self.log("train/total_loss", loss, prog_bar=True, logger=False)
         if self.global_step % 1000 == 0 and self.global_rank == 0:
             with torch.no_grad():
+                kwargs['out_length'] = z_t.size(2)
                 mel_hat_traj, audio_hat_traj = self.reflow.sample_ode(text, N=100, **kwargs)
             audio_hat = audio_hat_traj[-1]
             mel_hat = mel_hat_traj[-1]
@@ -717,12 +724,13 @@ class VocosExp(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx, **kwargs):
         audio_input, phone_info = batch
-        phone_info = self.process_context(phone_info)
+        phone_info, pi_kwargs = self.process_context(phone_info)
         with torch.no_grad():
             mel = self.feature_extractor(audio_input, **kwargs)
             tandem_feat = mel if self.tandem_type == "mel" else self.get_log_spec(audio_input)
             text = self.input_adaptor(*phone_info)
-            kwargs['start'], kwargs['length'] = phone_info[3], phone_info[5]
+            kwargs.update(**pi_kwargs)
+            kwargs['out_length'] = mel.size(2)
             mel_hat_traj, audio_hat_traj = self.reflow.sample_ode(text, N=100, **kwargs)
             cond_mel_hat = self.input_adaptor_proj(text) if self.aux_loss else None
         audio_hat = audio_hat_traj[-1]
