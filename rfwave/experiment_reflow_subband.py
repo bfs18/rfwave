@@ -39,7 +39,7 @@ class RectifiedFlow(nn.Module):
         self.wave = wave
         self.equalizer = wave
         self.stft_norm = not wave
-        self.stft_loss = False
+        self.stft_loss = wave
         self.phase_loss = False
         self.overlap_loss = True
         self.num_bands = num_bands
@@ -59,7 +59,8 @@ class RectifiedFlow(nn.Module):
         assert self.prev_cond == self.backbone.prev_cond
         assert self.wave ^ self.stft_norm
         assert self.right_overlap >= 1  # at least one to deal with the last dimension of fft feature.
-        t_sampling = 'logit_normal' if isinstance(backbon, DiTRFBackbone) else 'uniform'
+        # t_sampling = 'logit_normal' if isinstance(backbon, DiTRFBackbone) else 'uniform'
+        t_sampling = 'uniform'
         self.t_dist = LogitNormal(mu=0., sigma=1.) if t_sampling == 'logit_normal' else None
         if self.stft_norm:
             self.stft_processor = STFTProcessor(self.head.n_fft + 2)

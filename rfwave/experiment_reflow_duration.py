@@ -28,7 +28,8 @@ class RectifiedFlow(nn.Module):
         self.dur_processor = STFTProcessor(1)
         self.validation_step_outputs = []
         self.automatic_optimization = False
-        t_sampling = 'logit_normal' if isinstance(backbone, DiTRFBackbone) else 'uniform'
+        # t_sampling = 'logit_normal' if isinstance(backbone, DiTRFBackbone) else 'uniform'
+        t_sampling = 'uniform'
         self.t_dist = LogitNormal(mu=0., sigma=1.) if t_sampling == 'logit_normal' else None
 
     def get_z0(self, text):
