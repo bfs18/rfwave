@@ -145,9 +145,12 @@ def _get_len(tensor, length):
             if length is None else length)
 
 
-def get_pos_embed(pos_embed_table, start, length):
+def get_pos_embed(pos_embed_table, start, length, scale=1.):
     # length = length if isinstance(length, int) else length.max()
-    pos = start.unsqueeze(1) + torch.arange(length, device=start.device).unsqueeze(0)
+    scale = scale * torch.ones_like(start, dtype=torch.float32)  # in case scale is a scalar
+    pos = start.unsqueeze(1) + (
+            torch.arange(length, device=start.device, dtype=torch.float32).unsqueeze(0) *
+            scale.unsqueeze(1)).long()
     pe = pos_embed_table[pos]
     return pe
 
@@ -425,6 +428,29 @@ class ContextBlock(nn.Module):
             self.attn_norm = RMSNorm(args.dim, eps=args.norm_eps)
             self.adaLN_modulation = None
         self.attn_output = nn.Linear(args.dim, args.dim, bias=False)
+
+    def initialize_weights(self):
+        # Initialize transformer layers:
+        def _basic_init(module):
+            if isinstance(module, (nn.Linear, nn.Conv1d)):
+                torch.nn.init.trunc_normal_(module.weight, mean=0.0, std=0.02)
+                if module.bias is not None:
+                    torch.nn.init.zeros_(module.bias)
+        self.blocks.apply(_basic_init)
+        for pn, p in self.blocks.named_parameters():
+            if pn.endswith('wo.weight'):  # attention output weights
+                torch.nn.init.trunc_normal_(p, mean=0.0, std=0.02/math.sqrt(2 * self.num_layers))
+
+        # Zero-out adaLN modulation layers in DiT blocks:
+        for block in self.ctx_attention:
+            if block.adaLN_modulation is not None:
+                nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
+                nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
+        # Zero-out output layers:
+        if self.adaLN_modulation is not None:
+            nn.init.constant_(self.adaLN_modulation[-1].weight, 0)
+            nn.init.constant_(self.adaLN_modulation[-1].bias, 0)
+        nn.init.trunc_normal_(self.attn_output.weight, mean=0., std=0.02)
 
     def forward(self, x, context, x_freqs_cis, c_freqs_cis, x_mask, c_mask, mod_c=None):
         c = self.ctx_proj(context)

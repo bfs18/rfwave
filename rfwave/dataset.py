@@ -644,6 +644,7 @@ class E2ETTSCtxDataset(Dataset):
         y = y.detach().clone()[:, :y.size(1) // self.hop_length * self.hop_length]
         total_frames = y.size(1) // self.hop_length + (1 if self.padding == "center" else 0)
         token_ids = token_ids.detach().clone()
+        exp_scale = total_frames / token_ids.size(0)
 
         if y.size(-1) < self.num_samples + self.hop_length + self.min_context * self.hop_length:
             half_frames = total_frames // 2
@@ -707,7 +708,7 @@ class E2ETTSCtxDataset(Dataset):
         y_ctx = y[:, ctx_start: ctx_end]
         ctx_n_frame = ctx_n_frame + 1 if self.padding == 'center' else ctx_n_frame
         return y_seg[0], (token_ids, start_frame, y_ctx[0],
-                          torch.tensor([len(token_ids), ctx_n_frame], dtype=torch.long))
+                          torch.tensor([len(token_ids), ctx_n_frame, exp_scale], dtype=torch.float32))
 
 
 class DurDataset(Dataset):

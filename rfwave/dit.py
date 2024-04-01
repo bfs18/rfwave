@@ -400,7 +400,9 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
 
     @property
     def pos_embed(self):
-        return self.module.pos_embed if self.training else self.module.pos_embed_eval
+        # return self.module.pos_embed if self.training else self.module.pos_embed_eval
+        # always use the same positional embedding, since the input tokens and reference are not segment
+        return self.module.pos_embed
 
     def time_embed(self, t):
         return self.module.time_embed(t)
@@ -413,15 +415,17 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         # pos_embed for z_t1
         assert start is not None
         assert token_ref_length is not None
+
         start = _get_start(z_t, start)
         length = _get_len(z_t, None)  # length is None
         z_freq_cis = get_pos_embed(self.pos_embed, start, length.max())
         # pos_embed for token and ref
-        token_length, ref_length = token_ref_length.unbind(1)
+        token_length, ref_length, token_exp_scale = token_ref_length.unbind(1)
+        token_length, ref_length = token_length.long(), ref_length.long()
         token_mask = score_mask(token_length)
         ref_mask = score_mask(ref_length)
         zero_start = _get_start(z_t, None)
-        token_freq_cis = get_pos_embed(self.pos_embed, zero_start, token_length.max())
+        token_freq_cis = get_pos_embed(self.pos_embed, zero_start, token_length.max(), scale=token_exp_scale)
         ref_freq_cis = get_pos_embed(self.pos_embed, zero_start, ref_length.max())
         ctx_mask = torch.cat([token_mask, ref_mask], dim=-1)
         ctx_freq_cis = torch.cat([token_freq_cis, ref_freq_cis], dim=1)
