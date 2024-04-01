@@ -151,6 +151,8 @@ def get_pos_embed(pos_embed_table, start, length, scale=1.):
     pos = start.unsqueeze(1) + (
             torch.arange(length, device=start.device, dtype=torch.float32).unsqueeze(0) *
             scale.unsqueeze(1)).long()
+    # avoid extra long error.
+    pos = torch.where(pos < pos_embed_table.size(0), pos, pos_embed_table.size(0) - 1)
     pe = pos_embed_table[pos]
     return pe
 
