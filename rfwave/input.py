@@ -422,18 +422,38 @@ class CrossAttTransformerBlock(nn.Module):
 
 
 class AlignmentBlock(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, dim, ctx_dim):
         super().__init__()
         args = ModelArgs(dim, n_heads=1, multiple_of=128, return_attn_probs=True)
         self.dim = dim
+        self.ctx_proj = nn.Conv1d(ctx_dim, args.dim, 1) if ctx_dim != args.dim else nn.Identity()
         self.align_attn = Attention(args)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(), nn.Linear(self.dim, 3 * self.dim, bias=True))
         self.cross_attention_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
+        self.initialize_weights()
+
+    def initialize_weights(self):
+        # Initialize transformer layers:
+        def _basic_init(module):
+            if isinstance(module, (nn.Linear, nn.Conv1d)):
+                torch.nn.init.trunc_normal_(module.weight, mean=0.0, std=0.02)
+                if module.bias is not None:
+                    torch.nn.init.zeros_(module.bias)
+        self.blocks.apply(_basic_init)
+        for pn, p in self.blocks.named_parameters():
+            if pn.endswith('wo.weight'):  # attention output weights
+                torch.nn.init.trunc_normal_(p, mean=0.0, std=0.02/math.sqrt(2 * self.num_layers))
+        nn.init.constant_(self.adaLN_modulation[-1].weight, 0)
+        nn.init.constant_(self.adaLN_modulation[-1].bias, 0)
 
     def forward(self, x, context, x_freqs_cis, c_freqs_cis, x_mask, c_mask, mod_c):
+        context = self.ctx_proj(context).transpose(1, 2)
+        rpt = self.dim // x_freqs_cis.size(2)
+        x_freqs_cis = x_freqs_cis.repeat_interleave(rpt, dim=2)
+        c_freqs_cis = c_freqs_cis.repeat_interleave(rpt, dim=2)
         shift_crs, scale_crs, gate_crs = self.adaLN_modulation(mod_c).chunk(3, dim=1)
-        h, attn = self.cross_attention(
+        h, attn = self.align_attn(
             modulate(self.cross_attention_norm(x), shift_crs, scale_crs),
             context, x_freqs_cis, c_freqs_cis, c_mask)
         h = h + (gate_crs.unsqueeze(1) * h)

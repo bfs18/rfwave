@@ -385,7 +385,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         params = ModelArgs(dim=dim, n_heads=num_heads, dropout=dropout)
         self.z_t1_proj = nn.Conv1d(output_channels1, dim, 1)
         self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
-        self.align_block = AlignmentBlock(dim=dim)
+        self.align_block = AlignmentBlock(dim, input_channels)
 
         self.module = DiTRFBackbone(
             input_channels=dim,
@@ -440,7 +440,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         attn, _ = torch.split(attn, [token_length.max(), ref_length.max()], dim=-1)
         attn = attn / attn.sum(dim=-1, keepdim=True)  # renorm attn
         ctx = ctx.transpose(1, 2)
-        return self.module(z_t, t, ctx, bandwidth_id, start=start)
+        return self.module(z_t, t, ctx, bandwidth_id, start=start), attn
 
 
 def find_segment_tokens_(attn, thres=2., win=4):
@@ -476,13 +476,15 @@ def find_segment_tokens(attn, thres=2., win=4):
         return 0, 0
 
 
-def calculate_alignment_loss(attn, aco_start, token_length, token_exp_scale):
+def compute_alignment_loss(attn, start, token_ref_length):
     attn = attn.reshape(-1, *attn.shape[-2:])
     segment_attn = []
     segment_length = []
     aco_length = attn.size(1)
+    token_length, _, token_exp_scale = token_ref_length.unbind(1)
+    token_length = token_length.long()
     for attn_i, aco_start_i, token_length_i, token_exp_scale_i in zip(
-            attn, aco_start, token_length, token_exp_scale):
+            attn, start, token_length, token_exp_scale):
         attn_i = attn_i[:, :token_length_i]
         s, e = find_segment_tokens(attn_i)
         min_start = aco_start_i / token_exp_scale_i - 10

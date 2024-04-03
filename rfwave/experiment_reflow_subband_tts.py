@@ -24,7 +24,7 @@ from rfwave.input import (InputAdaptor, InputAdaptorProject, CtxCharInputAdaptor
 from rfwave.helpers import save_code
 from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_error, compute_instantaneous_frequency
 from rfwave.feature_weight import get_feature_weight, get_feature_weight2
-from rfwave.dit import DiTRFTTSMultiTaskBackbone
+from rfwave.dit import DiTRFTTSMultiTaskBackbone, compute_alignment_loss
 from rfwave.logit_normal import LogitNormal
 
 
@@ -325,11 +325,11 @@ class RectifiedFlow(nn.Module):
             if self.cfg:
                 text_ = torch.cat([text, torch.ones_like(text) * text.mean(dim=(0, 2), keepdim=True)], dim=0)
                 (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t, bandwidth_id)]
-                pred = self.get_pred(z_, t_.to(text.device), text_, bandwidth_id_, **kwargs)
+                pred, *opt_attn = self.get_pred(z_, t_.to(text.device), text_, bandwidth_id_, **kwargs)
                 pred, uncond_pred = torch.chunk(pred, 2, dim=0)
                 pred = uncond_pred + self.guidance_scale * (pred - uncond_pred)
             else:
-                pred = self.get_pred(z, t.to(text.device), text, bandwidth_id, **kwargs)
+                pred, *opt_attn = self.get_pred(z, t.to(text.device), text, bandwidth_id, **kwargs)
             if self.wave:
                 pred1, pred2 = self.split(pred)
                 if self.prev_cond or not self.parallel_uncond:
@@ -534,10 +534,22 @@ class RectifiedFlow(nn.Module):
         pred2 = torch.where(m, zero2, pred2)
         return pred1, pred2
 
+    @staticmethod
+    def compute_alignment_loss(opt_attn, **kwargs):
+        if len(opt_attn) == 1:
+            attn = opt_attn[0]
+            assert 'start' in kwargs and 'token_ref_length' in kwargs
+            attn_loss = compute_alignment_loss(attn, kwargs['start'], kwargs['token_ref_length'])
+        elif len(opt_attn) != 0:
+            raise ValueError("Unexpected number of return values of get_pred")
+        else:
+            attn_loss = 0.
+        return attn_loss
+
     def compute_loss(self, z_t, t, target, text, bandwidth_id, **kwargs):
         if self.cfg and np.random.uniform() < self.p_uncond:
             text = torch.ones_like(text) * text.mean(dim=(0, 2), keepdim=True)
-        pred = self.get_pred(z_t, t, text, bandwidth_id, **kwargs)
+        pred, *opt_attn = self.get_pred(z_t, t, text, bandwidth_id, **kwargs)
         t_ = t.view(-1, 1, 1)
         z_t1, z_t2 = self.split(z_t)
         if self.intt > 0.:
@@ -550,9 +562,10 @@ class RectifiedFlow(nn.Module):
         loss1 = self.compute_rf_loss1(pred1, target1)
         loss2 = self.compute_rf_loss2(pred2, target2, bandwidth_id)
         overlap_loss = self.compute_overlap_loss(pred2) if self.overlap_loss else 0.
-        loss_dict = {"loss1": loss1, "loss2": loss2, "stft_loss": stft_loss,
-                     "phase_loss": phase_loss, "overlap_loss": overlap_loss}
-        return loss1 * 5. + loss2 + (stft_loss + phase_loss + overlap_loss) * 0.1, loss_dict
+        attn_loss = self.compute_alignment_loss(opt_attn, **kwargs)
+        loss_dict = {"loss1": loss1, "loss2": loss2, "stft_loss": stft_loss, "phase_loss": phase_loss,
+                     "overlap_loss": overlap_loss, "attn_loss": attn_loss}
+        return loss1 * 5. + loss2 + (stft_loss + phase_loss + overlap_loss + attn_loss) * 0.1, loss_dict
 
 
 class VocosExp(pl.LightningModule):
