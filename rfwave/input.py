@@ -35,6 +35,7 @@ class ModelArgs:
     max_seq_len: int = 8192
     dropout: float = 0.0
     qk_norm: bool = True
+    return_attn_probs: bool = False
 
 
 class RMSNorm(torch.nn.Module):
@@ -176,6 +177,7 @@ class Attention(nn.Module):
         self.attn_dropout = nn.Dropout(args.dropout)
         self.resid_dropout = nn.Dropout(args.dropout)
         self.dropout = args.dropout
+        self.return_attn_probs = args.return_attn_probs
 
         # use flash attention or a manual implementation?
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
@@ -213,7 +215,7 @@ class Attention(nn.Module):
         xv = xv.transpose(1, 2)
 
         # flash implementation
-        if self.flash:
+        if self.flash and not self.return_attn_probs:
             output = torch.nn.functional.scaled_dot_product_attention(
                 xq, xk, xv, attn_mask=mask, dropout_p=self.dropout if self.training else 0.0)
         else:
@@ -231,7 +233,10 @@ class Attention(nn.Module):
         # final projection into the residual stream
         output = self.wo(output)
         output = self.resid_dropout(output)
-        return output
+        if self.return_attn_probs:
+            return output, scores
+        else:
+            return output
 
 
 class SelfAttention(Attention):
@@ -414,6 +419,25 @@ class CrossAttTransformerBlock(nn.Module):
             out = h + (gate_mlp.unsqueeze(1) * self.feed_forward(
                 modulate(self.ffn_norm(h), shift_mlp, scale_mlp)))
         return out
+
+
+class AlignmentBlock(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        args = ModelArgs(dim, n_heads=1, multiple_of=128, return_attn_probs=True)
+        self.dim = dim
+        self.align_attn = Attention(args)
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(), nn.Linear(self.dim, 3 * self.dim, bias=True))
+        self.cross_attention_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
+
+    def forward(self, x, context, x_freqs_cis, c_freqs_cis, x_mask, c_mask, mod_c):
+        shift_crs, scale_crs, gate_crs = self.adaLN_modulation(mod_c).chunk(3, dim=1)
+        h, attn = self.cross_attention(
+            modulate(self.cross_attention_norm(x), shift_crs, scale_crs),
+            context, x_freqs_cis, c_freqs_cis, c_mask)
+        h = h + (gate_crs.unsqueeze(1) * h)
+        return h, attn
 
 
 class ContextBlock(nn.Module):

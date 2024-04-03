@@ -6,8 +6,9 @@ from torch import nn
 from torch.nn import functional as F
 from rfwave.modules import GRN
 from rfwave.models import Backbone, Base2FourierFeatures
-from rfwave.input import (precompute_freqs_cis,  RMSNorm, apply_rotary_emb, get_pos_embed, modulate,
-                          _get_len, _get_start, sequence_mask, score_mask, ContextBlock, ModelArgs)
+from rfwave.input import (
+    precompute_freqs_cis,  RMSNorm, apply_rotary_emb, get_pos_embed, modulate,
+    _get_len, _get_start, sequence_mask, score_mask, ModelArgs, ContextBlock, AlignmentBlock)
 
 
 class ConvFeedForward(nn.Module):
@@ -384,6 +385,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         params = ModelArgs(dim=dim, n_heads=num_heads, dropout=dropout)
         self.z_t1_proj = nn.Conv1d(output_channels1, dim, 1)
         self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
+        self.align_block = AlignmentBlock(dim=dim)
 
         self.module = DiTRFBackbone(
             input_channels=dim,
@@ -433,5 +435,76 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         te = self.time_embed(t)
         z_t1 = z_t1.transpose(1, 2)
         ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, None, ctx_mask, mod_c=te)
+        # before or after cross attention
+        ctx, attn = self.align_block(ctx, x, z_freq_cis, ctx_freq_cis, None, ctx_mask, mod_c=te)
+        attn, _ = torch.split(attn, [token_length.max(), ref_length.max()], dim=-1)
+        attn = attn / attn.sum(dim=-1, keepdim=True)  # renorm attn
         ctx = ctx.transpose(1, 2)
         return self.module(z_t, t, ctx, bandwidth_id, start=start)
+
+
+def find_segment_tokens_(attn, thres=2., win=4):
+    expected_frames = attn.sum(0)
+    expected_frames = F.pad(expected_frames, (win // 2, win // 2))
+    l = expected_frames.size(0)
+
+    for i in range(win // 2, l - win // 2):
+        if (torch.all(expected_frames[i - win // 2: i] < thres) and
+                torch.all(expected_frames[i: i + win // 2] >= thres)):
+            break
+    s = i - 2
+    for i in reversed(range(win // 2, l - win // 2)):
+        if (torch.all(expected_frames[i - win // 2: i] >= thres) and
+                torch.all(expected_frames[i: i + win // 2] < thres)):
+            break
+    e = i - 2
+    return s, e
+
+
+def find_segment_tokens(attn, thres=2., win=4):
+    expected_frames = attn.sum(0)
+    expected_frames = F.pad(expected_frames, (win // 2, win // 2 - 1))
+    used_tokens = expected_frames >= thres
+    used_tokens = used_tokens.unfold(0, 4, 1)
+    start_patt = torch.tensor([0] * (win // 2) + [1] * (win // 2), dtype=torch.bool, device=attn.device)
+    end_patt = torch.tensor([1] * (win // 2) + [0] * (win // 2), dtype=torch.bool, device=attn.device)
+    s = torch.where(torch.all(used_tokens == start_patt, dim=1))[0]
+    e = torch.where(torch.all(used_tokens == end_patt, dim=1))[0]
+    if s.numel() > 0 and e.numel() > 0:
+        return s[0], e[-1]
+    else:
+        return 0, 0
+
+
+def calculate_alignment_loss(attn, aco_start, token_length, token_exp_scale):
+    attn = attn.reshape(-1, *attn.shape[-2:])
+    segment_attn = []
+    segment_length = []
+    aco_length = attn.size(1)
+    for attn_i, aco_start_i, token_length_i, token_exp_scale_i in zip(
+            attn, aco_start, token_length, token_exp_scale):
+        attn_i = attn_i[:, :token_length_i]
+        s, e = find_segment_tokens(attn_i)
+        min_start = aco_start_i / token_exp_scale_i - 10
+        max_end = (aco_start_i + aco_length) / token_exp_scale_i + 10
+        if min_start <= s < e <= max_end:
+            attn_i = attn_i[:, s: e]
+            segment_attn.append(attn_i)
+            segment_length.append(e - s)
+    if len(segment_attn) == 0:
+        return 0.
+    max_seg_len = max(segment_length)
+    batch_size = len(segment_attn)
+    attn = torch.zeros([batch_size, aco_length, max_seg_len], device=attn.device)
+    target = torch.zeros([batch_size, max_seg_len], device=attn.device, dtype=torch.long)
+    for i, (seg_len, seg_attn) in enumerate(zip(segment_length, segment_attn)):
+        attn[i, :, :seg_len] = seg_attn
+        target[i, :seg_len] = torch.arange(1, seg_len + 1, device=attn.device)
+    attn = F.pad(attn, (1, 0, 0, 0, 0, 0), value=0.2)  # prob for blank.
+    attn = attn / attn.sum(dim=-1, keepdim=True)
+    log_prob = torch.log(attn.clamp_min_(1e-5))
+    input_lengths = torch.ones([batch_size], device=attn.device, dtype=torch.long) * aco_length
+    target_lengths = torch.tensor(segment_length, device=attn.device, dtype=torch.long)
+    loss = F.ctc_loss(log_prob.transpose(1, 0), targets=target, zero_infinity=True,
+                      input_lengths=input_lengths, target_lengths=target_lengths, blank=0)
+    return loss
