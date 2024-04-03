@@ -440,8 +440,8 @@ class AlignmentBlock(nn.Module):
                 torch.nn.init.trunc_normal_(module.weight, mean=0.0, std=0.02)
                 if module.bias is not None:
                     torch.nn.init.zeros_(module.bias)
-        self.blocks.apply(_basic_init)
-        for pn, p in self.blocks.named_parameters():
+        self.apply(_basic_init)
+        for pn, p in self.named_parameters():
             if pn.endswith('wo.weight'):  # attention output weights
                 torch.nn.init.trunc_normal_(p, mean=0.0, std=0.02/math.sqrt(2 * self.num_layers))
         nn.init.constant_(self.adaLN_modulation[-1].weight, 0)
