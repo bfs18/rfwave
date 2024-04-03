@@ -275,7 +275,7 @@ class RectifiedFlow(nn.Module):
         if 'token_ref_length' in kwargs:
             backbone_kwargs['token_ref_length'] = torch.repeat_interleave(kwargs['token_ref_length'], n_rpt, 0)
         pred = self.backbone(z_t, t, text, bandwidth_id, **backbone_kwargs)
-        return pred
+        return (pred, None) if isinstance(pred, tuple) else pred
 
     def get_intt_dt(self, i, N):
         if i / N < self.intt:
@@ -325,11 +325,11 @@ class RectifiedFlow(nn.Module):
             if self.cfg:
                 text_ = torch.cat([text, torch.ones_like(text) * text.mean(dim=(0, 2), keepdim=True)], dim=0)
                 (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t, bandwidth_id)]
-                pred, *opt_attn = self.get_pred(z_, t_.to(text.device), text_, bandwidth_id_, **kwargs)
+                pred, opt_attn = self.get_pred(z_, t_.to(text.device), text_, bandwidth_id_, **kwargs)
                 pred, uncond_pred = torch.chunk(pred, 2, dim=0)
                 pred = uncond_pred + self.guidance_scale * (pred - uncond_pred)
             else:
-                pred, *opt_attn = self.get_pred(z, t.to(text.device), text, bandwidth_id, **kwargs)
+                pred, opt_attn = self.get_pred(z, t.to(text.device), text, bandwidth_id, **kwargs)
             if self.wave:
                 pred1, pred2 = self.split(pred)
                 if self.prev_cond or not self.parallel_uncond:
@@ -536,12 +536,9 @@ class RectifiedFlow(nn.Module):
 
     @staticmethod
     def compute_alignment_loss(opt_attn, **kwargs):
-        if len(opt_attn) == 1:
-            attn = opt_attn[0]
+        if opt_attn is not None:
             assert 'start' in kwargs and 'token_ref_length' in kwargs
-            attn_loss = compute_alignment_loss(attn, kwargs['start'], kwargs['token_ref_length'])
-        elif len(opt_attn) != 0:
-            raise ValueError("Unexpected number of return values of get_pred")
+            attn_loss = compute_alignment_loss(opt_attn, kwargs['start'], kwargs['token_ref_length'])
         else:
             attn_loss = 0.
         return attn_loss
@@ -549,7 +546,7 @@ class RectifiedFlow(nn.Module):
     def compute_loss(self, z_t, t, target, text, bandwidth_id, **kwargs):
         if self.cfg and np.random.uniform() < self.p_uncond:
             text = torch.ones_like(text) * text.mean(dim=(0, 2), keepdim=True)
-        pred, *opt_attn = self.get_pred(z_t, t, text, bandwidth_id, **kwargs)
+        pred, opt_attn = self.get_pred(z_t, t, text, bandwidth_id, **kwargs)
         t_ = t.view(-1, 1, 1)
         z_t1, z_t2 = self.split(z_t)
         if self.intt > 0.:
