@@ -460,9 +460,10 @@ class AlignmentBlock(nn.Module):
 class ContextBlock(nn.Module):
     def __init__(self, args: ModelArgs, ctx_dim, n_attn_layers=4, modulate=False):
         super().__init__()
+        self.num_layers = n_attn_layers
         self.ctx_proj = nn.Conv1d(ctx_dim, args.dim, 1) if ctx_dim != args.dim else nn.Identity()
-        self.ctx_attention = nn.ModuleList([CrossAttTransformerBlock(i, args, modulate=modulate)
-                                            for i in range(n_attn_layers)])
+        self.blocks = nn.ModuleList([CrossAttTransformerBlock(i, args, modulate=modulate)
+                                     for i in range(n_attn_layers)])
         if modulate:
             self.attn_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
             self.adaLN_modulation = nn.Sequential(
@@ -471,6 +472,7 @@ class ContextBlock(nn.Module):
             self.attn_norm = RMSNorm(args.dim, eps=args.norm_eps)
             self.adaLN_modulation = None
         self.attn_output = nn.Linear(args.dim, args.dim, bias=False)
+        self.initialize_weights()
 
     def initialize_weights(self):
         # Initialize transformer layers:
@@ -481,11 +483,11 @@ class ContextBlock(nn.Module):
                     torch.nn.init.zeros_(module.bias)
         self.blocks.apply(_basic_init)
         for pn, p in self.blocks.named_parameters():
-            if pn.endswith('wo.weight'):  # attention output weights
+            if pn.endswith('wo.weight') or pn.endswith('w3.weight'):  # attention output weights
                 torch.nn.init.trunc_normal_(p, mean=0.0, std=0.02/math.sqrt(2 * self.num_layers))
 
         # Zero-out adaLN modulation layers in DiT blocks:
-        for block in self.ctx_attention:
+        for block in self.blocks:
             if block.adaLN_modulation is not None:
                 nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
                 nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
@@ -500,7 +502,7 @@ class ContextBlock(nn.Module):
         c = c.transpose(1, 2)
         h = x
 
-        for layer in self.ctx_attention:
+        for layer in self.blocks:
             h = layer(h, c, x_freqs_cis, c_freqs_cis, x_mask, c_mask, mod_c=mod_c)
 
         if self.adaLN_modulation is None:
@@ -519,6 +521,7 @@ class CtxCharInputAdaptor(InputAdaptor):
         params = ModelArgs(dim=embedding_dim, vocab_size=vocab_size,
                            n_layers=n_attn_layers, n_heads=8, dropout=dropout)
         self.dim = embedding_dim
+        self.n_layers = params.n_layers
 
         self.tok_embeddings = nn.Embedding(params.vocab_size, params.dim)
         self.dropout = nn.Dropout(params.dropout)
@@ -539,21 +542,21 @@ class CtxCharInputAdaptor(InputAdaptor):
         self.register_buffer("attn_freqs_cis", freqs_cis, persistent=False)
         freqs_cis = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len, theta_rescale_factor=8.)
         self.register_buffer("attn_freqs_cis_eval", freqs_cis, persistent=False)
+        self.initialize_weights()
 
-        # init all weights
-        self.apply(self._init_weights)
-        # apply special scaled init to the residual projections, per GPT-2 paper
-        for pn, p in self.named_parameters():
+    def initialize_weights(self):
+        def _basic_init(module):
+            if isinstance(module, (nn.Linear, nn.Conv1d)):
+                torch.nn.init.trunc_normal_(module.weight, mean=0.0, std=0.02)
+                if module.bias is not None:
+                    torch.nn.init.zeros_(module.bias)
+        self.layers.apply(_basic_init)
+        for pn, p in self.layers.named_parameters():
             if pn.endswith('w3.weight') or pn.endswith('wo.weight'):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * params.n_layers))
-
-    def _init_weights(self, module):
-        if isinstance(module, (nn.Linear, nn.Conv1d)):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+                torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * self.n_layers))
+        self.ctx_proj.apply(_basic_init)
+        nn.init.trunc_normal_(self.tok_embeddings.weight, std=0.02)
+        nn.init.trunc_normal_(self.attn_output.weight, std=0.02)
 
     def forward_phone(self, tokens: torch.Tensor, phone_start: torch.Tensor):
         _bsz, num_phones = tokens.shape
@@ -611,6 +614,7 @@ class Ctx2CharInputAdaptor(InputAdaptor):
                            n_layers=n_attn_layers, n_heads=8, dropout=dropout)
         self.dim = embedding_dim
         self.drop_ctx = drop_ctx
+        self.n_layers = params.n_layers
 
         self.tok_embeddings = nn.Embedding(params.vocab_size, params.dim)
         self.dropout = nn.Dropout(params.dropout)
@@ -631,21 +635,21 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         self.register_buffer("attn_freqs_cis", freqs_cis, persistent=False)
         freqs_cis = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len, theta_rescale_factor=8.)
         self.register_buffer("attn_freqs_cis_eval", freqs_cis, persistent=False)
+        self.initialize_weights()
 
-        # init all weights
-        self.apply(self._init_weights)
-        # apply special scaled init to the residual projections, per GPT-2 paper
-        for pn, p in self.named_parameters():
+    def initialize_weights(self):
+        def _basic_init(module):
+            if isinstance(module, (nn.Linear, nn.Conv1d)):
+                torch.nn.init.trunc_normal_(module.weight, mean=0.0, std=0.02)
+                if module.bias is not None:
+                    torch.nn.init.zeros_(module.bias)
+        self.layers.apply(_basic_init)
+        for pn, p in self.layers.named_parameters():
             if pn.endswith('w3.weight') or pn.endswith('wo.weight'):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * params.n_layers))
-
-    def _init_weights(self, module):
-        if isinstance(module, (nn.Linear, nn.Conv1d)):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+                torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * self.n_layers))
+        self.ctx_proj.apply(_basic_init)
+        nn.init.trunc_normal_(self.tok_embeddings.weight, std=0.02)
+        nn.init.trunc_normal_(self.attn_output.weight, std=0.02)
 
     def forward_phone(self, tokens: torch.Tensor, phone_start: torch.Tensor):
         _bsz, num_phones = tokens.shape
@@ -781,6 +785,12 @@ class E2ECtxCharInputAdaptor(InputAdaptor):
         self.ctx_proj = nn.Conv1d(ctx_dim, embedding_dim, kernel_size=1)
         self.tok_blocks = nn.Sequential(*[ConvNeXtV2Block(embedding_dim, embedding_dim*3) for _ in range(num_layers)])
         self.ctx_blocks = nn.Sequential(*[ConvNeXtV2Block(embedding_dim, embedding_dim*3) for _ in range(num_layers)])
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, (nn.Conv1d, nn.Linear)):
+            nn.init.trunc_normal_(m.weight, std=0.02)
+            nn.init.constant_(m.bias, 0)
 
     def forward(self, tokens, ctx):
         te = self.tok_embeddings(tokens).transpose(1, 2)

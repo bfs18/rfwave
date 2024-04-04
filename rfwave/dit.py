@@ -261,7 +261,7 @@ class DiTRFBackbone(Backbone):
                     torch.nn.init.zeros_(module.bias)
         self.blocks.apply(_basic_init)
         for pn, p in self.blocks.named_parameters():
-            if pn.endswith('proj.weight'):
+            if pn.endswith('proj.weight') or pn.endswith('w3.weight'):
                 torch.nn.init.trunc_normal_(p, mean=0.0, std=0.02/math.sqrt(2 * self.num_layers))
 
         # Initialize input embed:
