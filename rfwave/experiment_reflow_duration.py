@@ -167,3 +167,4 @@ class VocosExp(pl.LightningModule):
         loss = torch.stack([x["val_loss"] for x in outputs]).mean()
         self.log("val_loss", loss, prog_bar=True, logger=True)
         self.validation_step_outputs.clear()
+        torch.cuda.empty_cache()
