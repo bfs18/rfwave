@@ -275,7 +275,7 @@ class RectifiedFlow(nn.Module):
         if 'token_ref_length' in kwargs:
             backbone_kwargs['token_ref_length'] = torch.repeat_interleave(kwargs['token_ref_length'], n_rpt, 0)
         pred = self.backbone(z_t, t, text, bandwidth_id, **backbone_kwargs)
-        return (pred, None) if isinstance(pred, tuple) else pred
+        return pred if isinstance(pred, tuple) else (pred, None)
 
     def get_intt_dt(self, i, N):
         if i / N < self.intt:
