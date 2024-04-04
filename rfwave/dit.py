@@ -234,7 +234,6 @@ class DiTRFBackbone(Backbone):
             fourier_dim = 0
         self.input_channels = input_channels
         self.embed = nn.Conv1d(input_channels + output_channels + fourier_dim, dim, kernel_size=7, padding=3)
-        self.pre_norm = nn.LayerNorm(dim)
         self.blocks = nn.ModuleList([
             DiTBlock(dim, num_heads, intermediate_dim, dropout) for _ in range(num_layers)])
         self.final = FinalLayer(dim, output_channels)
@@ -310,7 +309,7 @@ class DiTRFBackbone(Backbone):
             ee = 0.
         c = te + be + ee
 
-        x = self.pre_norm(x.transpose(1, 2))
+        x = x.transpose(1, 2)
         start = _get_start(z_t, start)
         length = _get_len(z_t, None)  # length is None
         freq_cis = get_pos_embed(self.pos_embed if self.training else self.pos_embed_eval, start, length.max())
