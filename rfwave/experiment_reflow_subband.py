@@ -655,6 +655,8 @@ class VocosExp(pl.LightningModule):
                         plot_spectrogram_to_numpy(outputs[0]['cond_mel_pred'].data.cpu().numpy()))},
                     step=self.global_step)
         self.validation_step_outputs.clear()
+
+    def on_train_epoch_start(self, *args):
         torch.cuda.empty_cache()
 
     def on_train_start(self, *args):
