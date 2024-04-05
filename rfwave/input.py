@@ -227,7 +227,7 @@ class AlignmentBlock(nn.Module):
         h, attn = self.align_attn(
             modulate(self.cross_attention_norm(x), shift_crs, scale_crs),
             context, x_freqs_cis, c_freqs_cis, c_mask)
-        h = h + (gate_crs.unsqueeze(1) * h)
+        h = x + (gate_crs.unsqueeze(1) * h)
         return h, attn
 
 
@@ -327,7 +327,7 @@ class CtxCharInputAdaptor(InputAdaptor):
                     torch.nn.init.zeros_(module.bias)
         self.layers.apply(_basic_init)
         for pn, p in self.layers.named_parameters():
-            if pn.endswith('w3.weight') or pn.endswith('wo.weight'):
+            if pn.endswith('proj.weight') or pn.endswith('fc2.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * self.n_layers))
         self.ctx_proj.apply(_basic_init)
         nn.init.trunc_normal_(self.tok_embeddings.weight, std=0.02)
