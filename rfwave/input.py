@@ -1,19 +1,14 @@
 from torch import nn
 from dataclasses import dataclass
-from typing import Any, Optional, Tuple
+from typing import Optional
 from rfwave.models import ConvNeXtV2Block
 from rfwave.attention import (
-    Attention, CrossAttention, FeedForward, RMSNorm, apply_rotary_emb, _get_start, _get_len,
-    precompute_freqs_cis, get_pos_embed, score_mask, score_mask_from_bool_mask)
+    Attention, CrossAttention, FeedForward, RMSNorm, apply_rotary_emb, get_pos_embed,
+    score_mask, precompute_freqs_cis, score_mask_from_bool_mask, modulate, _get_start)
 
 import torch
-import torch.nn.functional as F
 import math
 import numpy as np
-
-
-def modulate(x, shift, scale):
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
 class InputAdaptor(nn.Module):
@@ -32,10 +27,10 @@ class ModelArgs:
     n_heads: int = 32
     hidden_dim: Optional[int] = None
     multiple_of: int = 256  # MLP hidden layer size will be multiple of
-    norm_eps: float = 1e-5
+    norm_eps: float = 1e-6
     max_seq_len: int = 8192
     dropout: float = 0.0
-    qk_norm: bool = False
+    qk_norm: bool = True
 
 
 class TransformerBlock(nn.Module):
@@ -48,7 +43,8 @@ class TransformerBlock(nn.Module):
         self.attention = Attention(dim=args.dim, num_heads=args.n_heads, qkv_bias=False, qk_norm=args.qk_norm,
                                    attn_drop=args.dropout, proj_drop=args.dropout, norm_layer=RMSNorm)
         self.feed_forward = FeedForward(
-            dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout)
+            dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout,
+            act_layer=lambda: nn.GELU(approximate="tanh"))
         # self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         # self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.attention_norm = nn.LayerNorm(args.dim, eps=args.norm_eps)
@@ -156,7 +152,8 @@ class CrossAttTransformerBlock(nn.Module):
             dim=args.dim, num_heads=args.n_heads, qkv_bias=False, qk_norm=args.qk_norm,
             attn_drop=args.dropout, proj_drop=args.dropout, norm_layer=RMSNorm)
         self.feed_forward = FeedForward(
-            dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout)
+            dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout,
+            act_layer=lambda: nn.GELU(approximate="tanh"))
         self.layer_id = layer_id
         if modulate:
             self.adaLN_modulation = nn.Sequential(

@@ -19,6 +19,10 @@ class RMSNorm(torch.nn.Module):
         return output * self.weight
 
 
+def modulate(x, shift, scale):
+    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+
+
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0, theta_rescale_factor=1.):
     # proposed by reddit user bloc97, to rescale rotary embeddings to longer sequence length without fine-tuning
     # has some connection to NTK literature
@@ -206,6 +210,7 @@ class CrossAttention(nn.Module):
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         if not self.flash:
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
+
     def forward(
         self,
         q_x: torch.Tensor,

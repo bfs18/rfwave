@@ -5,10 +5,9 @@ from typing import Optional
 from torch import nn
 from torch.nn import functional as F
 from rfwave.models import Backbone, Base2FourierFeatures
-from rfwave.input import (
-    precompute_freqs_cis,  RMSNorm, apply_rotary_emb, get_pos_embed, modulate,
-    score_mask, ModelArgs, ContextBlock, AlignmentBlock)
-from rfwave.attention import Attention, FeedForward, ConvFeedForward, _get_len, _get_start
+from rfwave.input import ModelArgs, ContextBlock, AlignmentBlock
+from rfwave.attention import (Attention, FeedForward, ConvFeedForward, precompute_freqs_cis,  RMSNorm,
+                              get_pos_embed, modulate, score_mask, _get_len, _get_start)
 
 
 class DiTBlock(nn.Module):
