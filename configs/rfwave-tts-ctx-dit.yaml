@@ -78,8 +78,9 @@ model:
         embedding_dim: 512
         vocab_size: 78
         ctx_dim: 100
-        n_attn_layers: 4
-        n_conv_layers: 4
+        n_attn_layers: 2
+        n_conv_layers: 2
+        n_ctx_layers: 2
 
 trainer:
   check_val_every_n_epoch: 10

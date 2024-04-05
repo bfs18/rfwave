@@ -307,9 +307,9 @@ class CtxCharInputAdaptor(InputAdaptor):
         self.attn_output = nn.Linear(params.dim, params.dim, bias=False)
         self.ctx_proj = nn.Sequential(
             nn.Conv1d(ctx_dim, params.dim, 1),
-            *[ConvNeXtV2Block(params.dim, params.dim*3) for _ in range(n_ctx_layers)])
+            *[ConvNeXtV2Block(params.dim, params.dim*3) for _ in range(n_conv_layers)])
         self.ctx_attn = ContextBlock(
-            params, ctx_dim=params.dim, n_attn_layers=n_conv_layers)
+            params, ctx_dim=params.dim, n_attn_layers=n_ctx_layers)
         self.pad_token = 0
 
         # some useful precompute for the RoPE relative positional embeddings
@@ -400,9 +400,9 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         self.attn_output = nn.Linear(params.dim, params.dim, bias=False)
         self.ctx_proj = nn.Sequential(
             nn.Conv1d(ctx_dim, params.dim, 1),
-            *[ConvNeXtV2Block(params.dim, params.dim*3) for _ in range(n_ctx_layers)])
+            *[ConvNeXtV2Block(params.dim, params.dim*3) for _ in range(n_conv_layers)])
         self.ctx_attn = ContextBlock(
-            params, ctx_dim=params.dim*2, n_attn_layers=n_conv_layers)
+            params, ctx_dim=params.dim*2, n_attn_layers=n_ctx_layers)
         self.pad_token = 0
 
         # some useful precompute for the RoPE relative positional embeddings
