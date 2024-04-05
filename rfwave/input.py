@@ -2,6 +2,9 @@ from torch import nn
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 from rfwave.models import ConvNeXtV2Block
+from rfwave.attention import (
+    Attention, CrossAttention, FeedForward, RMSNorm, apply_rotary_emb,
+    precompute_freqs_cis, get_pos_embed, score_mask, score_mask_from_bool_mask)
 
 import torch
 import torch.nn.functional as F
@@ -27,80 +30,13 @@ class ModelArgs:
     dim: int = 4096
     n_layers: int = 32
     n_heads: int = 32
-    n_kv_heads: Optional[int] = None
-    vocab_size: int = 32000
     hidden_dim: Optional[int] = None
     multiple_of: int = 256  # MLP hidden layer size will be multiple of
     norm_eps: float = 1e-5
     max_seq_len: int = 8192
     dropout: float = 0.0
-    qk_norm: bool = True
+    qk_norm: bool = False
     return_attn_probs: bool = False
-
-
-class RMSNorm(torch.nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-6):
-        super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
-
-    def _norm(self, x):
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
-
-    def forward(self, x):
-        output = self._norm(x.float()).type_as(x)
-        return output * self.weight
-
-
-def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0, theta_rescale_factor=1.):
-    # proposed by reddit user bloc97, to rescale rotary embeddings to longer sequence length without fine-tuning
-    # has some connection to NTK literature
-    # https://www.reddit.com/r/LocalLLaMA/comments/14lz7j5/ntkaware_scaled_rope_allows_llama_models_to_have/
-    # https://github.com/lucidrains/rotary-embedding-torch/blob/main/rotary_embedding_torch/rotary_embedding_torch.py
-    theta *= theta_rescale_factor ** (dim / (dim - 2))
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-    t = torch.arange(end, device=freqs.device)  # type: ignore
-    freqs = torch.outer(t, freqs).float()  # type: ignore
-    freqs_cos = torch.cos(freqs)  # real part
-    freqs_sin = torch.sin(freqs)  # imaginary part
-    return torch.cat([freqs_cos, freqs_sin], dim=-1)
-
-
-def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
-    ndim = x.ndim
-    assert 0 <= 1 < ndim
-    if ndim == 4:
-        assert freqs_cis.shape == (x.shape[0], x.shape[1], x.shape[-1])
-        shape = [d if i in (0, 1, ndim - 1) else 1 for i, d in enumerate(x.shape)]
-        return freqs_cis.view(shape)
-    elif ndim == 3:
-        assert freqs_cis.shape == x.shape
-        return freqs_cis
-    else:
-        raise ValueError(f"Unsupported ndim {ndim}")
-
-
-def apply_rotary_emb(
-    x: torch.Tensor,
-    freqs_cis: torch.Tensor,
-):
-    if freqs_cis is None:
-        return x
-
-    x_r, x_i = x.float().reshape(x.shape[:-1] + (-1, 2)).unbind(-1)
-    freqs_cos, freqs_sin = torch.chunk(freqs_cis, 2, dim=-1)
-    # reshape freqs_cos and freqs_sin for broadcasting
-    freqs_cos = reshape_for_broadcast(freqs_cos, x_r)
-    freqs_sin = reshape_for_broadcast(freqs_sin, x_r)
-
-    # apply rotation using real numbers
-    x_out_r = x_r * freqs_cos - x_i * freqs_sin
-    x_out_i = x_r * freqs_sin + x_i * freqs_cos
-
-    # flatten last two dimensions
-    x_out = torch.stack([x_out_r, x_out_i], dim=-1).flatten(x_out_r.ndim - 1)
-
-    return x_out.type_as(x)
 
 
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -115,173 +51,17 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     )
 
 
-def sequence_mask(length, max_length=None):
-    if max_length is None:
-        max_length = length.max()
-    x = torch.arange(max_length, dtype=length.dtype, device=length.device)
-    return x.unsqueeze(0) < length.unsqueeze(1)
-
-
-def score_mask(length, max_length=None):
-    seq_mask = sequence_mask(length, max_length)
-    sco_mask = torch.zeros_like(seq_mask, dtype=torch.float)
-    sco_mask.masked_fill_(~seq_mask, float('-inf'))
-    return sco_mask.unsqueeze(1).unsqueeze(2)
-
-
-def score_mask_from_bool_mask(bool_mask):
-    phone_mask = torch.zeros(*bool_mask.size(), device=bool_mask.device)
-    phone_mask.masked_fill_(bool_mask, float('-inf'))
-    phone_mask = phone_mask.unsqueeze(1).unsqueeze(2)
-    return phone_mask
-
-
-def _get_start(tensor, start):
-    return (torch.zeros([tensor.size(0)], dtype=torch.long, device=tensor.device)
-            if start is None else start)
-
-
-def _get_len(tensor, length):
-    return (torch.ones([tensor.size(0)], dtype=torch.long, device=tensor.device) * tensor.size(2)
-            if length is None else length)
-
-
-def get_pos_embed(pos_embed_table, start, length, scale=1.):
-    # length = length if isinstance(length, int) else length.max()
-    scale = scale * torch.ones_like(start, dtype=torch.float32)  # in case scale is a scalar
-    pos = start.unsqueeze(1) + (
-            torch.arange(length, device=start.device, dtype=torch.float32).unsqueeze(0) *
-            scale.unsqueeze(1)).long()
-    # avoid extra long error.
-    pos = torch.where(pos < pos_embed_table.size(0), pos, pos_embed_table.size(0) - 1)
-    pe = pos_embed_table[pos]
-    return pe
-
-
-class Attention(nn.Module):
-    def __init__(self, args: ModelArgs):
-        super().__init__()
-        self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads
-        assert args.n_heads % self.n_kv_heads == 0
-        model_parallel_size = 1
-        self.n_local_heads = args.n_heads // model_parallel_size
-        self.n_local_kv_heads = self.n_kv_heads // model_parallel_size
-        self.n_rep = self.n_local_heads // self.n_local_kv_heads
-        self.head_dim = args.dim // args.n_heads
-        self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False)
-        self.wk = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
-        self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
-        self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False)
-        self.q_norm = RMSNorm(self.head_dim) if args.qk_norm else nn.Identity()
-        self.k_norm = RMSNorm(self.head_dim) if args.qk_norm else nn.Identity()
-        self.attn_dropout = nn.Dropout(args.dropout)
-        self.resid_dropout = nn.Dropout(args.dropout)
-        self.dropout = args.dropout
-        self.return_attn_probs = args.return_attn_probs
-
-        # use flash attention or a manual implementation?
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        if not self.flash:
-            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
-
-    def forward(
-        self,
-        q_x: torch.Tensor,
-        kv_x: torch.Tensor,
-        q_freqs_cis: torch.Tensor,
-        k_freqs_cis: torch.Tensor,
-        mask: torch.Tensor
-    ):
-        bsz, q_seqlen, _ = q_x.shape
-        _, kv_seqlen, _ = kv_x.shape
-
-        # QKV
-        xq, xk, xv = self.wq(q_x), self.wk(kv_x), self.wv(kv_x)
-        xq = xq.view(bsz, q_seqlen, self.n_local_heads, self.head_dim)
-        xk = xk.view(bsz, kv_seqlen, self.n_local_kv_heads, self.head_dim)
-        xv = xv.view(bsz, kv_seqlen, self.n_local_kv_heads, self.head_dim)
-        xq, xk = self.q_norm(xq), self.k_norm(xk)
-        # RoPE relative positional embeddings
-        xq = apply_rotary_emb(xq, q_freqs_cis)
-        xk = apply_rotary_emb(xk, k_freqs_cis)
-
-        # grouped multiquery attention: expand out keys and values
-        xk = repeat_kv(xk, self.n_rep)  # (bs, kv_seqlen, n_local_heads, head_dim)
-        xv = repeat_kv(xv, self.n_rep)  # (bs, kv_seqlen, n_local_heads, head_dim)
-
-        # make heads into a batch dimension
-        xq = xq.transpose(1, 2)  # (bs, n_local_heads, q_seqlen, head_dim)
-        xk = xk.transpose(1, 2)
-        xv = xv.transpose(1, 2)
-
-        # flash implementation
-        if self.flash and not self.return_attn_probs:
-            output = torch.nn.functional.scaled_dot_product_attention(
-                xq, xk, xv, attn_mask=mask, dropout_p=self.dropout if self.training else 0.0)
-        else:
-            # manual implementation
-            scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
-            if mask is not None:
-                scores = scores + mask
-            scores = F.softmax(scores.float(), dim=-1).type_as(xq)
-            scores = self.attn_dropout(scores)
-            output = torch.matmul(scores, xv)  # (bs, n_local_heads, q_seqlen, head_dim)
-
-        # restore time as batch dimension and concat heads
-        output = output.transpose(1, 2).contiguous().view(bsz, q_seqlen, -1)
-
-        # final projection into the residual stream
-        output = self.wo(output)
-        output = self.resid_dropout(output)
-        if self.return_attn_probs:
-            return output, scores
-        else:
-            return output
-
-
-class SelfAttention(Attention):
-    def __init__(self, args: ModelArgs):
-        super().__init__(args)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        freqs_cis: torch.Tensor,
-        mask: torch.Tensor
-    ):
-        return super().forward(x, x, freqs_cis, freqs_cis, mask)
-
-
-class FeedForward(nn.Module):
-    def __init__(self, dim: int, hidden_dim: int, multiple_of: int, dropout: float):
-        super().__init__()
-        if hidden_dim is None:
-            hidden_dim = 4 * dim
-            hidden_dim = int(2 * hidden_dim / 3)
-            hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
-        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
-        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
-        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x):
-        return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
-
-
 class TransformerBlock(nn.Module):
     def __init__(self, layer_id: int, args: ModelArgs):
         super().__init__()
+        self.layer_id = layer_id
         self.n_heads = args.n_heads
         self.dim = args.dim
         self.head_dim = args.dim // args.n_heads
-        self.attention = SelfAttention(args)
+        self.attention = Attention(dim=args.dim, num_heads=args.n_heads, qkv_bias=False, qk_norm=args.qk_norm,
+                                   attn_drop=args.dropout, proj_drop=args.dropout, norm_layer=RMSNorm)
         self.feed_forward = FeedForward(
-            dim=args.dim,
-            hidden_dim=args.hidden_dim,
-            multiple_of=args.multiple_of,
-            dropout=args.dropout,
-        )
-        self.layer_id = layer_id
+            dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout)
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
 
@@ -295,11 +75,10 @@ class CharInputAdaptor(InputAdaptor):
     def __init__(self, embedding_dim, vocab_size, n_attn_layers=4, n_conv_layers=4,
                  dropout=0., dilation=1):
         super().__init__()
-        params = ModelArgs(dim=embedding_dim, vocab_size=vocab_size,
-                           n_layers=n_attn_layers, n_heads=8, dropout=dropout)
+        params = ModelArgs(dim=embedding_dim, n_layers=n_attn_layers, n_heads=8, dropout=dropout)
         self.dim = embedding_dim
 
-        self.tok_embeddings = nn.Embedding(params.vocab_size, params.dim)
+        self.tok_embeddings = nn.Embedding(vocab_size, params.dim)
         self.dropout = nn.Dropout(params.dropout)
         self.layers = torch.nn.ModuleList()
         for layer_id in range(params.n_layers):
@@ -380,14 +159,14 @@ class CrossAttTransformerBlock(nn.Module):
         self.n_heads = args.n_heads
         self.dim = args.dim
         self.head_dim = args.dim // args.n_heads
-        self.attention = SelfAttention(args)
-        self.cross_attention = Attention(args)
+        self.attention = Attention(
+            dim=args.dim, num_heads=args.n_heads, qkv_bias=False, qk_norm=args.qk_norm,
+            attn_drop=args.dropout, proj_drop=args.dropout, norm_layer=RMSNorm)
+        self.cross_attention = CrossAttention(
+            dim=args.dim, num_heads=args.n_heads, qkv_bias=False, qk_norm=args.qk_norm,
+            attn_drop=args.dropout, proj_drop=args.dropout, norm_layer=RMSNorm)
         self.feed_forward = FeedForward(
-            dim=args.dim,
-            hidden_dim=args.hidden_dim,
-            multiple_of=args.multiple_of,
-            dropout=args.dropout,
-        )
+            dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout)
         self.layer_id = layer_id
         if modulate:
             self.adaLN_modulation = nn.Sequential(
@@ -427,7 +206,9 @@ class AlignmentBlock(nn.Module):
         args = ModelArgs(dim, n_heads=1, multiple_of=128, return_attn_probs=True)
         self.dim = dim
         self.ctx_proj = nn.Conv1d(ctx_dim, args.dim, 1) if ctx_dim != args.dim else nn.Identity()
-        self.align_attn = Attention(args)
+        self.align_attn = Attention(
+            dim=args.dim, num_heads=args.n_heads, qkv_bias=False, qk_norm=args.qk_norm,
+            attn_drop=args.dropout, proj_drop=args.dropout, norm_layer=RMSNorm)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(), nn.Linear(self.dim, 3 * self.dim, bias=True))
         self.cross_attention_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
@@ -483,7 +264,7 @@ class ContextBlock(nn.Module):
                     torch.nn.init.zeros_(module.bias)
         self.blocks.apply(_basic_init)
         for pn, p in self.blocks.named_parameters():
-            if pn.endswith('wo.weight') or pn.endswith('w3.weight'):  # attention output weights
+            if pn.endswith('proj.weight') or pn.endswith('fc2.weight'):  # attention output weights
                 torch.nn.init.trunc_normal_(p, mean=0.0, std=0.02/math.sqrt(2 * self.num_layers))
 
         # Zero-out adaLN modulation layers in DiT blocks:
@@ -518,12 +299,11 @@ class CtxCharInputAdaptor(InputAdaptor):
     def __init__(self, embedding_dim, vocab_size, ctx_dim,
                  n_attn_layers=4, n_conv_layers=4, n_ctx_layers=4, dropout=0.):
         super().__init__()
-        params = ModelArgs(dim=embedding_dim, vocab_size=vocab_size,
-                           n_layers=n_attn_layers, n_heads=8, dropout=dropout)
+        params = ModelArgs(dim=embedding_dim, n_layers=n_attn_layers, n_heads=8, dropout=dropout)
         self.dim = embedding_dim
         self.n_layers = params.n_layers
 
-        self.tok_embeddings = nn.Embedding(params.vocab_size, params.dim)
+        self.tok_embeddings = nn.Embedding(vocab_size, params.dim)
         self.dropout = nn.Dropout(params.dropout)
         self.layers = torch.nn.ModuleList()
         for layer_id in range(params.n_layers):
@@ -610,13 +390,12 @@ class Ctx2CharInputAdaptor(InputAdaptor):
                  n_attn_layers=4, n_conv_layers=4, n_ctx_layers=4,
                  dropout=0., drop_ctx=0.5):
         super().__init__()
-        params = ModelArgs(dim=embedding_dim, vocab_size=vocab_size,
-                           n_layers=n_attn_layers, n_heads=8, dropout=dropout)
+        params = ModelArgs(dim=embedding_dim, n_layers=n_attn_layers, n_heads=8, dropout=dropout)
         self.dim = embedding_dim
         self.drop_ctx = drop_ctx
         self.n_layers = params.n_layers
 
-        self.tok_embeddings = nn.Embedding(params.vocab_size, params.dim)
+        self.tok_embeddings = nn.Embedding(vocab_size, params.dim)
         self.dropout = nn.Dropout(params.dropout)
         self.layers = torch.nn.ModuleList()
         for layer_id in range(params.n_layers):
@@ -645,7 +424,7 @@ class Ctx2CharInputAdaptor(InputAdaptor):
                     torch.nn.init.zeros_(module.bias)
         self.layers.apply(_basic_init)
         for pn, p in self.layers.named_parameters():
-            if pn.endswith('w3.weight') or pn.endswith('wo.weight'):
+            if pn.endswith('proj.weight') or pn.endswith('fc2.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * self.n_layers))
         self.ctx_proj.apply(_basic_init)
         nn.init.trunc_normal_(self.tok_embeddings.weight, std=0.02)
@@ -727,11 +506,10 @@ class Ctx2CharInputAdaptor(InputAdaptor):
 class DurInputAdaptor(InputAdaptor):
     def __init__(self, embedding_dim, vocab_size, n_attn_layers=4, dropout=0.):
         super().__init__()
-        params = ModelArgs(dim=embedding_dim, vocab_size=vocab_size,
-                           n_layers=n_attn_layers, n_heads=8, dropout=dropout)
+        params = ModelArgs(dim=embedding_dim, n_layers=n_attn_layers, n_heads=8, dropout=dropout)
         self.dim = embedding_dim
 
-        self.tok_embeddings = nn.Embedding(params.vocab_size, params.dim)
+        self.tok_embeddings = nn.Embedding(vocab_size, params.dim)
         self.dropout = nn.Dropout(params.dropout)
         self.layers = torch.nn.ModuleList()
         for layer_id in range(params.n_layers):
@@ -748,7 +526,7 @@ class DurInputAdaptor(InputAdaptor):
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
         for pn, p in self.named_parameters():
-            if pn.endswith('w3.weight') or pn.endswith('wo.weight'):
+            if pn.endswith('proj.weight') or pn.endswith('fc2.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * params.n_layers))
 
     def _init_weights(self, module):

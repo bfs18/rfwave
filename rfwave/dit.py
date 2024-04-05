@@ -4,117 +4,11 @@ import math
 from typing import Optional
 from torch import nn
 from torch.nn import functional as F
-from rfwave.modules import GRN
 from rfwave.models import Backbone, Base2FourierFeatures
 from rfwave.input import (
     precompute_freqs_cis,  RMSNorm, apply_rotary_emb, get_pos_embed, modulate,
-    _get_len, _get_start, sequence_mask, score_mask, ModelArgs, ContextBlock, AlignmentBlock)
-
-
-class ConvFeedForward(nn.Module):
-    def __init__(self, dim: int, hidden_dim: int, multiple_of: int, dropout: float):
-        super().__init__()
-        if hidden_dim is None:
-            hidden_dim = 4 * dim
-            hidden_dim = int(2 * hidden_dim / 3)
-            hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
-        self.dwconv = nn.Conv1d(dim, dim, kernel_size=7, padding=3, groups=dim)
-        self.norm = nn.LayerNorm(dim, eps=1e-6)
-        self.pwconv1 = nn.Linear(dim, hidden_dim)  # pointwise/1x1 convs, implemented with linear layers
-        self.act = nn.GELU()
-        self.grn = GRN(hidden_dim)
-        self.pwconv2 = nn.Linear(hidden_dim, dim)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x):
-        x = x.transpose(1, 2)  # (B, T, C) -> (B, C, T)
-        x = self.dwconv(x)
-        x = x.transpose(1, 2)  # (B, C, T) -> (B, T, C)
-        x = self.norm(x)
-        x = self.pwconv1(x)
-        x = self.act(x)
-        x = self.grn(x)
-        x = self.pwconv2(x)
-        x = self.dropout(x)
-        return x
-
-
-class FeedForward(nn.Module):
-    def __init__(self, dim: int, hidden_dim: int, multiple_of: int, dropout: float):
-        super().__init__()
-        if hidden_dim is None:
-            hidden_dim = 4 * dim
-            hidden_dim = int(2 * hidden_dim / 3)
-            hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
-        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
-        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
-        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x):
-        return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
-
-
-class Attention(nn.Module):
-    def __init__(
-            self,
-            dim: int,
-            num_heads: int = 8,
-            qkv_bias: bool = False,
-            qk_norm: bool = False,
-            attn_drop: float = 0.,
-            proj_drop: float = 0.,
-            norm_layer: nn.Module = nn.LayerNorm,
-    ) -> None:
-        super().__init__()
-        assert dim % num_heads == 0, 'dim should be divisible by num_heads'
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-        # use flash attention or a manual implementation?
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        if not self.flash:
-            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
-
-    def forward(self, x: torch.Tensor, freq_cis: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        B, N, C = x.shape
-        # (3, bs, q_seqlen, n_local_heads, head_dim)
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 1, 3, 4)
-        q, k, v = qkv.unbind(0)
-        q, k = self.q_norm(q), self.k_norm(k)
-        q = apply_rotary_emb(q, freq_cis)
-        k = apply_rotary_emb(k, freq_cis)
-
-        # (bs, n_local_heads, q_seqlen, head_dim)
-        q = q.transpose(1, 2)
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
-
-        if self.flash:
-            x = F.scaled_dot_product_attention(
-                q, k, v, attn_mask=mask, dropout_p=self.attn_drop.p if self.training else 0.)
-        else:
-            q = q * self.scale
-            attn = q @ k.transpose(-2, -1)
-            if mask is not None:
-                attn = attn + mask
-            attn = attn.softmax(dim=-1)
-            attn = self.attn_drop(attn)
-            x = attn @ v
-
-        x = x.transpose(1, 2).contiguous().reshape(B, N, C)
-        x = x.reshape(B, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
+    score_mask, ModelArgs, ContextBlock, AlignmentBlock)
+from rfwave.attention import Attention, FeedForward, ConvFeedForward, _get_len, _get_start
 
 
 class DiTBlock(nn.Module):
@@ -130,8 +24,8 @@ class DiTBlock(nn.Module):
         self.norm2 = nn.LayerNorm(self.dim, elementwise_affine=False, eps=1e-6)
         # self.feed_forward = ConvFeedForward(dim=dim, hidden_dim=self.intermediate_dim,
         #                                     multiple_of=256, dropout=dropout)
-        self.feed_forward = FeedForward(dim=dim, hidden_dim=self.intermediate_dim,
-                                        multiple_of=256, dropout=dropout)
+        self.feed_forward = FeedForward(dim=dim, hidden_dim=self.intermediate_dim, drop=dropout,
+                                        act_layer=lambda: nn.GELU(approximate="tanh"))
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(), nn.Linear(self.dim, 6 * self.dim, bias=True))
 
@@ -261,7 +155,7 @@ class DiTRFBackbone(Backbone):
                     torch.nn.init.zeros_(module.bias)
         self.blocks.apply(_basic_init)
         for pn, p in self.blocks.named_parameters():
-            if pn.endswith('proj.weight') or pn.endswith('w3.weight'):
+            if pn.endswith('proj.weight') or pn.endswith('fc2.weight') or pn.endswith('pwconv2.weight'):
                 torch.nn.init.trunc_normal_(p, mean=0.0, std=0.02/math.sqrt(2 * self.num_layers))
 
         # Initialize input embed:
