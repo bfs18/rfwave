@@ -684,7 +684,7 @@ class VocosExp(pl.LightningModule):
             pi_kwargs['start'] = phone_info[3]
         elif isinstance(input_adaptor, Ctx2CharInputAdaptor):
             assert len(phone_info) == 8
-            phone_info[4] = self.reflow.get_eq_norm_stft(phone_info[4])
+            phone_info[4] = self.feature_extractor(phone_info[4])
             pi_kwargs['start'] = phone_info[3]
         else:
             raise ValueError(f"Invalid phone_info, #fields {len(phone_info)}")

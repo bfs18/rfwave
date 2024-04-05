@@ -575,7 +575,7 @@ class TTSCtxDatasetSegment(Dataset):
         ctx_end = (ctx_start_frame + ctx_n_frame) * self.hop_length
         y_ctx = y[:, ctx_start: ctx_end]
         ctx_n_frame = ctx_n_frame + 1 if self.padding == 'center' else ctx_n_frame
-        ctx_start_phone_idx = torch.searchsorted(cs_durations, ctx_start_frame, right=True) if start_frame > 0 else 0
+        ctx_start_phone_idx = torch.searchsorted(cs_durations, ctx_start_frame, right=True) if ctx_start_frame > 0 else 0
         ctx_end_phone_idx = torch.searchsorted(cs_durations, ctx_start_frame + ctx_n_frame, right=False)
         ctx_token_ids = token_ids[ctx_start_phone_idx: ctx_end_phone_idx + 1].detach().clone()
         ctx_durations = up_durations[ctx_start_phone_idx: ctx_end_phone_idx + 1].detach().clone()

@@ -154,7 +154,7 @@ class FeedForward(nn.Module):
     ):
         super().__init__()
         out_dim = out_dim or dim
-        hidden_dim = hidden_dim or dim
+        hidden_dim = hidden_dim or dim * 4
         bias = [bias] * 2
         drop_probs = [drop] * 2
 
@@ -185,6 +185,7 @@ class CrossAttention(nn.Module):
         attn_drop: float = 0.,
         proj_drop: float = 0.,
         norm_layer: nn.Module = nn.LayerNorm,
+        return_attn_probs=False
     ) -> None:
         super().__init__()
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
@@ -199,6 +200,7 @@ class CrossAttention(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
+        self.return_attn_probs = return_attn_probs
 
         # use flash attention or a manual implementation?
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
@@ -211,7 +213,7 @@ class CrossAttention(nn.Module):
         q_freqs_cis: torch.Tensor,
         k_freqs_cis: torch.Tensor,
         mask: torch.Tensor) -> torch.Tensor:
-        bsz, q_seqlen, _ = q_x.shape
+        bsz, q_seqlen, ch = q_x.shape
         _, kv_seqlen, _ = kv_x.shape
 
         q = self.q(q_x).reshape(bsz, q_seqlen, self.num_heads, self.head_dim)
@@ -226,7 +228,7 @@ class CrossAttention(nn.Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        if self.flash:
+        if self.flash and not self.return_attn_probs:
             x = F.scaled_dot_product_attention(
                 q, k, v, attn_mask=mask, dropout_p=self.attn_drop.p if self.training else 0.)
         else:
@@ -238,10 +240,13 @@ class CrossAttention(nn.Module):
             attn = self.attn_drop(attn)
             x = attn @ v
 
-        x = x.transpose(1, 2).contiguous().reshape(bsz, q_seqlen, self.dim)
+        x = x.transpose(1, 2).contiguous().reshape(bsz, q_seqlen, ch)
         x = self.proj(x)
         x = self.proj_drop(x)
-        return x
+        if self.return_attn_probs:
+            return x, attn
+        else:
+            return x
 
 
 class Attention(CrossAttention):

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 from rfwave.models import ConvNeXtV2Block
 from rfwave.attention import (
-    Attention, CrossAttention, FeedForward, RMSNorm, apply_rotary_emb,
+    Attention, CrossAttention, FeedForward, RMSNorm, apply_rotary_emb, _get_start, _get_len,
     precompute_freqs_cis, get_pos_embed, score_mask, score_mask_from_bool_mask)
 
 import torch
@@ -36,19 +36,6 @@ class ModelArgs:
     max_seq_len: int = 8192
     dropout: float = 0.0
     qk_norm: bool = False
-    return_attn_probs: bool = False
-
-
-def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
-    """torch.repeat_interleave(x, dim=2, repeats=n_rep)"""
-    bs, slen, n_kv_heads, head_dim = x.shape
-    if n_rep == 1:
-        return x
-    return (
-        x[:, :, :, None, :]
-        .expand(bs, slen, n_kv_heads, n_rep, head_dim)
-        .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
-    )
 
 
 class TransformerBlock(nn.Module):
@@ -62,8 +49,10 @@ class TransformerBlock(nn.Module):
                                    attn_drop=args.dropout, proj_drop=args.dropout, norm_layer=RMSNorm)
         self.feed_forward = FeedForward(
             dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout)
-        self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
-        self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        # self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        # self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        self.attention_norm = nn.LayerNorm(args.dim, eps=args.norm_eps)
+        self.ffn_norm = nn.LayerNorm(args.dim, eps=args.norm_eps)
 
     def forward(self, x, freqs_cis, mask):
         h = x + self.attention.forward(self.attention_norm(x), freqs_cis, mask)
@@ -83,7 +72,8 @@ class CharInputAdaptor(InputAdaptor):
         self.layers = torch.nn.ModuleList()
         for layer_id in range(params.n_layers):
             self.layers.append(TransformerBlock(layer_id, params))
-        self.attn_norm = RMSNorm(params.dim, eps=params.norm_eps)
+        # self.attn_norm = RMSNorm(params.dim, eps=params.norm_eps)
+        self.attn_norm = nn.LayerNorm(params.dim, eps=params.norm_eps)
         self.attn_output = nn.Linear(params.dim, params.dim, bias=False)
         self.convnext = nn.Sequential(
             *[ConvNeXtV2Block(dim=params.dim, intermediate_dim=params.dim * 3, dilation=dilation)
@@ -176,9 +166,12 @@ class CrossAttTransformerBlock(nn.Module):
             self.ffn_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
         else:
             self.adaLN_modulation = None
-            self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
-            self.cross_attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
-            self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+            # self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
+            # self.cross_attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
+            # self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+            self.attention_norm = nn.LayerNorm(args.dim, eps=args.norm_eps)
+            self.cross_attention_norm = nn.LayerNorm(args.dim, eps=args.norm_eps)
+            self.ffn_norm = nn.LayerNorm(args.dim, eps=args.norm_eps)
 
     def forward(self, x, context, x_freqs_cis, c_freqs_cis, x_mask, c_mask, mod_c=None):
         if self.adaLN_modulation is None:
@@ -203,12 +196,12 @@ class CrossAttTransformerBlock(nn.Module):
 class AlignmentBlock(nn.Module):
     def __init__(self, dim, ctx_dim):
         super().__init__()
-        args = ModelArgs(dim, n_heads=1, multiple_of=128, return_attn_probs=True)
+        args = ModelArgs(dim, n_heads=1, multiple_of=128)
         self.dim = dim
         self.ctx_proj = nn.Conv1d(ctx_dim, args.dim, 1) if ctx_dim != args.dim else nn.Identity()
-        self.align_attn = Attention(
+        self.align_attn = CrossAttention(
             dim=args.dim, num_heads=args.n_heads, qkv_bias=False, qk_norm=args.qk_norm,
-            attn_drop=args.dropout, proj_drop=args.dropout, norm_layer=RMSNorm)
+            attn_drop=args.dropout, proj_drop=args.dropout, norm_layer=RMSNorm, return_attn_probs=True)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(), nn.Linear(self.dim, 3 * self.dim, bias=True))
         self.cross_attention_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
@@ -250,7 +243,8 @@ class ContextBlock(nn.Module):
             self.adaLN_modulation = nn.Sequential(
                 nn.SiLU(), nn.Linear(args.dim, 2 * args.dim, bias=True))
         else:
-            self.attn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+            # self.attn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+            self.attn_norm = nn.LayerNorm(args.dim, eps=args.norm_eps)
             self.adaLN_modulation = None
         self.attn_output = nn.Linear(args.dim, args.dim, bias=False)
         self.initialize_weights()
@@ -308,7 +302,8 @@ class CtxCharInputAdaptor(InputAdaptor):
         self.layers = torch.nn.ModuleList()
         for layer_id in range(params.n_layers):
             self.layers.append(TransformerBlock(layer_id, params))
-        self.attn_norm = RMSNorm(params.dim, eps=params.norm_eps)
+        # self.attn_norm = RMSNorm(params.dim, eps=params.norm_eps)
+        self.attn_norm = nn.LayerNorm(params.dim, eps=params.norm_eps)
         self.attn_output = nn.Linear(params.dim, params.dim, bias=False)
         self.ctx_proj = nn.Sequential(
             nn.Conv1d(ctx_dim, params.dim, 1),
@@ -400,7 +395,8 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         self.layers = torch.nn.ModuleList()
         for layer_id in range(params.n_layers):
             self.layers.append(TransformerBlock(layer_id, params))
-        self.attn_norm = RMSNorm(params.dim, eps=params.norm_eps)
+        # self.attn_norm = RMSNorm(params.dim, eps=params.norm_eps)
+        self.attn_norm = nn.LayerNorm(params.dim, eps=params.norm_eps)
         self.attn_output = nn.Linear(params.dim, params.dim, bias=False)
         self.ctx_proj = nn.Sequential(
             nn.Conv1d(ctx_dim, params.dim, 1),
@@ -514,7 +510,8 @@ class DurInputAdaptor(InputAdaptor):
         self.layers = torch.nn.ModuleList()
         for layer_id in range(params.n_layers):
             self.layers.append(TransformerBlock(layer_id, params))
-        self.attn_norm = RMSNorm(params.dim, eps=params.norm_eps)
+        # self.attn_norm = RMSNorm(params.dim, eps=params.norm_eps)
+        self.attn_norm = nn.LayerNorm(params.dim, eps=params.norm_eps)
         self.attn_output = nn.Linear(params.dim, params.dim, bias=False)
         self.pad_token = 0
         freqs_cis = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len)
