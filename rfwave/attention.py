@@ -145,7 +145,7 @@ class ConvFeedForward(nn.Module):
         return x
 
 
-class FeedForward(nn.Module):
+class MLP(nn.Module):
     def __init__(
             self,
             dim,
@@ -177,6 +177,22 @@ class FeedForward(nn.Module):
         x = self.fc2(x)
         x = self.drop2(x)
         return x
+
+
+class FeedForward(nn.Module):
+    def __init__(self, dim: int, hidden_dim: int, multiple_of: int = 256, drop: float = 0.):
+        super().__init__()
+        if hidden_dim is None:
+            hidden_dim = 4 * dim
+            hidden_dim = int(2 * hidden_dim / 3)
+            hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
+        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
+        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
+        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
+        self.dropout = nn.Dropout(drop)
+
+    def forward(self, x):
+        return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
 
 
 class CrossAttention(nn.Module):
@@ -220,6 +236,7 @@ class CrossAttention(nn.Module):
         mask: torch.Tensor) -> torch.Tensor:
         bsz, q_seqlen, ch = q_x.shape
         _, kv_seqlen, _ = kv_x.shape
+        dt = q_x.dtype
 
         q = self.q(q_x).reshape(bsz, q_seqlen, self.num_heads, self.head_dim)
         kv = self.kv(kv_x).reshape(bsz, kv_seqlen, 2, self.num_heads, self.head_dim).permute(2, 0, 1, 3, 4)
@@ -229,9 +246,9 @@ class CrossAttention(nn.Module):
         k = apply_rotary_emb(k, k_freqs_cis)
 
         # (bs, n_local_heads, q_seqlen, head_dim)
-        q = q.transpose(1, 2)
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
+        q = q.transpose(1, 2).float()
+        k = k.transpose(1, 2).float()
+        v = v.transpose(1, 2).float()
 
         if self.flash and not self.return_attn_probs:
             x = F.scaled_dot_product_attention(
@@ -245,11 +262,12 @@ class CrossAttention(nn.Module):
             attn = self.attn_drop(attn)
             x = attn @ v
 
+        x = x.to(dt)
         x = x.transpose(1, 2).contiguous().reshape(bsz, q_seqlen, ch)
         x = self.proj(x)
         x = self.proj_drop(x)
         if self.return_attn_probs:
-            return x, attn
+            return x, attn.to(dt)
         else:
             return x
 

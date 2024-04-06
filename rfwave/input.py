@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Optional
 from rfwave.models import ConvNeXtV2Block
 from rfwave.attention import (
-    Attention, CrossAttention, FeedForward, RMSNorm, apply_rotary_emb, get_pos_embed,
+    Attention, CrossAttention, FeedForward, MLP, RMSNorm, apply_rotary_emb, get_pos_embed,
     score_mask, precompute_freqs_cis, score_mask_from_bool_mask, modulate, _get_start)
 
 import torch
@@ -42,9 +42,10 @@ class TransformerBlock(nn.Module):
         self.head_dim = args.dim // args.n_heads
         self.attention = Attention(dim=args.dim, num_heads=args.n_heads, qkv_bias=False, qk_norm=args.qk_norm,
                                    attn_drop=args.dropout, proj_drop=args.dropout, norm_layer=RMSNorm)
-        self.feed_forward = FeedForward(
-            dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout,
-            act_layer=lambda: nn.GELU(approximate="tanh"))
+        # self.feed_forward = MLP(dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout,
+        #                         act_layer=lambda: nn.GELU(approximate="tanh"))
+        self.feed_forward = FeedForward(dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout,
+                                        multiple_of=args.multiple_of)
         # self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         # self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.attention_norm = nn.LayerNorm(args.dim, eps=args.norm_eps)
@@ -91,7 +92,7 @@ class CharInputAdaptor(InputAdaptor):
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
         for pn, p in self.named_parameters():
-            if pn.endswith('w3.weight') or pn.endswith('wo.weight'):
+            if pn.endswith('proj.weight') or pn.endswith('fc2.weight') or pn.endswith('w3.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * params.n_layers))
 
     def _init_weights(self, module):
@@ -151,9 +152,10 @@ class CrossAttTransformerBlock(nn.Module):
         self.cross_attention = CrossAttention(
             dim=args.dim, num_heads=args.n_heads, qkv_bias=False, qk_norm=args.qk_norm,
             attn_drop=args.dropout, proj_drop=args.dropout, norm_layer=RMSNorm)
-        self.feed_forward = FeedForward(
-            dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout,
-            act_layer=lambda: nn.GELU(approximate="tanh"))
+        # self.feed_forward = MLP(dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout,
+        #                         act_layer=lambda: nn.GELU(approximate="tanh"))
+        self.feed_forward = FeedForward(dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout,
+                                        multiple_of=args.multiple_of)
         self.layer_id = layer_id
         if modulate:
             self.adaLN_modulation = nn.Sequential(
@@ -255,7 +257,7 @@ class ContextBlock(nn.Module):
                     torch.nn.init.zeros_(module.bias)
         self.blocks.apply(_basic_init)
         for pn, p in self.blocks.named_parameters():
-            if pn.endswith('proj.weight') or pn.endswith('fc2.weight'):  # attention output weights
+            if pn.endswith('proj.weight') or pn.endswith('fc2.weight') or pn.endswith('w3.weight'):  # attention output weights
                 torch.nn.init.trunc_normal_(p, mean=0.0, std=0.02/math.sqrt(2 * self.num_layers))
 
         # Zero-out adaLN modulation layers in DiT blocks:
@@ -417,7 +419,7 @@ class Ctx2CharInputAdaptor(InputAdaptor):
                     torch.nn.init.zeros_(module.bias)
         self.layers.apply(_basic_init)
         for pn, p in self.layers.named_parameters():
-            if pn.endswith('proj.weight') or pn.endswith('fc2.weight'):
+            if pn.endswith('proj.weight') or pn.endswith('fc2.weight') or pn.endswith('w3.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * self.n_layers))
         self.ctx_proj.apply(_basic_init)
         nn.init.trunc_normal_(self.tok_embeddings.weight, std=0.02)
@@ -520,7 +522,7 @@ class DurInputAdaptor(InputAdaptor):
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
         for pn, p in self.named_parameters():
-            if pn.endswith('proj.weight') or pn.endswith('fc2.weight'):
+            if pn.endswith('proj.weight') or pn.endswith('fc2.weight') or pn.endswith('w3.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * params.n_layers))
 
     def _init_weights(self, module):

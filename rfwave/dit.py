@@ -6,7 +6,7 @@ from torch import nn
 from torch.nn import functional as F
 from rfwave.models import Backbone, Base2FourierFeatures
 from rfwave.input import ModelArgs, ContextBlock, AlignmentBlock
-from rfwave.attention import (Attention, FeedForward, ConvFeedForward, precompute_freqs_cis,  RMSNorm,
+from rfwave.attention import (Attention, FeedForward, ConvFeedForward, MLP, precompute_freqs_cis,  RMSNorm,
                               get_pos_embed, modulate, score_mask, _get_len, _get_start)
 
 
@@ -23,8 +23,10 @@ class DiTBlock(nn.Module):
         self.norm2 = nn.LayerNorm(self.dim, elementwise_affine=False, eps=1e-6)
         # self.feed_forward = ConvFeedForward(dim=dim, hidden_dim=self.intermediate_dim,
         #                                     multiple_of=256, dropout=dropout)
-        self.feed_forward = FeedForward(dim=dim, hidden_dim=self.intermediate_dim, drop=dropout,
-                                        act_layer=lambda: nn.GELU(approximate="tanh"))
+        # self.feed_forward = MLP(dim=dim, hidden_dim=self.intermediate_dim, drop=dropout,
+        #                         act_layer=lambda: nn.GELU(approximate="tanh"))
+        self.feed_forward = FeedForward(
+            dim=dim, hidden_dim=self.intermediate_dim, drop=dropout, multiple_of=256)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(), nn.Linear(self.dim, 6 * self.dim, bias=True))
 
@@ -154,7 +156,8 @@ class DiTRFBackbone(Backbone):
                     torch.nn.init.zeros_(module.bias)
         self.blocks.apply(_basic_init)
         for pn, p in self.blocks.named_parameters():
-            if pn.endswith('proj.weight') or pn.endswith('fc2.weight') or pn.endswith('pwconv2.weight'):
+            if (pn.endswith('proj.weight') or pn.endswith('fc2.weight') or
+                    pn.endswith('pwconv2.weight') or pn.endswith('w3.weight')):
                 torch.nn.init.trunc_normal_(p, mean=0.0, std=0.02/math.sqrt(2 * self.num_layers))
 
         # Initialize input embed:
