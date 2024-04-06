@@ -641,6 +641,9 @@ class VocosExp(pl.LightningModule):
         return [opt_gen], [{"scheduler": scheduler_gen, "interval": "step"}]
 
     def skip_nan(self, optimizer):
+        if self.trainer.precision in ['16', '16-mixed']:
+            return
+
         valid_gradients = True
         for name, param in self.named_parameters():
             if param.grad is not None:

@@ -1,8 +1,10 @@
 import os
 from pytorch_lightning.cli import LightningCLI
 
+import torch
 import torch._dynamo
 torch._dynamo.config.automatic_dynamic_shapes = False
+torch.set_float32_matmul_precision('high')
 
 
 class CustomCLI(LightningCLI):
