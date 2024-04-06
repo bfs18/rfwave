@@ -326,7 +326,7 @@ class CtxCharInputAdaptor(InputAdaptor):
                     torch.nn.init.zeros_(module.bias)
         self.layers.apply(_basic_init)
         for pn, p in self.layers.named_parameters():
-            if pn.endswith('proj.weight') or pn.endswith('fc2.weight'):
+            if pn.endswith('proj.weight') or pn.endswith('fc2.weight') or pn.endswith('w3.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * self.n_layers))
         self.ctx_proj.apply(_basic_init)
         nn.init.trunc_normal_(self.tok_embeddings.weight, std=0.02)
