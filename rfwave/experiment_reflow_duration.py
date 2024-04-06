@@ -137,6 +137,10 @@ class VocosExp(pl.LightningModule):
             print("detected inf or nan values in gradients. not updating model parameters")
             optimizer.zero_grad()
 
+    def on_before_optimizer_step(self, optimizer):
+        # Note: `unscale` happens after the closure is executed, but before the `on_before_optimizer_step` hook.
+        self.clip_gradients(optimizer, gradient_clip_val=5., gradient_clip_algorithm="norm")
+
     def training_step(self, batch, batch_idx, **kwargs):
         token_ids, durs = batch
         opt_gen = self.optimizers()
@@ -147,7 +151,6 @@ class VocosExp(pl.LightningModule):
         loss = self.reflow.compute_loss(z_t, t, target, features)
         self.manual_backward(loss)
         self.skip_nan(opt_gen)
-        self.clip_gradients(opt_gen, gradient_clip_val=5., gradient_clip_algorithm="norm")
         opt_gen.step()
         sch_gen.step()
         self.log("train_loss", loss, prog_bar=True, logger=True)

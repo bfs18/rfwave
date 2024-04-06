@@ -693,6 +693,10 @@ class VocosExp(pl.LightningModule):
             raise ValueError(f"Invalid phone_info, #fields {len(phone_info)}")
         return phone_info, pi_kwargs
 
+    def on_before_optimizer_step(self, optimizer):
+        # Note: `unscale` happens after the closure is executed, but before the `on_before_optimizer_step` hook.
+        self.clip_gradients(optimizer, gradient_clip_val=1., gradient_clip_algorithm="norm")
+
     def training_step(self, batch, batch_idx, **kwargs):
         audio_input, phone_info = batch
         phone_info, pi_kwargs = self.process_context(phone_info)
@@ -712,7 +716,6 @@ class VocosExp(pl.LightningModule):
         loss = loss + cond_mel_loss
         self.manual_backward(loss)
         self.skip_nan(opt_gen)
-        self.clip_gradients(opt_gen, gradient_clip_val=1., gradient_clip_algorithm="norm")
         opt_gen.step()
         sch_gen.step()
 
