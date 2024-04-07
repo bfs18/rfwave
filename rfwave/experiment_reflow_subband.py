@@ -659,8 +659,8 @@ class VocosExp(pl.LightningModule):
                     step=self.global_step)
         self.validation_step_outputs.clear()
 
-    def on_train_epoch_start(self, *args):
-        torch.cuda.empty_cache()
+    # def on_train_epoch_start(self, *args):
+    #     torch.cuda.empty_cache()
 
     def on_train_start(self, *args):
         if self.global_rank == 0:

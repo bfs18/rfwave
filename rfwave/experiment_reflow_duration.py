@@ -172,8 +172,8 @@ class VocosExp(pl.LightningModule):
         self.log("val_loss", loss, prog_bar=True, logger=True)
         self.validation_step_outputs.clear()
 
-    def on_train_epoch_start(self, *args):
-        torch.cuda.empty_cache()
+    # def on_train_epoch_start(self, *args):
+    #     torch.cuda.empty_cache()
 
     def on_train_start(self, *args):
         if self.global_rank == 0:
