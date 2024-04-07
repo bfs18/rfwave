@@ -14,6 +14,7 @@ from rfwave.input import InputAdaptor
 from rfwave.models import Backbone
 from rfwave.lr_schedule import get_cosine_schedule_with_warmup
 from rfwave.logit_normal import LogitNormal
+from rfwave.helpers import save_code
 from rfwave.dit import DiTRFBackbone
 
 
@@ -176,3 +177,11 @@ class VocosExp(pl.LightningModule):
 
     def on_train_epoch_start(self, *args):
         torch.cuda.empty_cache()
+
+    def on_train_start(self, *args):
+        if self.global_rank == 0:
+            code_fp = save_code(None, self.logger.save_dir)
+            # backup code to wandb
+            artifact = wandb.Artifact(code_fp.stem, type='code')
+            artifact.add_file(str(code_fp), name=code_fp.name)
+            self.logger.experiment.log_artifact(artifact)

@@ -817,4 +817,8 @@ class VocosExp(pl.LightningModule):
 
     def on_train_start(self, *args):
         if self.global_rank == 0:
-            save_code(None, self.logger.save_dir)
+            code_fp = save_code(None, self.logger.save_dir)
+            # backup code to wandb
+            artifact = wandb.Artifact(code_fp.stem, type='code')
+            artifact.add_file(str(code_fp), name=code_fp.name)
+            self.logger.experiment.log_artifact(artifact)

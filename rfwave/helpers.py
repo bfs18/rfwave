@@ -88,6 +88,7 @@ def save_code(exp_name, save_dir):
     temp.close()
     time_str = time.strftime("%Y_%m_%d-%H_%M_%S")
     shutil.copyfile(temp.name, Path(save_dir) / f'code-{time_str}.tar.gz')
+    return Path(save_dir) / f'code-{time_str}.tar.gz'
 
 
 def inspect_grad_norm(loss, params, norm_type=2.0):
