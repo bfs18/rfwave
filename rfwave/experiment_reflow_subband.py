@@ -511,9 +511,6 @@ class VocosExp(pl.LightningModule):
         return [opt_gen], [{"scheduler": scheduler_gen, "interval": "step"}]
 
     def skip_nan(self, optimizer):
-        if self.trainer.precision in ['16', '16-mixed']:
-            return
-
         valid_gradients = True
         for name, param in self.named_parameters():
             if param.grad is not None:
@@ -546,6 +543,7 @@ class VocosExp(pl.LightningModule):
 
     def on_before_optimizer_step(self, optimizer):
         # Note: `unscale` happens after the closure is executed, but before the `on_before_optimizer_step` hook.
+        self.skip_nan(optimizer)
         self.clip_gradients(optimizer, gradient_clip_val=5., gradient_clip_algorithm="norm")
 
     def training_step(self, batch, batch_idx, **kwargs):
@@ -575,7 +573,6 @@ class VocosExp(pl.LightningModule):
             z_t, t, target, features_ext, bandwidth_id=bandwidth_id, encodec_bandwidth_id=bi, start=start)
         loss = loss + cond_mel_loss
         self.manual_backward(loss)
-        self.skip_nan(opt_gen)
         opt_gen.step()
         sch_gen.step()
 
