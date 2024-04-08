@@ -330,7 +330,10 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         ref_mask = score_mask(ref_length)
         zero_start = _get_start(z_t, None)
         token_freq_cis = self.get_pos_embed(zero_start, token_length.max(), scale=token_exp_scale)
-        ref_freq_cis = self.get_pos_embed(zero_start, ref_length.max())
+        # ref_freq_cis = self.get_pos_embed(zero_start, ref_length.max())
+        # no pos embedding for reference.
+        sh = (z_t.size(0), ref_length.max(), token_freq_cis.size(-1) // 2)
+        ref_freq_cis = torch.cat([token_freq_cis.new_ones(sh), token_freq_cis.new_zeros(sh)], dim=-1)
         ctx_mask = torch.cat([token_mask, ref_mask], dim=-1)
         ctx_freq_cis = torch.cat([token_freq_cis, ref_freq_cis], dim=1)
 
