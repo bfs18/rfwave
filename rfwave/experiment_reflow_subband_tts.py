@@ -547,6 +547,8 @@ class RectifiedFlow(nn.Module):
         if self.cfg and np.random.uniform() < self.p_uncond:
             text = torch.ones_like(text) * text.mean(dim=(0, 2), keepdim=True)
         pred, opt_attn = self.get_pred(z_t, t, text, bandwidth_id, **kwargs)
+        pred, z_t, t, target = [v.float() for v in (pred, z_t, t, target)]
+        opt_attn = opt_attn.float() if opt_attn is not None else None
         t_ = t.view(-1, 1, 1)
         z_t1, z_t2 = self.split(z_t)
         if self.intt > 0.:

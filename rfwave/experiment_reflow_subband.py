@@ -438,6 +438,7 @@ class RectifiedFlow(nn.Module):
         if self.cfg and np.random.uniform() < self.p_uncond:
             mel = torch.ones_like(mel) * mel.mean(dim=(0, 2), keepdim=True)
         pred = self.get_pred(z_t, t, mel, bandwidth_id, encodec_bandwidth_id=encodec_bandwidth_id, **kwargs)
+        pred, z_t, t, target = [v.float() for v in (pred, z_t, t, target)]
         stft_loss = self.compute_stft_loss(z_t, t, target, pred, bandwidth_id) if self.stft_loss else 0.
         phase_loss = self.compute_phase_loss(z_t, t, target, pred, bandwidth_id) if self.phase_loss else 0.
         overlap_loss = self.compute_overlap_loss(pred) if self.overlap_loss else 0.
