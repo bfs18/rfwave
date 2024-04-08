@@ -592,3 +592,33 @@ class InputAdaptorProject(nn.Module):
         non_padding = (x.abs().sum(1, keepdim=True) > 0.).type_as(x)
         out = self.linear(x.transpose(1, 2)).transpose(1, 2)
         return out * non_padding + pad_val * (1. - non_padding)
+
+
+if __name__ == '__main__':
+    from rfwave.dataset import DataConfig, TTSCtxDatasetSegment, tts_ctx_collate_segment
+    from torch.utils.data import DataLoader
+    from rfwave.feature_extractors import MelSpectrogramFeatures
+
+    input_adaptor = CtxCharInputAdaptor(
+        embedding_dim=512, vocab_size=78, ctx_dim=100)
+
+    cfg = DataConfig(
+        filelist_path="/Users/liupeng/wd_disk/dataset/LJSpeech-1.1/synta_filelist.valid",
+        sampling_rate=22050,
+        num_samples=65280,
+        batch_size=8,
+        num_workers=0,
+        cache=True,
+        task="tts",
+        hop_length=256,
+        padding="center",
+        phoneset="/Users/liupeng/wd_disk/dataset/LJSpeech-1.1/synta_phoneset.th",
+    )
+    dataset = TTSCtxDatasetSegment(cfg, train=False)
+    dataloader = DataLoader(dataset, collate_fn=tts_ctx_collate_segment, batch_size=cfg.batch_size)
+    batch = next(iter(dataloader))
+    phone_info = batch[1]
+    mel_extractor = MelSpectrogramFeatures(22050, n_fft=1024, hop_length=256, n_mels=100)
+    phone_info[4] = mel_extractor(phone_info[4])
+    out = input_adaptor(*phone_info)
+    print(out.shape)

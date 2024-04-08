@@ -755,7 +755,7 @@ def tts_collate_segment(data):
         durations[i, :ti.size(0)] = d
     start_phone_idx = torch.tensor([ti[2] for ti in token_info])
     start_frame = torch.tensor([ti[3] for ti in token_info])
-    return y, (token_ids, durations, start_phone_idx, start_frame)
+    return y, [token_ids, durations, start_phone_idx, start_frame]
 
 
 def tts_collate(data):
@@ -777,7 +777,7 @@ def tts_collate(data):
         durations[i, -1] = max_num_frame - torch.sum(d)
     start_phone_idx = torch.tensor([ti[2] for ti in token_info])
     start_frame = torch.tensor([ti[3] for ti in token_info])
-    return y, (token_ids, durations, start_phone_idx, start_frame)
+    return y, [token_ids, durations, start_phone_idx, start_frame]
 
 
 def tts_ctx_collate_segment(data):
@@ -803,8 +803,8 @@ def tts_ctx_collate_segment(data):
     start_phone_idx = torch.tensor([ti[2] for ti in token_info])
     start_frame = torch.tensor([ti[3] for ti in token_info])
     ctx_n_frame = torch.tensor([ti[5] for ti in token_info])
-    return y, (token_ids, durations, start_phone_idx, start_frame,
-               y_ctx_pad, ctx_n_frame, ctx_token_ids, ctx_durations)
+    return y, [token_ids, durations, start_phone_idx, start_frame,
+               y_ctx_pad, ctx_n_frame, ctx_token_ids, ctx_durations]
 
 
 def e2e_tts_ctx_collate_segment(data):
@@ -821,7 +821,7 @@ def e2e_tts_ctx_collate_segment(data):
         y_ctx_pad[i, :ctx.size(0)] = ctx
     start_frame = torch.tensor([ti[1] for ti in token_info])
     ctx_n_frame = torch.stack([ti[3] for ti in token_info])
-    return y, (token_ids, start_frame, y_ctx_pad, ctx_n_frame)
+    return y, [token_ids, start_frame, y_ctx_pad, ctx_n_frame]
 
 
 def dur_collate(data):
