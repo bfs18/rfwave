@@ -7,7 +7,7 @@ from torch.nn import functional as F
 from rfwave.models import Backbone, Base2FourierFeatures
 from rfwave.input import ModelArgs, ContextBlock, AlignmentBlock
 from rfwave.attention import (Attention, FeedForward, ConvFeedForward, MLP, precompute_freqs_cis,  RMSNorm,
-                              get_pos_embed, modulate, score_mask, _get_len, _get_start)
+                              get_pos_embed_indices, modulate, score_mask, _get_len, _get_start)
 
 
 class DiTBlock(nn.Module):
@@ -185,6 +185,11 @@ class DiTRFBackbone(Backbone):
         nn.init.constant_(self.final.adaLN_modulation[-1].bias, 0)
         nn.init.trunc_normal_(self.final.linear.weight, mean=0., std=0.02)
 
+    def get_pos_embed(self, start, length, scale=1.):
+        attn_freqs_cis = self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval
+        pos = get_pos_embed_indices(start, length, max_pos=attn_freqs_cis.size(0), scale=scale)
+        return attn_freqs_cis[pos]
+
     def forward(self, z_t, t, x, bandwidth_id=None, start=None, encodec_bandwidth_id=None):
         if self.with_fourier_features:
             z_t_f = self.fourier_module(z_t)
@@ -208,7 +213,7 @@ class DiTRFBackbone(Backbone):
         x = x.transpose(1, 2)
         start = _get_start(z_t, start)
         length = _get_len(z_t, None)  # length is None
-        freq_cis = get_pos_embed(self.pos_embed if self.training else self.pos_embed_eval, start, length.max())
+        freq_cis = self.get_pos_embed(start, length.max())
         for block in self.blocks:
             x = block(x, c, freq_cis, None)
         x = self.final(x, c)
@@ -296,11 +301,12 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             pe_scale=pe_scale,
             with_fourier_features=with_fourier_features)
 
-    @property
-    def pos_embed(self):
+    def get_pos_embed(self, start, length, scale=1.):
         # return self.module.pos_embed if self.training else self.module.pos_embed_eval
         # always use the same positional embedding, since the input tokens and reference are not segment
-        return self.module.pos_embed
+        attn_freqs_cis = self.module.pos_embed
+        pos = get_pos_embed_indices(start, length, max_pos=attn_freqs_cis.size(0), scale=scale)
+        return attn_freqs_cis[pos]
 
     def time_embed(self, t):
         return self.module.time_embed(t)
@@ -316,15 +322,15 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
 
         start = _get_start(z_t, start)
         length = _get_len(z_t, None)  # length is None
-        z_freq_cis = get_pos_embed(self.pos_embed, start, length.max())
+        z_freq_cis = self.get_pos_embed(start, length.max())
         # pos_embed for token and ref
         token_length, ref_length, token_exp_scale = token_ref_length.unbind(1)
         token_length, ref_length = token_length.long(), ref_length.long()
         token_mask = score_mask(token_length)
         ref_mask = score_mask(ref_length)
         zero_start = _get_start(z_t, None)
-        token_freq_cis = get_pos_embed(self.pos_embed, zero_start, token_length.max(), scale=token_exp_scale)
-        ref_freq_cis = get_pos_embed(self.pos_embed, zero_start, ref_length.max())
+        token_freq_cis = self.get_pos_embed(zero_start, token_length.max(), scale=token_exp_scale)
+        ref_freq_cis = self.get_pos_embed(zero_start, ref_length.max())
         ctx_mask = torch.cat([token_mask, ref_mask], dim=-1)
         ctx_freq_cis = torch.cat([token_freq_cis, ref_freq_cis], dim=1)
 

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Optional
 from rfwave.models import ConvNeXtV2Block
 from rfwave.attention import (
-    Attention, CrossAttention, FeedForward, MLP, RMSNorm, apply_rotary_emb, get_pos_embed,
+    Attention, CrossAttention, FeedForward, MLP, RMSNorm, apply_rotary_emb, get_pos_embed_indices,
     score_mask, precompute_freqs_cis, score_mask_from_bool_mask, modulate, _get_start)
 
 import torch
@@ -83,10 +83,6 @@ class CharInputAdaptor(InputAdaptor):
         self.register_buffer("attn_freqs_cis", freqs_cis, persistent=False)
         freqs_cis = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len, theta_rescale_factor=8.)
         self.register_buffer("attn_freqs_cis_eval", freqs_cis, persistent=False)
-        freqs_cis = precompute_freqs_cis(params.dim, params.max_seq_len)
-        self.register_buffer("conv_freqs_cis", freqs_cis, persistent=False)
-        freqs_cis = precompute_freqs_cis(params.dim, params.max_seq_len, theta_rescale_factor=8.)
-        self.register_buffer("conv_freqs_cis_eval", freqs_cis, persistent=False)
 
         # init all weights
         self.apply(self._init_weights)
@@ -103,20 +99,24 @@ class CharInputAdaptor(InputAdaptor):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
+    def get_pos_embed(self, start, length, scale=1.):
+        attn_freqs_cis = self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval
+        pos = get_pos_embed_indices(start, length, max_pos=attn_freqs_cis.size(0), scale=scale)
+        return attn_freqs_cis[pos]
+
     def forward_phone(self, tokens: torch.Tensor, phone_start: torch.Tensor):
         _bsz, num_phones = tokens.shape
         h = self.tok_embeddings(tokens)
         h = self.dropout(h)
 
-        freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
-                                  phone_start, num_phones)
+        freqs_cis = self.get_pos_embed(phone_start, num_phones)
         phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
 
         for layer in self.layers:
             h = layer(h, freqs_cis, mask=phone_mask)
         h = self.attn_norm(h)
         h = self.attn_output(h)
-        non_padding = (tokens != self.pad_token).float()
+        non_padding = (tokens != self.pad_token).type_as(h)
         return h * non_padding.unsqueeze(2)
 
     def expand(self, encoded_phone, lengths):
@@ -129,10 +129,11 @@ class CharInputAdaptor(InputAdaptor):
                 phone_start: torch.Tensor, frame_start: torch.Tensor, *args):
         encoded_phone = self.forward_phone(tokens, phone_start)
         expanded_phone = self.expand(encoded_phone, token_frames)
-        non_padding = (expanded_phone.abs().sum(2) > 0.).float()
+        non_padding = (expanded_phone.abs().sum(2) > 0.).type_as(expanded_phone)
         num_frames = torch.sum(token_frames, dim=1).long()
-        freqs_cis = get_pos_embed(self.conv_freqs_cis if self.training else self.conv_freqs_cis_eval,
-                                  frame_start, num_frames.max())
+        freqs_cis = self.get_pos_embed(frame_start, num_frames.max())
+        rpt = expanded_phone.size(-1) // freqs_cis.size(-1)
+        freqs_cis = freqs_cis.repeat([1, 1, rpt])
         expanded_phone = apply_rotary_emb(expanded_phone, freqs_cis)
         output = self.convnext(expanded_phone.transpose(1, 2))
         output = self.output(output.transpose(1, 2))
@@ -157,13 +158,7 @@ class CrossAttTransformerBlock(nn.Module):
         self.feed_forward = FeedForward(dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout,
                                         multiple_of=args.multiple_of)
         self.layer_id = layer_id
-        if modulate:
-            self.adaLN_modulation = nn.Sequential(
-                nn.SiLU(), nn.Linear(self.dim, 9 * self.dim, bias=True))
-            self.attention_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
-            self.cross_attention_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
-            self.ffn_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
-        else:
+        if not modulate:
             self.adaLN_modulation = None
             # self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
             # self.cross_attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
@@ -171,6 +166,12 @@ class CrossAttTransformerBlock(nn.Module):
             self.attention_norm = nn.LayerNorm(args.dim, eps=args.norm_eps)
             self.cross_attention_norm = nn.LayerNorm(args.dim, eps=args.norm_eps)
             self.ffn_norm = nn.LayerNorm(args.dim, eps=args.norm_eps)
+        else:
+            self.adaLN_modulation = nn.Sequential(
+                nn.SiLU(), nn.Linear(self.dim, 9 * self.dim, bias=True))
+            self.attention_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
+            self.cross_attention_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
+            self.ffn_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
 
     def forward(self, x, context, x_freqs_cis, c_freqs_cis, x_mask, c_mask, mod_c=None):
         if self.adaLN_modulation is None:
@@ -220,8 +221,8 @@ class AlignmentBlock(nn.Module):
     def forward(self, x, context, x_freqs_cis, c_freqs_cis, x_mask, c_mask, mod_c):
         context = self.ctx_proj(context).transpose(1, 2)
         rpt = self.dim // x_freqs_cis.size(2)
-        x_freqs_cis = x_freqs_cis.repeat_interleave(rpt, dim=2)
-        c_freqs_cis = c_freqs_cis.repeat_interleave(rpt, dim=2)
+        x_freqs_cis = x_freqs_cis.repeat([1, 1, rpt])
+        c_freqs_cis = c_freqs_cis.repeat([1, 1, rpt])
         shift_crs, scale_crs, gate_crs = self.adaLN_modulation(mod_c).chunk(3, dim=1)
         h, attn = self.align_attn(
             modulate(self.cross_attention_norm(x), shift_crs, scale_crs),
@@ -237,14 +238,14 @@ class ContextBlock(nn.Module):
         self.ctx_proj = nn.Conv1d(ctx_dim, args.dim, 1) if ctx_dim != args.dim else nn.Identity()
         self.blocks = nn.ModuleList([CrossAttTransformerBlock(i, args, modulate=modulate)
                                      for i in range(n_attn_layers)])
-        if modulate:
-            self.attn_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
-            self.adaLN_modulation = nn.Sequential(
-                nn.SiLU(), nn.Linear(args.dim, 2 * args.dim, bias=True))
-        else:
+        if not modulate:
             # self.attn_norm = RMSNorm(args.dim, eps=args.norm_eps)
             self.attn_norm = nn.LayerNorm(args.dim, eps=args.norm_eps)
             self.adaLN_modulation = None
+        else:
+            self.attn_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
+            self.adaLN_modulation = nn.Sequential(
+                nn.SiLU(), nn.Linear(args.dim, 2 * args.dim, bias=True))
         self.attn_output = nn.Linear(args.dim, args.dim, bias=False)
         self.initialize_weights()
 
@@ -332,13 +333,17 @@ class CtxCharInputAdaptor(InputAdaptor):
         nn.init.trunc_normal_(self.tok_embeddings.weight, std=0.02)
         nn.init.trunc_normal_(self.attn_output.weight, std=0.02)
 
+    def get_pos_embed(self, start, length, scale=1.):
+        attn_freqs_cis = self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval
+        pos = get_pos_embed_indices(start, length, max_pos=attn_freqs_cis.size(0), scale=scale)
+        return attn_freqs_cis[pos]
+
     def forward_phone(self, tokens: torch.Tensor, phone_start: torch.Tensor):
         _bsz, num_phones = tokens.shape
         h = self.tok_embeddings(tokens)
         h = self.dropout(h)
 
-        freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
-                                  phone_start, num_phones)
+        freqs_cis = self.get_pos_embed(phone_start, num_phones)
         phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
 
         for layer in self.layers:
@@ -346,7 +351,7 @@ class CtxCharInputAdaptor(InputAdaptor):
 
         h = self.attn_norm(h)
         h = self.attn_output(h)
-        non_padding = (tokens != self.pad_token).float()
+        non_padding = (tokens != self.pad_token).type_as(h)
         return h * non_padding.unsqueeze(2)
 
     def expand(self, encoded_phone, lengths):
@@ -361,14 +366,12 @@ class CtxCharInputAdaptor(InputAdaptor):
         # context: [b, c, t]
         encoded_phone = self.forward_phone(tokens, phone_start)
         expanded_phone = self.expand(encoded_phone, token_frames)
-        non_padding = (expanded_phone.abs().sum(2) > 0.).float()
+        non_padding = (expanded_phone.abs().sum(2) > 0.).type_as(expanded_phone)
         num_frames = torch.sum(token_frames, dim=1).long()
 
-        freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
-                                  frame_start, num_frames.max())
+        freqs_cis = self.get_pos_embed(frame_start, num_frames.max())
         x_mask = score_mask_from_bool_mask(non_padding == 0)
-        ctx_freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
-                                      torch.zeros_like(frame_start), context.size(2))
+        ctx_freqs_cis = self.get_pos_embed(torch.zeros_like(frame_start), context.size(2))
         ctx_mask = score_mask(context_lengths)
 
         context = self.ctx_proj(context)
@@ -425,13 +428,17 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         nn.init.trunc_normal_(self.tok_embeddings.weight, std=0.02)
         nn.init.trunc_normal_(self.attn_output.weight, std=0.02)
 
+    def get_pos_embed(self, start, length, scale=1.):
+        attn_freqs_cis = self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval
+        pos = get_pos_embed_indices(start, length, max_pos=attn_freqs_cis.size(0), scale=scale)
+        return attn_freqs_cis[pos]
+
     def forward_phone(self, tokens: torch.Tensor, phone_start: torch.Tensor):
         _bsz, num_phones = tokens.shape
         h = self.tok_embeddings(tokens)
         h = self.dropout(h)
 
-        freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
-                                  phone_start, num_phones)
+        freqs_cis = self.get_pos_embed(phone_start, num_phones)
         phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
 
         for layer in self.layers:
@@ -439,7 +446,7 @@ class Ctx2CharInputAdaptor(InputAdaptor):
 
         h = self.attn_norm(h)
         h = self.attn_output(h)
-        non_padding = (tokens != self.pad_token).float()
+        non_padding = (tokens != self.pad_token).type_as(h)
         return h * non_padding.unsqueeze(2)
 
     def expand(self, encoded_phone, lengths):
@@ -480,14 +487,12 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         # context: [b, c, t]
         encoded_phone = self.forward_phone(tokens, phone_start)
         expanded_phone = self.expand(encoded_phone, token_frames)
-        non_padding = (expanded_phone.abs().sum(2) > 0.).float()
+        non_padding = (expanded_phone.abs().sum(2) > 0.).type_as(expanded_phone)
         num_frames = torch.sum(token_frames, dim=1).long()
 
-        freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
-                                  frame_start, num_frames.max())
+        freqs_cis = self.get_pos_embed(frame_start, num_frames.max())
         x_mask = score_mask_from_bool_mask(non_padding == 0)
-        ctx_freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
-                                      torch.zeros_like(frame_start), context.size(2))
+        ctx_freqs_cis = self.get_pos_embed(torch.zeros_like(frame_start), context.size(2))
         ctx_mask = score_mask(context_lengths)
 
         context = self.forward_ctx(context, context_lengths, ctx_tokens, ctx_token_frames)
@@ -533,21 +538,25 @@ class DurInputAdaptor(InputAdaptor):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
+    def get_pos_embed(self, start, length, scale=1.):
+        attn_freqs_cis = self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval
+        pos = get_pos_embed_indices(start, length, max_pos=attn_freqs_cis.size(0), scale=scale)
+        return attn_freqs_cis[pos]
+
     def forward(self, tokens: torch.Tensor):
         _bsz, num_phones = tokens.shape
         h = self.tok_embeddings(tokens)
         h = self.dropout(h)
         phone_start = torch.zeros([_bsz], dtype=torch.long, device=h.device)
 
-        freqs_cis = get_pos_embed(self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval,
-                                  phone_start, num_phones)
+        freqs_cis = self.get_pos_embed(phone_start, num_phones)
         phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
 
         for layer in self.layers:
             h = layer(h, freqs_cis, mask=phone_mask)
         h = self.attn_norm(h)
         h = self.attn_output(h)
-        non_padding = (tokens != self.pad_token).float()
+        non_padding = (tokens != self.pad_token).type_as(h)
         out = h * non_padding.unsqueeze(2)
         return out.transpose(1, 2)
 
@@ -580,6 +589,6 @@ class InputAdaptorProject(nn.Module):
         self.linear = nn.Linear(input_channels, output_channels)
 
     def forward(self, x, pad_val=0.):
-        non_padding = (x.abs().sum(1, keepdim=True) > 0.).float()
+        non_padding = (x.abs().sum(1, keepdim=True) > 0.).type_as(x)
         out = self.linear(x.transpose(1, 2)).transpose(1, 2)
         return out * non_padding + pad_val * (1. - non_padding)

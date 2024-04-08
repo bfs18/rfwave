@@ -105,16 +105,15 @@ def _get_len(tensor, length):
             if length is None else length)
 
 
-def get_pos_embed(pos_embed_table, start, length, scale=1.):
+def get_pos_embed_indices(start, length, max_pos, scale=1.):
     # length = length if isinstance(length, int) else length.max()
     scale = scale * torch.ones_like(start, dtype=torch.float32)  # in case scale is a scalar
     pos = start.unsqueeze(1) + (
             torch.arange(length, device=start.device, dtype=torch.float32).unsqueeze(0) *
             scale.unsqueeze(1)).long()
     # avoid extra long error.
-    pos = torch.where(pos < pos_embed_table.size(0), pos, pos_embed_table.size(0) - 1)
-    pe = pos_embed_table[pos]
-    return pe
+    pos = torch.where(pos < max_pos, pos, max_pos - 1)
+    return pos
 
 
 class ConvFeedForward(nn.Module):
@@ -236,7 +235,6 @@ class CrossAttention(nn.Module):
         mask: torch.Tensor) -> torch.Tensor:
         bsz, q_seqlen, ch = q_x.shape
         _, kv_seqlen, _ = kv_x.shape
-        dt = q_x.dtype
 
         q = self.q(q_x).reshape(bsz, q_seqlen, self.num_heads, self.head_dim)
         kv = self.kv(kv_x).reshape(bsz, kv_seqlen, 2, self.num_heads, self.head_dim).permute(2, 0, 1, 3, 4)
@@ -246,9 +244,9 @@ class CrossAttention(nn.Module):
         k = apply_rotary_emb(k, k_freqs_cis)
 
         # (bs, n_local_heads, q_seqlen, head_dim)
-        q = q.transpose(1, 2).float()
-        k = k.transpose(1, 2).float()
-        v = v.transpose(1, 2).float()
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
 
         if self.flash and not self.return_attn_probs:
             x = F.scaled_dot_product_attention(
@@ -258,16 +256,15 @@ class CrossAttention(nn.Module):
             attn = q @ k.transpose(-2, -1)
             if mask is not None:
                 attn = attn + mask
-            attn = attn.softmax(dim=-1)
+            attn = attn.float().softmax(dim=-1).type_as(attn)
             attn = self.attn_drop(attn)
             x = attn @ v
 
-        x = x.to(dt)
         x = x.transpose(1, 2).contiguous().reshape(bsz, q_seqlen, ch)
         x = self.proj(x)
         x = self.proj_drop(x)
         if self.return_attn_probs:
-            return x, attn.to(dt)
+            return x, attn
         else:
             return x
 
