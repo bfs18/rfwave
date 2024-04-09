@@ -14,7 +14,7 @@ data:
       hop_length: 256
       padding: "center"
       phoneset: synta_phoneset.th
-      min_context: 50
+      min_context: 200
 
     val_params:
       filelist_path: synta_filelist.valid
@@ -27,7 +27,7 @@ data:
       hop_length: 256
       padding: "center"
       phoneset: synta_phoneset.th
-      min_context: 50
+      min_context: 200
 
 model:
   class_path: rfwave.experiment_reflow_subband_tts.VocosExp
