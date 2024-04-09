@@ -142,8 +142,8 @@ class DiTRFBackbone(Backbone):
                 nn.Embedding(encodec_num_embeddings, dim), nn.Linear(dim, dim))
         else:
             self.encodec_bandwidth_embed = None
-        self.register_buffer("pos_embed", precompute_freqs_cis(dim//num_heads, 8192), persistent=False)
-        self.register_buffer("pos_embed_eval",
+        self.register_buffer("attn_freqs_cis", precompute_freqs_cis(dim//num_heads, 8192), persistent=False)
+        self.register_buffer("attn_freqs_cis_eval",
                              precompute_freqs_cis(dim//num_heads, 8192, theta_rescale_factor=8.), persistent=False)
         self.initialize_weights()
 
