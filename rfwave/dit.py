@@ -277,7 +277,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         dropout: float = 0.,
         pe_scale: float = 1000.,
         with_fourier_features: bool = True,
-        rad_alignment: bool = True,
+        rad_align: bool = True,
     ):
         super().__init__()
         self.input_channels = input_channels
@@ -288,7 +288,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         params = ModelArgs(dim=dim, n_heads=num_heads, dropout=dropout)
         self.z_t1_proj = nn.Conv1d(output_channels1, dim, 1)
         self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
-        if rad_alignment:
+        if rad_align:
             self.align_block = AlignmentBlock(dim, input_channels)
 
         self.module = DiTRFBackbone(
