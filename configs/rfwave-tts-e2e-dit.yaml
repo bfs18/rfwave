@@ -64,6 +64,7 @@ model:
         num_ctx_layers: 4
         num_bands: 8
         num_heads: 6
+        rad_alignment: True
 
     head:
       class_path: rfwave.heads.RFSTFTHead

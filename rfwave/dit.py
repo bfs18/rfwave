@@ -277,6 +277,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         dropout: float = 0.,
         pe_scale: float = 1000.,
         with_fourier_features: bool = True,
+        rad_alignment: bool = True,
     ):
         super().__init__()
         self.input_channels = input_channels
@@ -287,7 +288,8 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         params = ModelArgs(dim=dim, n_heads=num_heads, dropout=dropout)
         self.z_t1_proj = nn.Conv1d(output_channels1, dim, 1)
         self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
-        self.align_block = AlignmentBlock(dim, input_channels)
+        if rad_alignment:
+            self.align_block = AlignmentBlock(dim, input_channels)
 
         self.module = DiTRFBackbone(
             input_channels=dim,
@@ -346,10 +348,13 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         te = self.time_embed(t)
         z_t1 = z_t1.transpose(1, 2)
         ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, None, ctx_mask, mod_c=te)
-        # before or after cross attention
-        ctx, attn = self.align_block(ctx, x, z_freq_cis, ctx_freq_cis, None, ctx_mask, mod_c=te)
-        attn, _ = torch.split(attn, [token_length.max(), ref_length.max()], dim=-1)
-        attn = attn / attn.sum(dim=-1, keepdim=True)  # renorm attn
+        if self.align_block is not None:
+            # before or after cross attention
+            ctx, attn = self.align_block(ctx, x, z_freq_cis, ctx_freq_cis, None, ctx_mask, mod_c=te)
+            attn, _ = torch.split(attn, [token_length.max(), ref_length.max()], dim=-1)
+            attn = attn / attn.sum(dim=-1, keepdim=True)  # renorm attn
+        else:
+            attn = None
         ctx = ctx.transpose(1, 2)
         return self.module(z_t, t, ctx, bandwidth_id, start=start), attn
 
