@@ -186,6 +186,7 @@ class DiTRFBackbone(Backbone):
         nn.init.trunc_normal_(self.final.linear.weight, mean=0., std=0.02)
 
     def get_pos_embed(self, start, length, scale=1.):
+        # theta_rescale performs better at evaluation
         attn_freqs_cis = self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval
         pos = get_pos_embed_indices(start, length, max_pos=attn_freqs_cis.size(0), scale=scale)
         return attn_freqs_cis[pos]
@@ -302,11 +303,18 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             with_fourier_features=with_fourier_features)
 
     def get_pos_embed(self, start, length, scale=1.):
-        # return self.module.pos_embed if self.training else self.module.pos_embed_eval
         # always use the same positional embedding, since the input tokens and reference are not segment
         attn_freqs_cis = self.module.pos_embed
         pos = get_pos_embed_indices(start, length, max_pos=attn_freqs_cis.size(0), scale=scale)
         return attn_freqs_cis[pos]
+
+    def get_non_pos_embed(self, bsz, length, device):
+        # no positional is applied
+        sh = (bsz, length, self.module.pos_embed.size(-1) // 2)
+        freqs_cos = torch.ones(sh, device=device)
+        freqs_sin = torch.zeros(sh, device=device)
+        freq_cis = torch.cat([freqs_cos, freqs_sin], dim=-1)
+        return freq_cis
 
     def time_embed(self, t):
         return self.module.time_embed(t)
@@ -331,9 +339,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         zero_start = _get_start(z_t, None)
         token_freq_cis = self.get_pos_embed(zero_start, token_length.max(), scale=token_exp_scale)
         # ref_freq_cis = self.get_pos_embed(zero_start, ref_length.max())
-        # no pos embedding for reference.
-        sh = (z_t.size(0), ref_length.max(), token_freq_cis.size(-1) // 2)
-        ref_freq_cis = torch.cat([token_freq_cis.new_ones(sh), token_freq_cis.new_zeros(sh)], dim=-1)
+        ref_freq_cis = self.get_non_pos_embed(z_t.size(0), ref_length.max(), z_t.device)
         ctx_mask = torch.cat([token_mask, ref_mask], dim=-1)
         ctx_freq_cis = torch.cat([token_freq_cis, ref_freq_cis], dim=1)
 

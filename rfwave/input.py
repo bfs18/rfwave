@@ -136,7 +136,7 @@ class CharInputAdaptor(InputAdaptor):
         num_frames = torch.sum(token_frames, dim=1).long()
         freqs_cis = self.get_pos_embed(frame_start, num_frames.max())
         rpt = expanded_phone.size(-1) // freqs_cis.size(-1)
-        freqs_cis = freqs_cis.repeat([1, 1, rpt])
+        freqs_cis = freqs_cis.repeat_interleave(rpt, dim=-1)
         expanded_phone = apply_rotary_emb(expanded_phone, freqs_cis)
         output = self.convnext(expanded_phone.transpose(1, 2))
         output = self.output(output.transpose(1, 2))
@@ -224,8 +224,8 @@ class AlignmentBlock(nn.Module):
     def forward(self, x, context, x_freqs_cis, c_freqs_cis, x_mask, c_mask, mod_c):
         context = self.ctx_proj(context).transpose(1, 2)
         rpt = self.dim // x_freqs_cis.size(2)
-        x_freqs_cis = x_freqs_cis.repeat([1, 1, rpt])
-        c_freqs_cis = c_freqs_cis.repeat([1, 1, rpt])
+        x_freqs_cis = x_freqs_cis.repeat_interleave(rpt, dim=-1)
+        c_freqs_cis = c_freqs_cis.repeat_interleave(rpt, dim=-1)
         shift_crs, scale_crs, gate_crs = self.adaLN_modulation(mod_c).chunk(3, dim=1)
         h, attn = self.align_attn(
             modulate(self.cross_attention_norm(x), shift_crs, scale_crs),
@@ -337,6 +337,7 @@ class CtxCharInputAdaptor(InputAdaptor):
         nn.init.trunc_normal_(self.attn_output.weight, std=0.02)
 
     def get_pos_embed(self, start, length, scale=1., eval_theta_rescale=False):
+        # phone theta_rescale and no expand theta_rescale performs better at evaluation
         if eval_theta_rescale:
             attn_freqs_cis = self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval
         else:
@@ -435,6 +436,7 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         nn.init.trunc_normal_(self.attn_output.weight, std=0.02)
 
     def get_pos_embed(self, start, length, scale=1., eval_theta_rescale=False):
+        # phone theta_rescale and no expand theta_rescale performs better at evaluation
         if eval_theta_rescale:
             attn_freqs_cis = self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval
         else:
