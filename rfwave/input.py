@@ -99,8 +99,11 @@ class CharInputAdaptor(InputAdaptor):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def get_pos_embed(self, start, length, scale=1.):
-        attn_freqs_cis = self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval
+    def get_pos_embed(self, start, length, scale=1., eval_theta_rescale=False):
+        if eval_theta_rescale:
+            attn_freqs_cis = self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval
+        else:
+            attn_freqs_cis = self.attn_freqs_cis
         pos = get_pos_embed_indices(start, length, max_pos=attn_freqs_cis.size(0), scale=scale)
         return attn_freqs_cis[pos]
 
@@ -109,7 +112,7 @@ class CharInputAdaptor(InputAdaptor):
         h = self.tok_embeddings(tokens)
         h = self.dropout(h)
 
-        freqs_cis = self.get_pos_embed(phone_start, num_phones)
+        freqs_cis = self.get_pos_embed(phone_start, num_phones, eval_theta_rescale=True)
         phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
 
         for layer in self.layers:
@@ -333,8 +336,11 @@ class CtxCharInputAdaptor(InputAdaptor):
         nn.init.trunc_normal_(self.tok_embeddings.weight, std=0.02)
         nn.init.trunc_normal_(self.attn_output.weight, std=0.02)
 
-    def get_pos_embed(self, start, length, scale=1.):
-        attn_freqs_cis = self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval
+    def get_pos_embed(self, start, length, scale=1., eval_theta_rescale=False):
+        if eval_theta_rescale:
+            attn_freqs_cis = self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval
+        else:
+            attn_freqs_cis = self.attn_freqs_cis
         pos = get_pos_embed_indices(start, length, max_pos=attn_freqs_cis.size(0), scale=scale)
         return attn_freqs_cis[pos]
 
@@ -343,7 +349,7 @@ class CtxCharInputAdaptor(InputAdaptor):
         h = self.tok_embeddings(tokens)
         h = self.dropout(h)
 
-        freqs_cis = self.get_pos_embed(phone_start, num_phones)
+        freqs_cis = self.get_pos_embed(phone_start, num_phones, eval_theta_rescale=True)
         phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
 
         for layer in self.layers:
@@ -428,8 +434,11 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         nn.init.trunc_normal_(self.tok_embeddings.weight, std=0.02)
         nn.init.trunc_normal_(self.attn_output.weight, std=0.02)
 
-    def get_pos_embed(self, start, length, scale=1.):
-        attn_freqs_cis = self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval
+    def get_pos_embed(self, start, length, scale=1., eval_theta_rescale=False):
+        if eval_theta_rescale:
+            attn_freqs_cis = self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval
+        else:
+            attn_freqs_cis = self.attn_freqs_cis
         pos = get_pos_embed_indices(start, length, max_pos=attn_freqs_cis.size(0), scale=scale)
         return attn_freqs_cis[pos]
 
@@ -438,7 +447,7 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         h = self.tok_embeddings(tokens)
         h = self.dropout(h)
 
-        freqs_cis = self.get_pos_embed(phone_start, num_phones)
+        freqs_cis = self.get_pos_embed(phone_start, num_phones, eval_theta_rescale=True)
         phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
 
         for layer in self.layers:
