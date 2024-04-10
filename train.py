@@ -2,8 +2,6 @@ import os
 from pytorch_lightning.cli import LightningCLI
 
 import torch
-import torch._dynamo
-torch._dynamo.config.automatic_dynamic_shapes = False
 torch.set_float32_matmul_precision('high')
 
 
@@ -17,7 +15,14 @@ class CustomCLI(LightningCLI):
 if __name__ == "__main__":
     # Initialize your custom CLI
     cli = CustomCLI(run=False, save_config_kwargs={"overwrite": True})
-    
+
+    if cli.trainer.num_devices > 1:
+        # a wired bug, torch.compile may crash when using
+        # multi gpus and automatic_dynamic_shapes = True
+        # or a single gpu and automatic_dynamic_shapes = False
+        import torch._dynamo
+        torch._dynamo.config.automatic_dynamic_shapes = False
+
     # Create the logging directory
     os.makedirs(cli.trainer.logger.save_dir, exist_ok=True)
     

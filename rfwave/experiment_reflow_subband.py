@@ -227,7 +227,6 @@ class RectifiedFlow(nn.Module):
         if N is None:
             N = self.N
         traj = []  # to store the trajectory
-        dt = 1. / N
         if self.prev_cond or not self.parallel_uncond:
             assert band is not None
             assert bandwidth_id is not None
