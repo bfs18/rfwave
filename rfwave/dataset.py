@@ -84,11 +84,11 @@ class VocosDataModule(LightningDataModule):
                 batch_sampler = [x[rank::num_replicas] for x in batch_sampler if len(x) % num_replicas == 0]
             dataloader = DataLoader(
                 dataset, num_workers=cfg.num_workers, batch_sampler=batch_sampler,
-                pin_memory=True, collate_fn=collate_fn)
+                pin_memory=True, collate_fn=collate_fn, persistent_workers=True)
         else:
             dataloader = DataLoader(
                 dataset, batch_size=cfg.batch_size, num_workers=cfg.num_workers, shuffle=train,
-                pin_memory=True, collate_fn=collate_fn)
+                pin_memory=True, collate_fn=collate_fn, persistent_workers=True)
         return dataloader
 
     def train_dataloader(self) -> DataLoader:

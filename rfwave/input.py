@@ -3,8 +3,8 @@ from dataclasses import dataclass
 from typing import Optional
 from rfwave.models import ConvNeXtV2Block
 from rfwave.attention import (
-    Attention, CrossAttention, FeedForward, MLP, RMSNorm, apply_rotary_emb, get_pos_embed_indices,
-    score_mask, precompute_freqs_cis, score_mask_from_bool_mask, modulate, _get_start)
+    Attention, CrossAttention, FeedForward, MLP, ConvFeedForward, RMSNorm, apply_rotary_emb,
+    get_pos_embed_indices, score_mask, precompute_freqs_cis, score_mask_from_bool_mask, modulate, _get_start)
 
 import torch
 import math
@@ -44,8 +44,10 @@ class TransformerBlock(nn.Module):
                                    attn_drop=args.dropout, proj_drop=args.dropout, norm_layer=RMSNorm)
         # self.feed_forward = MLP(dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout,
         #                         act_layer=lambda: nn.GELU(approximate="tanh"))
-        self.feed_forward = FeedForward(dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout,
-                                        multiple_of=args.multiple_of)
+        self.feed_forward = FeedForward(
+            dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout, multiple_of=args.multiple_of)
+        # self.feed_forward = ConvFeedForward(
+        #     dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout, multiple_of=args.multiple_of)
         # self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         # self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.attention_norm = nn.LayerNorm(args.dim, eps=args.norm_eps)
@@ -158,8 +160,10 @@ class CrossAttTransformerBlock(nn.Module):
             attn_drop=args.dropout, proj_drop=args.dropout, norm_layer=RMSNorm)
         # self.feed_forward = MLP(dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout,
         #                         act_layer=lambda: nn.GELU(approximate="tanh"))
-        self.feed_forward = FeedForward(dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout,
-                                        multiple_of=args.multiple_of)
+        self.feed_forward = FeedForward(
+            dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout, multiple_of=args.multiple_of)
+        # self.feed_forward = ConvFeedForward(
+        #     dim=args.dim, hidden_dim=args.hidden_dim, drop=args.dropout, multiple_of=args.multiple_of)
         self.layer_id = layer_id
         if not modulate:
             self.adaLN_modulation = None

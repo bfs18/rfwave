@@ -3,7 +3,6 @@ from pytorch_lightning.cli import LightningCLI
 
 import torch
 import torch._dynamo
-torch._dynamo.config.automatic_dynamic_shapes = True
 torch.set_float32_matmul_precision('high')
 
 
@@ -17,6 +16,9 @@ class CustomCLI(LightningCLI):
 if __name__ == "__main__":
     # Initialize your custom CLI
     cli = CustomCLI(run=False, save_config_kwargs={"overwrite": True})
+    if cli.trainer.num_devices > 1:
+        torch._dynamo.config.automatic_dynamic_shapes = False
+        torch.multiprocessing.set_start_method('spawn')
 
     # Create the logging directory
     os.makedirs(cli.trainer.logger.save_dir, exist_ok=True)

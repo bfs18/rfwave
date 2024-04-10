@@ -21,12 +21,12 @@ class DiTBlock(nn.Module):
         self.attention = Attention(dim=dim, num_heads=num_heads, qkv_bias=False, qk_norm=True,
                                    norm_layer=RMSNorm, attn_drop=dropout, proj_drop=dropout)
         self.norm2 = nn.LayerNorm(self.dim, elementwise_affine=False, eps=1e-6)
-        # self.feed_forward = ConvFeedForward(dim=dim, hidden_dim=self.intermediate_dim,
-        #                                     multiple_of=256, dropout=dropout)
         # self.feed_forward = MLP(dim=dim, hidden_dim=self.intermediate_dim, drop=dropout,
         #                         act_layer=lambda: nn.GELU(approximate="tanh"))
         self.feed_forward = FeedForward(
             dim=dim, hidden_dim=self.intermediate_dim, drop=dropout, multiple_of=256)
+        # self.feed_forward = ConvFeedForward(
+        #     dim=dim, hidden_dim=self.intermediate_dim, multiple_of=256, drop=dropout)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(), nn.Linear(self.dim, 6 * self.dim, bias=True))
 
@@ -306,13 +306,13 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
 
     def get_pos_embed(self, start, length, scale=1.):
         # always use the same positional embedding, since the input tokens and reference are not segment
-        attn_freqs_cis = self.module.pos_embed
+        attn_freqs_cis = self.module.attn_freqs_cis
         pos = get_pos_embed_indices(start, length, max_pos=attn_freqs_cis.size(0), scale=scale)
         return attn_freqs_cis[pos]
 
     def get_non_pos_embed(self, bsz, length, device):
         # no positional is applied
-        sh = (bsz, length, self.module.pos_embed.size(-1) // 2)
+        sh = (bsz, length, self.module.attn_freqs_cis.size(-1) // 2)
         freqs_cos = torch.ones(sh, device=device)
         freqs_sin = torch.zeros(sh, device=device)
         freq_cis = torch.cat([freqs_cos, freqs_sin], dim=-1)

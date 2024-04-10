@@ -117,7 +117,7 @@ def get_pos_embed_indices(start, length, max_pos, scale=1.):
 
 
 class ConvFeedForward(nn.Module):
-    def __init__(self, dim: int, hidden_dim: int, multiple_of: int, dropout: float):
+    def __init__(self, dim: int, hidden_dim: int, multiple_of: int, drop: float):
         super().__init__()
         if hidden_dim is None:
             hidden_dim = 4 * dim
@@ -129,7 +129,7 @@ class ConvFeedForward(nn.Module):
         self.act = nn.GELU()
         self.grn = GRN(hidden_dim)
         self.pwconv2 = nn.Linear(hidden_dim, dim)
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(drop)
 
     def forward(self, x):
         x = x.transpose(1, 2)  # (B, T, C) -> (B, C, T)
