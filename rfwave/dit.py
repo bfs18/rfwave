@@ -40,14 +40,13 @@ class DiTBlock(nn.Module):
         return out
 
 
-class FinalLayer(nn.Module):
+class ModLayerNorm(nn.Module):
     """
     The final layer of DiT.
     """
-    def __init__(self, hidden_size, out_channels):
+    def __init__(self, hidden_size):
         super().__init__()
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.linear = nn.Linear(hidden_size, out_channels, bias=True)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(hidden_size, 2 * hidden_size, bias=True)
@@ -56,7 +55,6 @@ class FinalLayer(nn.Module):
     def forward(self, x, c):
         shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
         x = modulate(self.norm_final(x), shift, scale)
-        x = self.linear(x)
         return x
 
 
@@ -129,9 +127,11 @@ class DiTRFBackbone(Backbone):
             fourier_dim = 0
         self.input_channels = input_channels
         self.embed = nn.Conv1d(input_channels + output_channels + fourier_dim, dim, kernel_size=7, padding=3)
+        self.embed_mod = ModLayerNorm(dim)
         self.blocks = nn.ModuleList([
             DiTBlock(dim, num_heads, intermediate_dim, dropout) for _ in range(num_layers)])
-        self.final = FinalLayer(dim, output_channels)
+        self.final_mod = ModLayerNorm(dim)
+        self.final_out = nn.Linear(dim, output_channels)
         self.time_embed = TimestepEmbedder(dim, pe_scale=pe_scale)
         if self.num_bands is not None and self.num_bands > 0:
             self.band_embed = nn.Sequential(nn.Embedding(num_bands, dim), nn.Linear(dim, dim))
@@ -162,6 +162,8 @@ class DiTRFBackbone(Backbone):
 
         # Initialize input embed:
         nn.init.trunc_normal_(self.embed.weight, std=0.02)
+        nn.init.constant_(self.embed_mod.adaLN_modulation[-1].weight, 0)
+        nn.init.constant_(self.embed_mod.adaLN_modulation[-1].bias, 0)
 
         # Initialize timestep embedding MLP:
         nn.init.trunc_normal_(self.time_embed.mlp[0].weight, mean=0., std=0.02)
@@ -181,9 +183,9 @@ class DiTRFBackbone(Backbone):
             nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
 
         # Zero-out output layers:
-        nn.init.constant_(self.final.adaLN_modulation[-1].weight, 0)
-        nn.init.constant_(self.final.adaLN_modulation[-1].bias, 0)
-        nn.init.trunc_normal_(self.final.linear.weight, mean=0., std=0.02)
+        nn.init.constant_(self.final_mod.adaLN_modulation[-1].weight, 0)
+        nn.init.constant_(self.final_mod.adaLN_modulation[-1].bias, 0)
+        nn.init.trunc_normal_(self.final_out.weight, mean=0., std=0.02)
 
     def get_pos_embed(self, start, length, scale=1.):
         # theta_rescale performs better at evaluation
@@ -203,21 +205,22 @@ class DiTRFBackbone(Backbone):
             assert bandwidth_id is not None
             be = self.band_embed(bandwidth_id)
         else:
-            be = 0.
+            be = torch.zeros_like(te)
         if self.encodec_bandwidth_embed is not None:
             assert encodec_bandwidth_id is not None
             ee = self.encodec_bandwidth_embed(encodec_bandwidth_id)
         else:
-            ee = 0.
-        c = te + be + ee
+            ee = torch.zeros_like(te)
+        c = be + te + ee
 
         x = x.transpose(1, 2)
+        x = self.embed_mod(x, c)
         start = _get_start(z_t, start)
         length = _get_len(z_t, None)  # length is None
         freq_cis = self.get_pos_embed(start, length.max())
         for block in self.blocks:
             x = block(x, c, freq_cis, None)
-        x = self.final(x, c)
+        x = self.final_out(self.final_mod(x, c))
         return x.transpose(1, 2)
 
 
