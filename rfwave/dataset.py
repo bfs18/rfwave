@@ -3,15 +3,13 @@ import torch
 import torchaudio
 import kaldiio
 import random
-import torch.nn.functional as F
-import types
-import sys
-import torch.distributed as dist
 
 from dataclasses import dataclass
 from pytorch_lightning import LightningDataModule
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
+from typing import Optional
+from rfwave.bucket import DynamicBucketingDataset, DynamicBucketingSampler
 
 torch.set_num_threads(1)
 
@@ -31,6 +29,12 @@ class DataConfig:
     segment: bool = True
     min_context: int = 50
     max_context: int = 300
+    max_duration: float = 100
+    max_cuts: int = 32
+    num_buckets: int = 20
+    drop_last: bool = False
+    quadratic_duration: Optional[float] = None
+    filter_max_duration: Optional[float] = None
 
 
 class VocosDataModule(LightningDataModule):
@@ -66,29 +70,9 @@ class VocosDataModule(LightningDataModule):
             collate_fn = e2e_tts_ctx_collate_segment
         else:
             raise ValueError(f"Unknown task: {cfg.task}")
-        if cfg.task == 'tts' and not cfg.segment:
-            if dist.is_initialized():
-                num_replicas = dist.get_world_size()
-                rank = dist.get_rank()
-            else:
-                num_replicas = 1
-                rank = 0
-            print("get_dataloader", rank, 'of', num_replicas)
-            # required_batch_size_multiple should be multiple of gpu device count
-            batch_sampler = batch_by_size(
-                range(len(dataset)), dataset.num_tokens, max_tokens=750*num_replicas,
-                max_sentences=12*num_replicas, required_batch_size_multiple=num_replicas)
-            if train:
-                np.random.shuffle(batch_sampler)
-            if num_replicas > 1:
-                batch_sampler = [x[rank::num_replicas] for x in batch_sampler if len(x) % num_replicas == 0]
-            dataloader = DataLoader(
-                dataset, num_workers=cfg.num_workers, batch_sampler=batch_sampler,
-                pin_memory=True, collate_fn=collate_fn, persistent_workers=True)
-        else:
-            dataloader = DataLoader(
-                dataset, batch_size=cfg.batch_size, num_workers=cfg.num_workers, shuffle=train,
-                pin_memory=True, collate_fn=collate_fn, persistent_workers=True)
+        dataloader = DataLoader(
+            dataset, batch_size=cfg.batch_size, num_workers=cfg.num_workers, shuffle=train,
+            pin_memory=True, collate_fn=collate_fn, persistent_workers=True)
         return dataloader
 
     def train_dataloader(self) -> DataLoader:
@@ -96,70 +80,6 @@ class VocosDataModule(LightningDataModule):
 
     def val_dataloader(self) -> DataLoader:
         return self._get_dataloder(self.val_config, train=False)
-
-
-def _is_batch_full(batch, num_tokens, max_tokens, max_sentences):
-    if len(batch) >= max_sentences or num_tokens >= max_tokens:
-        return True
-    else:
-        return False
-
-
-def batch_by_size(
-        indices, dataset_num_tokens, max_tokens=None, max_sentences=None,
-        required_batch_size_multiple=1):
-    """
-    Yield mini-batches of indices bucketed by size. Batches may contain
-    sequences of different lengths.
-
-    Args:
-        indices (List[int]): ordered list of dataset indices
-        dataset_num_tokens (callable): function that returns the number of tokens at
-            a given index
-        max_tokens (int, optional): max number of tokens in each batch
-            (default: None).
-        max_sentences (int, optional): max number of sentences in each
-            batch (default: None).
-        required_batch_size_multiple (int, optional): require batch size to
-            be a multiple of N (default: 1).
-    """
-    max_tokens = max_tokens if max_tokens is not None else sys.maxsize
-    max_sentences = max_sentences if max_sentences is not None else sys.maxsize
-    bsz_mult = required_batch_size_multiple
-
-    if isinstance(indices, types.GeneratorType):
-        indices = np.fromiter(indices, dtype=np.int64, count=-1)
-
-    sorted_index_num = sorted([(i, n) for i, n in zip(indices, dataset_num_tokens)],
-                              key=lambda tup: tup[1])
-
-    sample_len = 0
-    sample_lens = []
-    batch = []
-    batches = []
-    for idx, num_tokens in sorted_index_num:
-        sample_lens.append(num_tokens)
-        sample_len = max(sample_len, num_tokens)
-
-        assert sample_len <= max_tokens, (
-            "sentence at index {} of size {} exceeds max_tokens "
-            "limit of {}!".format(idx, sample_len, max_tokens)
-        )
-        batch_num_tokens = (len(batch) + 1) * sample_len
-
-        if _is_batch_full(batch, batch_num_tokens, max_tokens, max_sentences):
-            mod_len = max(
-                bsz_mult * (len(batch) // bsz_mult),
-                len(batch) % bsz_mult,
-            )
-            batches.append(batch[:mod_len])
-            batch = batch[mod_len:]
-            sample_lens = sample_lens[mod_len:]
-            sample_len = max(sample_lens) if len(sample_lens) > 0 else 0
-        batch.append(idx)
-    if len(batch) > 0:
-        batches.append(batch)
-    return batches
 
 
 class VocosDataset(Dataset):
@@ -366,14 +286,22 @@ class TTSDatasetSegment(Dataset):
         return y[0], (token_ids, durations, start_phone_idx, start_frame)
 
 
-class TTSDataset(Dataset):
+class TTSDataset(DynamicBucketingDataset):
     def __init__(self, cfg: DataConfig, train: bool):
+        # inheritage make sure use the same filelist.
+        super(TTSDataset, self).__init__(
+            filelist_path=cfg.filelist_path,
+            max_duration=cfg.max_duration,
+            max_cuts=cfg.max_cuts,
+            num_buckets=cfg.num_buckets,
+            shuffle=train,
+            drop_last=cfg.drop_last,
+            quadratic_duration=cfg.quadratic_duration,
+            filter_max_duration=cfg.filter_max_duration)
         assert cfg.task == "tts"
         assert cfg.hop_length is not None
         assert cfg.phoneset is not None
         assert cfg.padding is not None
-        with open(cfg.filelist_path) as f:
-            self.filelist = f.read().splitlines()
         self.num_tokens = [int(fl.split('|')[3]) for fl in self.filelist]
         self.sampling_rate = cfg.sampling_rate
         self.num_samples = cfg.num_samples
@@ -384,9 +312,10 @@ class TTSDataset(Dataset):
         self.phoneset = ["_PAD_"] + phoneset
         self.phone2id = dict([(p, i) for i, p in enumerate(self.phoneset)])
         self._cache = dict() if getattr(cfg, 'cache', False) else None
+        self.batches = self.get_dynamic_batches()
 
     def __len__(self):
-        return len(self.filelist)
+        return len(self.batches)
 
     def __getitem__(self, index):
         k, audio_fp, alignment_fp, *_ = self.filelist[index].split("|")

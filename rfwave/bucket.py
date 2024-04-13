@@ -10,6 +10,7 @@ from collections import deque
 
 import numpy as np
 import torch
+import torch.distributed as dist
 
 
 Seconds = float
@@ -280,7 +281,7 @@ class DynamicBucketingDataset(torch.utils.data.Dataset):
         # filter by length here.
         self.cuts = self.get_cuts(self.filelist)
         self.duration_bins = estimate_duration_buckets(self.cuts, num_buckets=num_buckets)
-        self.buckets = [deque() for _ in range(len(self.duration_bins) + 1)]
+        self.buckets = None
 
     def filter_by_duration(self):
         filelist = []
@@ -300,6 +301,7 @@ class DynamicBucketingDataset(torch.utils.data.Dataset):
         return cuts
 
     def collect_cuts_in_buckets(self):
+        self.buckets = [deque() for _ in range(len(self.duration_bins) + 1)]
         for cut in self.cuts:
             bucket_idx = bisect_right(self.duration_bins, cut.duration)
             self.buckets[bucket_idx].append(cut)
@@ -354,11 +356,30 @@ class DynamicBucketingDataset(torch.utils.data.Dataset):
         return batches
 
 
+class DynamicBucketingSampler(object):
+    def __init__(self, dataset: DynamicBucketingDataset):
+        if dist.is_available() and dist.is_initialized():
+            self.num_replicas = dist.get_world_size()
+            self.rank = dist.get_rank()
+        else:
+            self.num_replicas = 1
+            self.rank = 0
+        self.dataset = dataset
+
+    def __iter__(self):
+        # shuffle each epoch
+        batches = self.daset.get_dynamic_batches()
+        batches = batches[: len(batches) // self.num_replicas * self.num_replicas]
+        batches = batches[self.rank::self.num_replicas]
+        batch_indices = [[c.index for c in b] for b in batches]
+        return iter(batch_indices)
+
+
 if __name__ == '__main__':
     filelist = "/data1/corpus/LJSpeech-1.1/synta_filelist.train"
     dataset = DynamicBucketingDataset(
         filelist_path=filelist, max_duration=100, max_cuts=32, num_buckets=20,
-        shuffle=True, drop_last=True, quadratic_duration=15, filter_max_duration=10.)
+        shuffle=True, drop_last=False, quadratic_duration=15, filter_max_duration=10.)
     batches = dataset.get_dynamic_batches()
     for i, batch in enumerate(batches):
         print('batch idx', i, 'duration', sum([c.duration for c in batch]), 'num_samples', len(batch))
