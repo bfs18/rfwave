@@ -1,4 +1,5 @@
 import random
+import librosa
 
 from argparse import ArgumentParser
 from pathlib import Path
@@ -19,7 +20,8 @@ if __name__ == '__main__':
     for alignment_fp in alignment_fps:
         fn = alignment_fp.stem
         wav = Path(args.wav_dir) / f"{fn}.wav"
-        filelist.append('|'.join([fn, str(wav), str(alignment_fp)]))
+        dur = librosa.get_duration(filename=wav)
+        filelist.append('|'.join([fn, str(wav), str(alignment_fp), f"{dur:.2f}"]))
     random.shuffle(filelist)
     num_valid = int(len(filelist) * args.valid_ratio)
     num_train = len(filelist) - num_valid
