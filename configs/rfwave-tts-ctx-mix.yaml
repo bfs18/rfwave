@@ -1,0 +1,114 @@
+seed_everything: 4444
+
+data:
+  class_path: rfwave.dataset.VocosDataModule
+  init_args:
+    train_params:
+      filelist_path: synta_filelist.train
+      sampling_rate: 22050
+      num_samples: 65280
+      batch_size: 22
+      num_workers: 8
+      cache: True
+      task: tts
+      hop_length: 256
+      padding: "center"
+      phoneset: synta_phoneset.th
+      min_context: 200
+
+    val_params:
+      filelist_path: synta_filelist.valid
+      sampling_rate: 22050
+      num_samples: 130560
+      batch_size: 16
+      num_workers: 4
+      cache: True
+      task: tts
+      hop_length: 256
+      padding: "center"
+      phoneset: synta_phoneset.th
+      min_context: 200
+
+model:
+  class_path: rfwave.experiment_reflow_subband_tts.VocosExp
+  init_args:
+    sample_rate: 22050
+    feature_loss: False
+    wave: True
+    num_bands: 8
+    intt: 0.5
+    guidance_scale: 2.
+    p_uncond: 0.1
+    initial_learning_rate: 1e-4
+    num_warmup_steps: 20_000 # Optimizers warmup steps
+
+    feature_extractor:
+      class_path: rfwave.feature_extractors.MelSpectrogramFeatures
+      init_args:
+        sample_rate: 22050
+        n_fft: 1024
+        hop_length: 256
+        n_mels: 100
+        padding: center
+
+    backbone:
+      class_path: rfwave.mix.MixRFTTSMultiTaskBackbone
+      init_args:
+        input_channels: 512
+        output_channels1: 100
+        output_channels2: 160
+        dim: 384
+        intermediate_dim: 1152
+        num_layers1: 4
+        num_layers2: 8
+        num_bands: 8
+        num_heads: 6
+
+    head:
+      class_path: rfwave.heads.RFSTFTHead
+      init_args:
+        dim: 512
+        n_fft: 1024
+        hop_length: 256
+        padding: center
+
+    input_adaptor:
+      class_path: rfwave.input.CtxCharInputAdaptor
+      init_args:
+        embedding_dim: 512
+        vocab_size: 78
+        ctx_dim: 100
+        n_attn_layers: 2
+        n_conv_layers: 2
+        n_ctx_layers: 2
+
+trainer:
+  check_val_every_n_epoch: 10
+  logger:
+    class_path: pytorch_lightning.loggers.WandbLogger
+    init_args:
+      project: rfwave-tts
+      save_dir: logs-rfwave-tts-ctx
+      name: rfwave-tts-ctx
+  callbacks:
+    - class_path: pytorch_lightning.callbacks.LearningRateMonitor
+    - class_path: pytorch_lightning.callbacks.ModelSummary
+      init_args:
+        max_depth: 1
+    - class_path: pytorch_lightning.callbacks.ModelCheckpoint
+      init_args:
+        monitor: val_loss
+        filename: rfwave_checkpoint_{epoch}_{step}_{val_loss:.4f}
+        save_top_k: 3
+        save_last: true
+    - class_path: rfwave.helpers.GradNormCallback
+
+  # Lightning calculates max_steps across all optimizer steps (rather than number of batches)
+  # This equals to 1M steps per generator and 1M per discriminator
+  max_steps: 1_000_000
+  # You might want to limit val batches when evaluating all the metrics, as they are time-consuming
+  limit_val_batches: 10
+  accelerator: gpu
+  devices: [0]
+  strategy: auto
+  log_every_n_steps: 1000
