@@ -57,10 +57,10 @@ if __name__ == '__main__':
     os.makedirs(alignment_dir, exist_ok=True)
     split = ['train', 'valid', 'test']
 
-    filelist = []
     phoneset = set()
     for s in split:
         dataset = IndexedDataset(os.path.join(bin_fp, s))
+        filelist = []
         for d in dataset:
             fn = d['item_name']
             phones = d['ph'].split()
@@ -71,12 +71,7 @@ if __name__ == '__main__':
             torch.save({'tokens': phones, 'durations': duration}, alignment_fp)
             filelist.append('|'.join([fn, str(wav), str(alignment_fp), str(len(phones)), f'{dur:.2f}']))
             phoneset.update(phones)
+        random.shuffle(filelist)
+        Path(filelist_fp + f'.{s}').write_text('\n'.join(filelist) + '\n')
     phoneset = sorted(list(phoneset))
-    random.shuffle(filelist)
-    num_valid = int(len(filelist) * valid_ratio)
-    num_train = len(filelist) - num_valid
-    train_filelist = sorted(filelist[:num_train])
-    valid_filelist = sorted(filelist[num_train:])
-    Path(filelist_fp + '.train').write_text('\n'.join(train_filelist) + '\n')
-    Path(filelist_fp + '.valid').write_text('\n'.join(valid_filelist) + '\n')
     torch.save(phoneset, phoneset_fp)
