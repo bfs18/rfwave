@@ -50,7 +50,7 @@ class VocosDataModule(LightningDataModule):
                 dataset = ArkDataset(cfg, train=train)
             else:
                 dataset = VocosDataset(cfg, train=train)
-            collate_fn = None
+            collate_fn = voc_collate
         elif cfg.task == "tts":
             assert not cfg.segment
             if cfg.min_context > 0:
@@ -126,7 +126,7 @@ class VocosDataset(Dataset):
             y = y[:, : self.num_samples]
         gain = np.random.uniform(-1, -6) if self.train else -3
         y, _ = torchaudio.sox_effects.apply_effects_tensor(y, sr, [["norm", f"{gain:.2f}"]])
-        return y[0], torch.tensor(start)
+        return y[0], torch.tensor(start), self.num_samples
 
 
 def load_ark_scp(scp_fp):
@@ -165,13 +165,13 @@ class ArkDataset(torch.utils.data.Dataset):
             y = torch.cat((y, padding_tensor[:, :pad_length]), dim=1)
         elif self.train:
             start = np.random.randint(low=0, high=y.size(-1) - self.num_samples + 1)
-            y = y[:, start : start + self.num_samples]
+            y = y[:, start: start + self.num_samples]
         else:
             # During validation, take always the first segment for determinism
             y = y[:, : self.num_samples]
         gain = np.random.uniform(-1, -6) if self.train else -3
         y, _ = torchaudio.sox_effects.apply_effects_tensor(y, sr, [["norm", f"{gain:.2f}"]])
-        return y[0]
+        return y[0], start, self.num_samples
 
 
 def expand_token_by_alignment(tokens, durations, phoneset):
@@ -728,6 +728,17 @@ class DurDataset(Dataset):
         token_ids = token_ids.detach().clone()
         durations = durations.detach().clone()
         return token_ids, durations
+
+
+def voc_collate(data):
+    y_lens = [d[0].size(0) for d in data]
+    max_y_len = max(y_lens)
+    y = torch.zeros([len(data), max_y_len], dtype=torch.float)
+    for i, d in enumerate(data):
+        y[i, :d[0].size(0)] = d[0]
+    start = torch.tensor([d[1] for d in data])
+    length = torch.tensor([d[2] for d in data])
+    return y, start, length
 
 
 def tts_collate(data):

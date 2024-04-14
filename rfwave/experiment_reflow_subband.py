@@ -23,7 +23,7 @@ from rfwave.helpers import save_code
 from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_error, compute_instantaneous_frequency
 from rfwave.feature_weight import get_feature_weight, get_feature_weight2
 from rfwave.logit_normal import LogitNormal
-from rfwave.dit import DiTRFBackbone
+from rfwave.attention import sequence_mask
 
 
 class RectifiedFlow(nn.Module):
@@ -205,12 +205,14 @@ class RectifiedFlow(nn.Module):
         return mel, bandwidth_id, (z_t, t, target)
 
     def get_pred(self, z_t, t, mel, bandwidth_id, encodec_bandwidth_id=None, **kwargs):
-        if 'start' in kwargs and kwargs['start'] is not None:
+        if ('start' in kwargs and kwargs['start'] is not None and
+                'length' in kwargs and kwargs['length'] is not None):
             n_rpt = z_t.size(0) // kwargs['start'].size(0)
             start = torch.repeat_interleave(kwargs['start'], n_rpt, 0)
+            length = torch.repeat_interleave(kwargs['length'], n_rpt, 0)
         else:
-            start = None
-        backbone_kwargs = {'start': start, 'encodec_bandwidth_id': encodec_bandwidth_id}
+            start, length = None, None
+        backbone_kwargs = {'start': start, 'length': length, 'encodec_bandwidth_id': encodec_bandwidth_id}
         pred = self.backbone(z_t, t, mel, bandwidth_id, **backbone_kwargs)
         return pred
 
@@ -433,10 +435,12 @@ class RectifiedFlow(nn.Module):
                 loss = F.mse_loss(pred, target)
         return loss
 
-    def compute_loss(self, z_t, t, target, mel, bandwidth_id, encodec_bandwidth_id=None, **kwargs):
+    def compute_loss(self, z_t, t, target, mel, bandwidth_id, encodec_bandwidth_id=None, mask=None, **kwargs):
         if self.cfg and np.random.uniform() < self.p_uncond:
             mel = torch.ones_like(mel) * mel.mean(dim=(0, 2), keepdim=True)
         pred = self.get_pred(z_t, t, mel, bandwidth_id, encodec_bandwidth_id=encodec_bandwidth_id, **kwargs)
+        if mask is not None:
+            pred = torch.where(mask.unsqueeze(1), pred, target)
         pred, z_t, t, target = [v.float() for v in (pred, z_t, t, target)]
         stft_loss = self.compute_stft_loss(z_t, t, target, pred, bandwidth_id) if self.stft_loss else 0.
         phase_loss = self.compute_phase_loss(z_t, t, target, pred, bandwidth_id) if self.phase_loss else 0.
@@ -474,15 +478,6 @@ class VocosExp(pl.LightningModule):
         self.reflow = RectifiedFlow(
             backbone, head, feature_loss=feature_loss, wave=wave, num_bands=num_bands,
             guidance_scale=guidance_scale, p_uncond=p_uncond)
-        self.aux_loss = False
-        self.aux_type = 'mel'
-        if self.task == "tts":
-            assert input_adaptor is not None
-            self.input_adaptor = torch.compile(self.input_adaptor)
-            if self.aux_loss:
-                feat_dim = feature_extractor.dim if self.aux_type == 'mel' else self.reflow.head.n_fft // 2 + 1
-                self.input_adaptor_proj = InputAdaptorProject(self.input_adaptor.dim, feat_dim)
-
         self.melspec_loss = MelSpecReconstructionLoss(sample_rate=sample_rate)
         self.rvm = RelativeVolumeMel(sample_rate=sample_rate)
 
@@ -496,13 +491,7 @@ class VocosExp(pl.LightningModule):
             {"params": self.reflow.backbone.parameters()},
             {"params": self.reflow.head.parameters()},
         ]
-        if self.input_adaptor is not None:
-            gen_params.append({"params": self.input_adaptor.parameters()})
-        if self.task == 'tts' and self.aux_loss:
-            gen_params.append({"params": self.input_adaptor_proj.parameters()})
-
         opt_gen = torch.optim.AdamW(gen_params, lr=self.hparams.initial_learning_rate)
-
         max_steps = self.trainer.max_steps  # // 2  # Max steps per optimizer
         scheduler_gen = get_cosine_schedule_with_warmup(
             opt_gen, num_warmup_steps=self.hparams.num_warmup_steps, num_training_steps=max_steps,
@@ -521,57 +510,30 @@ class VocosExp(pl.LightningModule):
             print("detected inf or nan values in gradients. not updating model parameters")
             optimizer.zero_grad()
 
-    def compute_aux_loss(self, features, audio_input, loss_type):
-        if loss_type == 'mel':
-            target = self.feature_extractor(audio_input)
-        else:
-            S = self.reflow.head.get_spec(audio_input)
-            target = torch.log(S.abs().clamp_min_(1e-6))
-        pred = self.input_adaptor_proj(features, torch.min(target))
-        loss = F.mse_loss(pred, target)
-        return loss
-
-    def process_context(self, phone_info):
-        if len(phone_info) == 4:
-            return phone_info
-        elif len(phone_info) == 6:
-            # phone_info[4] = self.reflow.get_eq_norm_stft(phone_info[4])
-            phone_info[4] = self.feature_extractor(phone_info[4])
-        else:
-            raise ValueError(f"Invalid phone_info, #fields {len(phone_info)}")
-        return phone_info
-
     def on_before_optimizer_step(self, optimizer):
         # Note: `unscale` happens after the closure is executed, but before the `on_before_optimizer_step` hook.
         self.skip_nan(optimizer)
         self.clip_gradients(optimizer, gradient_clip_val=5., gradient_clip_algorithm="norm")
 
     def training_step(self, batch, batch_idx, **kwargs):
-        if self.task == 'tts':
-            audio_input, phone_info = batch
-            phone_info = self.process_context(phone_info)
-            start = None
-        else:
-            audio_input, audio_start = batch
-            start = audio_start // self.reflow.head.hop_length
+        audio_input, audio_start, audio_length = batch
+        start = audio_start // self.reflow.head.hop_length
+        num_frames = audio_length // self.reflow.head.hop_length + (1 if self.reflow.head.padding == 'center' else 0)
         mel = self.feature_extractor(audio_input, **kwargs)
         # train generator
         opt_gen = self.optimizers()
         sch_gen = self.lr_schedulers()
         opt_gen.zero_grad()
 
-        if self.task == 'tts':
-            features = self.input_adaptor(*phone_info)
-            cond_mel_loss = self.compute_aux_loss(features, audio_input, self.aux_type) if self.aux_loss else 0.
-        else:
-            features = mel
-            cond_mel_loss = 0.
+        features = mel
         features_ext, bandwidth_id, (z_t, t, target) = self.reflow.get_train_tuple(features, audio_input)
         bi = kwargs.get("encodec_bandwidth_id", None)
         kwargs['start'] = start
+        kwargs['length'] = num_frames
+        mask = sequence_mask(num_frames)
+        mask = mask.repeat_interleave(z_t.size(0) // mask.size(0), 0)
         loss, loss_dict = self.reflow.compute_loss(
-            z_t, t, target, features_ext, bandwidth_id=bandwidth_id, encodec_bandwidth_id=bi, start=start)
-        loss = loss + cond_mel_loss
+            z_t, t, target, features_ext, bandwidth_id=bandwidth_id, encodec_bandwidth_id=bi, mask=mask, **kwargs)
         self.manual_backward(loss)
         opt_gen.step()
         sch_gen.step()
@@ -583,8 +545,7 @@ class VocosExp(pl.LightningModule):
             audio_hat = audio_hat_traj[-1]
             mel_loss = F.mse_loss(self.feature_extractor(audio_hat, **kwargs), mel)
             self.logger.log_metrics(
-                {"train/total_loss": loss, "train/cond_mel_loss": cond_mel_loss,
-                 "train/mel_loss": mel_loss}, step=self.global_step)
+                {"train/total_loss": loss, "train/mel_loss": mel_loss}, step=self.global_step)
             loss_dict = dict((f'train/{k}', v) for k, v in loss_dict.items())
             self.logger.log_metrics(loss_dict, step=self.global_step)
             rvm_loss = self.rvm(audio_hat.unsqueeze(1), audio_input.unsqueeze(1))
@@ -594,34 +555,26 @@ class VocosExp(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx, **kwargs):
-        if self.task == 'tts':
-            audio_input, phone_info = batch
-            phone_info, start = self.process_context(phone_info)
-        else:
-            audio_input, start = batch
-        kwargs['start'] = None
+        audio_input, audio_start, audio_length = batch
+        num_frames = audio_length // self.reflow.head.hop_length + (
+            1 if self.reflow.head.padding == 'center' else 0)
+        kwargs['start'] = audio_start
+        kwargs['length'] = num_frames
         with torch.no_grad():
             features = self.feature_extractor(audio_input, **kwargs)
-            cond = self.input_adaptor(*phone_info) if self.task == 'tts' else features
-            audio_hat_traj = self.reflow.sample_ode(cond, N=100, **kwargs)
-            cond_mel_hat = self.input_adaptor_proj(cond) if self.aux_loss and self.task == 'tts' else None
+            audio_hat_traj = self.reflow.sample_ode(features, N=100, **kwargs)
         audio_hat = audio_hat_traj[-1]
 
         mel_loss = F.mse_loss(self.feature_extractor(audio_hat, **kwargs), features)
         rvm_loss = self.rvm(audio_hat.unsqueeze(1), audio_input.unsqueeze(1))
-        cond_mel_loss = (F.mse_loss(cond_mel_hat, features) if cond_mel_hat is not None
-                         else torch.zeros(1, device=self.device))
         phase_loss = compute_phase_error(audio_hat, audio_input, self.reflow.head.get_spec)
 
         output = {
             "mel_loss": mel_loss,
             "audio_input": audio_input[0],
             "audio_pred": audio_hat[0],
-            "cond_mel_loss": cond_mel_loss,
             "phase_loss": phase_loss,
         }
-        if cond_mel_hat is not None:
-            output['cond_mel_pred'] = cond_mel_hat[0]
         output.update(rvm_loss)
         self.validation_step_outputs.append(output)
         return output
@@ -629,7 +582,6 @@ class VocosExp(pl.LightningModule):
     def on_validation_epoch_end(self, **kwargs):
         outputs = self.validation_step_outputs
         mel_loss = torch.stack([x["mel_loss"] for x in outputs]).mean()
-        cond_mel_loss = torch.stack([x["cond_mel_loss"] for x in outputs]).mean()
         phase_loss = torch.stack([x["phase_loss"] for x in outputs]).mean()
         rvm_loss_dict = {}
         for k in outputs[0].keys():
@@ -643,7 +595,6 @@ class VocosExp(pl.LightningModule):
             mel_hat = self.feature_extractor(audio_pred.unsqueeze(0), **kwargs)[0]
             metrics = {
                 "valid/mel_loss": mel_loss,
-                "valid/cond_mel_loss": cond_mel_loss,
                 "valid/phase_loss": phase_loss}
             self.logger.log_metrics({**metrics, **rvm_loss_dict}, step=self.global_step)
             self.logger.experiment.log(
@@ -652,11 +603,6 @@ class VocosExp(pl.LightningModule):
                  "valid_media/mel_in": wandb.Image(plot_spectrogram_to_numpy(mel_target.data.cpu().numpy())),
                  "valid_media/mel_hat": wandb.Image(plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()))},
                 step=self.global_step)
-            if 'cond_mel_pred' in outputs[0]:
-                self.logger.experiment.log(
-                    {"valid_media/cond_mel_hat": wandb.Image(
-                        plot_spectrogram_to_numpy(outputs[0]['cond_mel_pred'].data.cpu().numpy()))},
-                    step=self.global_step)
         self.validation_step_outputs.clear()
 
     # def on_train_epoch_start(self, *args):
