@@ -29,14 +29,18 @@ from rfwave.dit import DiTRFTTSMultiTaskBackbone, compute_alignment_loss
 from rfwave.logit_normal import LogitNormal
 
 
-def sequence_mask_with_ctx(length, ctx_start, ctx_length, max_length=None):
+def sequence_mask_with_ctx(length, ctx_start=None, ctx_length=None, max_length=None):
     non_padding = sequence_mask(length, max_length)
-    if max_length is None:
-        max_length = length.max()
-    non_ctx = torch.arange(0, max_length, device=length.device).unsqueeze(0)
-    non_ctx = torch.logical_or(
-        non_ctx < ctx_start.unsqueeze(1), non_ctx >= (ctx_start + ctx_length).unsqueeze(1))
-    return torch.logical_and(non_ctx, non_padding)
+    if ctx_length is None or ctx_start is None:
+        return non_padding
+    else:
+        if max_length is None:
+            max_length = length.max()
+        non_ctx = torch.arange(0, max_length, device=length.device).unsqueeze(0)
+        non_ctx = torch.logical_or(
+            non_ctx < ctx_start.unsqueeze(1), non_ctx >= (ctx_start + ctx_length).unsqueeze(1))
+        return torch.logical_and(non_ctx, non_padding)
+
 
 
 class RectifiedFlow(nn.Module):
@@ -688,6 +692,9 @@ class VocosExp(pl.LightningModule):
         if isinstance(input_adaptor, CharInputAdaptor):
             assert len(phone_info) == 4
             pi_kwargs['start'] = phone_info[3]
+            length = phone_info[1].sum(1)
+            pi_kwargs['length'] = length
+            ctx_kwargs['length'] = length
         elif isinstance(input_adaptor, E2ECtxCharInputAdaptor):
             assert len(phone_info) == 6
             phone_info[2] = self.feature_extractor(phone_info[2])

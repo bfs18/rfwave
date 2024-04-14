@@ -6,8 +6,7 @@ data:
     train_params:
       filelist_path: LJSpeech/synta_filelist.train
       sampling_rate: 22050
-      num_samples: 65280
-      batch_size: 16
+      batch_size: 1
       num_workers: 8
       cache: True
       task: tts
@@ -15,12 +14,14 @@ data:
       padding: "center"
       phoneset: synta_phoneset.th
       min_context: 200
+      segment: False
+      max_duration: 110.
+      quadratic_duration: 15.
 
     val_params:
       filelist_path: LJSpeech/synta_filelist.valid
       sampling_rate: 22050
-      num_samples: 130560
-      batch_size: 16
+      batch_size: 1
       num_workers: 4
       cache: True
       task: tts
@@ -28,6 +29,9 @@ data:
       padding: "center"
       phoneset: synta_phoneset.th
       min_context: 200
+      segment: False
+      max_duration: 110.
+      quadratic_duration: 15.
 
 model:
   class_path: rfwave.experiment_reflow_subband_tts.VocosExp

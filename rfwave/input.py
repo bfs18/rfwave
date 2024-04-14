@@ -366,10 +366,11 @@ class CtxCharInputAdaptor(InputAdaptor):
         return h * non_padding.unsqueeze(2)
 
     def expand(self, encoded_phone, lengths):
-        out = []
-        for phn, l in zip(encoded_phone, lengths):
-            out.append(phn.repeat_interleave(l, dim=0))
-        return torch.stack(out, dim=0)
+        l = torch.max(lengths.sum(1))
+        out = torch.zeros([encoded_phone.size(0), l, encoded_phone.size(2)], device=encoded_phone.device)
+        for i, (phn, l) in enumerate(zip(encoded_phone, lengths)):
+            out[i, :l.sum()] = phn.repeat_interleave(l, dim=0)
+        return out
 
     def forward(self, tokens: torch.Tensor, token_frames: torch.Tensor,
                 phone_start: torch.Tensor, frame_start: torch.Tensor,
@@ -471,8 +472,7 @@ class Ctx2CharInputAdaptor(InputAdaptor):
             out[i, :l.sum()] = phn.repeat_interleave(l, dim=0)
         return out
 
-    def forward_ctx(self, context: torch.Tensor, context_lengths: torch.Tensor,
-                    ctx_tokens: torch.Tensor, ctx_token_frames: torch.Tensor):
+    def forward_ctx(self, context: torch.Tensor, ctx_tokens: torch.Tensor, ctx_token_frames: torch.Tensor):
         if self.training:
             if np.random.uniform() < self.drop_ctx:
                 drop_ctx, drop_tok = (True, False) if np.random.uniform() < 0.5 else (False, True)
@@ -510,7 +510,7 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         ctx_freqs_cis = self.get_pos_embed(torch.zeros_like(frame_start), context.size(2))
         ctx_mask = score_mask(context_lengths)
 
-        context = self.forward_ctx(context, context_lengths, ctx_tokens, ctx_token_frames)
+        context = self.forward_ctx(context, ctx_tokens, ctx_token_frames)
         output = self.ctx_attn(
             expanded_phone, context, freqs_cis, ctx_freqs_cis, x_mask, ctx_mask)
 

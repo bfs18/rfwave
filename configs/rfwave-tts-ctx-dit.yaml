@@ -15,7 +15,7 @@ data:
       phoneset: synta_phoneset.th
       min_context: 200
       segment: False
-      max_duration: 60.
+      max_duration: 110.
       quadratic_duration: 15.
 
     val_params:
@@ -30,7 +30,7 @@ data:
       phoneset: synta_phoneset.th
       min_context: 200
       segment: False
-      max_duration: 60.
+      max_duration: 110.
       quadratic_duration: 15.
 
 model:
