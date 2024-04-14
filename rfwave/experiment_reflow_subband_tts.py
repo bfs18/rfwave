@@ -21,11 +21,22 @@ from rfwave.rvm import RelativeVolumeMel
 from rfwave.lr_schedule import get_cosine_schedule_with_warmup
 from rfwave.input import (InputAdaptor, InputAdaptorProject, CtxCharInputAdaptor, Ctx2CharInputAdaptor,
                           E2ECtxCharInputAdaptor, CharInputAdaptor)
+from rfwave.attention import sequence_mask
 from rfwave.helpers import save_code
 from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_error, compute_instantaneous_frequency
 from rfwave.feature_weight import get_feature_weight, get_feature_weight2
 from rfwave.dit import DiTRFTTSMultiTaskBackbone, compute_alignment_loss
 from rfwave.logit_normal import LogitNormal
+
+
+def sequence_mask_with_ctx(length, ctx_start, ctx_length, max_length=None):
+    non_padding = sequence_mask(length, max_length)
+    if max_length is None:
+        max_length = length.max()
+    non_ctx = torch.arange(0, max_length, device=length.device).unsqueeze(0)
+    non_ctx = torch.logical_or(
+        non_ctx < ctx_start.unsqueeze(1), non_ctx >= (ctx_start + ctx_length).unsqueeze(1))
+    return torch.logical_and(non_ctx, non_padding)
 
 
 class RectifiedFlow(nn.Module):
@@ -272,6 +283,8 @@ class RectifiedFlow(nn.Module):
         n_rpt = z_t.size(0) // kwargs['start'].size(0)
         if 'start' in kwargs:
             backbone_kwargs['start'] = torch.repeat_interleave(kwargs['start'], n_rpt, 0)
+        if 'length' in kwargs:
+            backbone_kwargs['length'] = torch.repeat_interleave(kwargs['length'], n_rpt, 0)
         if 'token_ref_length' in kwargs:
             backbone_kwargs['token_ref_length'] = torch.repeat_interleave(kwargs['token_ref_length'], n_rpt, 0)
         pred = self.backbone(z_t, t, text, bandwidth_id, **backbone_kwargs)
@@ -543,10 +556,12 @@ class RectifiedFlow(nn.Module):
             attn_loss = 0.
         return attn_loss
 
-    def compute_loss(self, z_t, t, target, text, bandwidth_id, **kwargs):
+    def compute_loss(self, z_t, t, target, text, bandwidth_id, mask, **kwargs):
         if self.cfg and np.random.uniform() < self.p_uncond:
             text = torch.ones_like(text) * text.mean(dim=(0, 2), keepdim=True)
         pred, opt_attn = self.get_pred(z_t, t, text, bandwidth_id, **kwargs)
+        if mask is not None:
+            pred = torch.where(mask.unsqueeze(1), pred, target)
         pred, z_t, t, target = [v.float() for v in (pred, z_t, t, target)]
         opt_attn = opt_attn.float() if opt_attn is not None else None
         t_ = t.view(-1, 1, 1)
@@ -669,28 +684,43 @@ class VocosExp(pl.LightningModule):
 
     def process_context(self, phone_info):
         pi_kwargs = {}
+        ctx_kwargs = {}
         input_adaptor = (self.input_adaptor._orig_mod if hasattr(self.input_adaptor, '_orig_mod')
                          else self.input_adaptor)
         if isinstance(input_adaptor, CharInputAdaptor):
             assert len(phone_info) == 4
             pi_kwargs['start'] = phone_info[3]
         elif isinstance(input_adaptor, E2ECtxCharInputAdaptor):
-            assert len(phone_info) == 4
+            assert len(phone_info) == 6
             phone_info[2] = self.feature_extractor(phone_info[2])
             pi_kwargs['start'] = phone_info[1]
             pi_kwargs['token_ref_length'] = phone_info[3]
             phone_info = [phone_info[0], phone_info[2]]
         elif isinstance(input_adaptor, CtxCharInputAdaptor):
-            assert len(phone_info) == 8
-            phone_info[4] = self.feature_extractor(phone_info[4])
+            assert len(phone_info) == 10
+            phone_info[5] = self.feature_extractor(phone_info[5])
             pi_kwargs['start'] = phone_info[3]
+            pi_kwargs['length'] = phone_info[4]
+            ctx_kwargs['length'] = phone_info[4]
+            ctx_kwargs['ctx_start'] = phone_info[6]
+            ctx_kwargs['ctx_length'] = phone_info[7]
+            # delete elements so phone info can be used as arguments of input adaptor
+            del phone_info[6]
+            del phone_info[4]
         elif isinstance(input_adaptor, Ctx2CharInputAdaptor):
-            assert len(phone_info) == 8
-            phone_info[4] = self.feature_extractor(phone_info[4])
+            assert len(phone_info) == 10
+            phone_info[5] = self.feature_extractor(phone_info[5])
             pi_kwargs['start'] = phone_info[3]
+            pi_kwargs['length'] = phone_info[4]
+            ctx_kwargs['length'] = phone_info[4]
+            ctx_kwargs['ctx_start'] = phone_info[6]
+            ctx_kwargs['ctx_length'] = phone_info[7]
+            # delete elements so phone info can be used as arguments of input adaptor
+            del phone_info[6]
+            del phone_info[4]
         else:
             raise ValueError(f"Invalid phone_info, #fields {len(phone_info)}")
-        return phone_info, pi_kwargs
+        return phone_info, pi_kwargs, ctx_kwargs
 
     def on_before_optimizer_step(self, optimizer):
         # Note: `unscale` happens after the closure is executed, but before the `on_before_optimizer_step` hook.
@@ -699,7 +729,7 @@ class VocosExp(pl.LightningModule):
 
     def training_step(self, batch, batch_idx, **kwargs):
         audio_input, phone_info = batch
-        phone_info, pi_kwargs = self.process_context(phone_info)
+        phone_info, pi_kwargs, ctx_kwargs = self.process_context(phone_info)
         mel = self.feature_extractor(audio_input, **kwargs)
         tandem_feat = mel if self.tandem_type == 'mel' else self.get_log_spec(audio_input)
         # train generator
@@ -711,8 +741,10 @@ class VocosExp(pl.LightningModule):
         cond_mel_loss = self.compute_aux_loss(text, audio_input, self.aux_type) if self.aux_loss else 0.
         text_ext, bandwidth_id, (z_t, t, target) = self.reflow.get_train_tuple(text, tandem_feat, audio_input)
         kwargs.update(**pi_kwargs)
+        ctx_mask = sequence_mask_with_ctx(**ctx_kwargs)
+        ctx_mask = ctx_mask.repeat_interleave(z_t.size(0) // ctx_mask.size(0), 0)
         loss, loss_dict = self.reflow.compute_loss(
-            z_t, t, target, text_ext, bandwidth_id=bandwidth_id, **kwargs)
+            z_t, t, target, text_ext, bandwidth_id=bandwidth_id, mask=ctx_mask, **kwargs)
         loss = loss + cond_mel_loss
         self.manual_backward(loss)
         opt_gen.step()
@@ -740,7 +772,7 @@ class VocosExp(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx, **kwargs):
         audio_input, phone_info = batch
-        phone_info, pi_kwargs = self.process_context(phone_info)
+        phone_info, pi_kwargs, ctx_kwargs = self.process_context(phone_info)
         with torch.no_grad():
             mel = self.feature_extractor(audio_input, **kwargs)
             tandem_feat = mel if self.tandem_type == "mel" else self.get_log_spec(audio_input)

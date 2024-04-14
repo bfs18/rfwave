@@ -114,7 +114,7 @@ class CharInputAdaptor(InputAdaptor):
         h = self.tok_embeddings(tokens)
         h = self.dropout(h)
 
-        freqs_cis = self.get_pos_embed(phone_start, num_phones, eval_theta_rescale=True)
+        freqs_cis = self.get_pos_embed(phone_start, num_phones)
         phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
 
         for layer in self.layers:
@@ -354,7 +354,7 @@ class CtxCharInputAdaptor(InputAdaptor):
         h = self.tok_embeddings(tokens)
         h = self.dropout(h)
 
-        freqs_cis = self.get_pos_embed(phone_start, num_phones, eval_theta_rescale=True)
+        freqs_cis = self.get_pos_embed(phone_start, num_phones)
         phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
 
         for layer in self.layers:
@@ -373,7 +373,7 @@ class CtxCharInputAdaptor(InputAdaptor):
 
     def forward(self, tokens: torch.Tensor, token_frames: torch.Tensor,
                 phone_start: torch.Tensor, frame_start: torch.Tensor,
-                context: torch.Tensor, context_lengths: torch.Tensor, *args):
+                context: torch.Tensor, context_lengths: torch.Tensor, *args, **kwargs):
         # context: [b, c, t]
         encoded_phone = self.forward_phone(tokens, phone_start)
         expanded_phone = self.expand(encoded_phone, token_frames)
@@ -453,7 +453,7 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         h = self.tok_embeddings(tokens)
         h = self.dropout(h)
 
-        freqs_cis = self.get_pos_embed(phone_start, num_phones, eval_theta_rescale=True)
+        freqs_cis = self.get_pos_embed(phone_start, num_phones)
         phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
 
         for layer in self.layers:

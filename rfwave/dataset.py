@@ -52,14 +52,10 @@ class VocosDataModule(LightningDataModule):
                 dataset = VocosDataset(cfg, train=train)
             collate_fn = None
         elif cfg.task == "tts":
-            if cfg.segment:
-                if cfg.min_context > 0:
-                    print("!!using context!!")
-                    dataset = TTSCtxDatasetSegment(cfg, train=train)
-                    collate_fn = tts_ctx_collate
-                else:
-                    dataset = TTSDatasetSegment(cfg, train=train)
-                    collate_fn = tts_collate
+            assert not cfg.segment
+            if cfg.min_context > 0:
+                dataset = TTSCtxDataset(cfg, train=train)
+                collate_fn = tts_ctx_collate
             else:
                 dataset = TTSDataset(cfg, train=train)
                 collate_fn = tts_collate
@@ -71,9 +67,15 @@ class VocosDataModule(LightningDataModule):
             collate_fn = e2e_tts_ctx_collate
         else:
             raise ValueError(f"Unknown task: {cfg.task}")
-        dataloader = DataLoader(
-            dataset, batch_size=cfg.batch_size, num_workers=cfg.num_workers, shuffle=train,
-            pin_memory=True, collate_fn=collate_fn, persistent_workers=True)
+        if cfg.segment:
+            dataloader = DataLoader(
+                dataset, batch_size=cfg.batch_size, num_workers=cfg.num_workers, shuffle=train,
+                pin_memory=True, collate_fn=collate_fn, persistent_workers=True)
+        else:
+            batch_sampler = DynamicBucketingSampler(dataset)
+            dataloader = DataLoader(
+                dataset, batch_sampler=batch_sampler, num_workers=cfg.num_workers,
+                pin_memory=True, collate_fn=collate_fn, persistent_workers=True)
         return dataloader
 
     def train_dataloader(self) -> DataLoader:
@@ -523,7 +525,7 @@ class TTSCtxDatasetSegment(Dataset):
             f"start_phone_idx: {start_phone_idx}, start_frame: {start_frame}, durations: {seg_durations}")
         assert torch.sum(ctx_durations) == ctx_n_frame, (
             f"{k}, ctx sum durations {torch.sum(ctx_durations)}, ctx num_frames: {ctx_n_frame}")
-        return y_seg[0], (seg_token_ids, seg_durations, start_phone_idx, start_frame,
+        return y_seg[0], (seg_token_ids, seg_durations, start_phone_idx, start_frame, num_frames,
                           y_ctx[0], ctx_start_frame, ctx_n_frame, ctx_token_ids, ctx_durations)
 
 
@@ -602,14 +604,15 @@ class TTSCtxDataset(DynamicBucketingDataset):
         if y.size(-1) > self.min_context * self.hop_length * 2:
             max_context = np.minimum(num_frames // 2, self.max_context)
             ctx_n_frame = np.random.randint(self.min_context, max_context)
-            ctx_start_frame = np.random.randint(0, num_frames - ctx_n_frame)
+            ctx_start_frame = np.random.randint(0, num_frames - ctx_n_frame - 1)
         else:
-            ctx_n_frame = num_frames // 2
+            ctx_n_frame = num_frames // 2 - 1
             ctx_start_frame = 0 if np.random.rand() < 0.5 else ctx_n_frame
 
         # get context
         ctx_start = ctx_start_frame * self.hop_length
         ctx_end = (ctx_start_frame + ctx_n_frame) * self.hop_length
+        assert ctx_end <= y.size(1)
         y_ctx = y[:, ctx_start: ctx_end]
         ctx_n_frame = ctx_n_frame + 1 if self.padding == 'center' else ctx_n_frame
 
@@ -621,7 +624,7 @@ class TTSCtxDataset(DynamicBucketingDataset):
             y, self.sampling_rate, [["norm", f"{gain:.2f}"]])
         y_ctx, _ = torchaudio.sox_effects.apply_effects_tensor(
             y_ctx, self.sampling_rate, [["norm", f"{gain:.2f}"]])
-        return y[0], (token_ids, up_durations, 0, 0,
+        return y[0], (token_ids, up_durations, 0, 0, num_frames,
                       y_ctx[0], ctx_start_frame, ctx_n_frame, ctx_token_ids, ctx_durations)
 
 
@@ -758,16 +761,16 @@ def tts_ctx_collate(data):
     max_num_phones = max(num_phones) + 1  # an extra phone for expanded padding
     max_num_frame = max(num_frames)
     y = torch.zeros([len(data), max_y_len], dtype=torch.float)
-    y_ctx = [ti[4] for ti in token_info]
+    y_ctx = [ti[5] for ti in token_info]
     max_ctx_len = max([yc.size(0) for yc in y_ctx])
-    num_ctx_phones = [ti[7].size(0) for ti in token_info]
+    num_ctx_phones = [ti[8].size(0) for ti in token_info]
     max_ctx_num = max(num_ctx_phones)
     token_ids = torch.zeros([len(data), max_num_phones], dtype=torch.long)
     durations = torch.zeros([len(data), max_num_phones], dtype=torch.long)
     y_ctx_pad = torch.zeros([len(data), max_ctx_len], dtype=torch.float)
     ctx_token_ids = torch.zeros([len(data), max_ctx_num], dtype=torch.long)
     ctx_durations = torch.zeros([len(data), max_ctx_num], dtype=torch.long)
-    for i, (ti, d, _, _, ctx, _, _, cti, cd) in enumerate(token_info):
+    for i, (ti, d, _, _, _, ctx, _, _, cti, cd) in enumerate(token_info):
         y[i, :y_lens[i]] = data[i][0]
         token_ids[i, :ti.size(0)] = ti
         durations[i, :ti.size(0)] = d
@@ -778,9 +781,11 @@ def tts_ctx_collate(data):
         ctx_durations[i, :cd.size(0)] = cd
     start_phone_idx = torch.tensor([ti[2] for ti in token_info])
     start_frame = torch.tensor([ti[3] for ti in token_info])
-    ctx_start_frame = torch.tensor([ti[5] for ti in token_info])
-    ctx_n_frame = torch.tensor([ti[6] for ti in token_info])
-    return y, [token_ids, durations, start_phone_idx, start_frame, y_ctx_pad,
+    num_frames = torch.tensor([ti[4] for ti in token_info])
+    ctx_start_frame = torch.tensor([ti[6] for ti in token_info])
+    ctx_n_frame = torch.tensor([ti[7] for ti in token_info])
+    assert torch.all(durations[:, :-1].sum(1) == num_frames)
+    return y, [token_ids, durations, start_phone_idx, start_frame, num_frames, y_ctx_pad,
                ctx_start_frame, ctx_n_frame, ctx_token_ids, ctx_durations]
 
 

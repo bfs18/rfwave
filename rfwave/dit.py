@@ -187,13 +187,16 @@ class DiTRFBackbone(Backbone):
         nn.init.constant_(self.final_mod.adaLN_modulation[-1].bias, 0)
         nn.init.trunc_normal_(self.final_out.weight, mean=0., std=0.02)
 
-    def get_pos_embed(self, start, length, scale=1.):
-        # theta_rescale performs better at evaluation
-        attn_freqs_cis = self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval
+    def get_pos_embed(self, start, length, scale=1., eval_theta_rescale=False):
+        # TODO: theta_rescale performs better at evaluation for dit vocoder.
+        if eval_theta_rescale:
+            attn_freqs_cis = self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval
+        else:
+            attn_freqs_cis = self.attn_freqs_cis
         pos = get_pos_embed_indices(start, length, max_pos=attn_freqs_cis.size(0), scale=scale)
         return attn_freqs_cis[pos]
 
-    def forward(self, z_t, t, x, bandwidth_id=None, start=None, encodec_bandwidth_id=None):
+    def forward(self, z_t, t, x, bandwidth_id=None, start=None, length=None, encodec_bandwidth_id=None):
         if self.with_fourier_features:
             z_t_f = self.fourier_module(z_t)
             x = self.embed(torch.cat([z_t, x, z_t_f], dim=1))
@@ -216,10 +219,11 @@ class DiTRFBackbone(Backbone):
         x = x.transpose(1, 2)
         x = self.embed_mod(x, c)
         start = _get_start(z_t, start)
-        length = _get_len(z_t, None)  # length is None
+        length = _get_len(z_t, length)  # length is None
         freq_cis = self.get_pos_embed(start, length.max())
+        mask = score_mask(length)
         for block in self.blocks:
-            x = block(x, c, freq_cis, None)
+            x = block(x, c, freq_cis, mask)
         x = self.final_out(self.final_mod(x, c))
         return x.transpose(1, 2)
 
@@ -260,8 +264,8 @@ class DiTRFTTSMultiTaskBackbone(Backbone):
             with_fourier_features=with_fourier_features)
 
     def forward(self, z_t: torch.Tensor, t: torch.Tensor, x: torch.Tensor,
-                bandwidth_id: torch.Tensor=None, start=None):
-        return self.module(z_t, t, x, bandwidth_id, start=start)
+                bandwidth_id: torch.Tensor=None, start=None, length=None):
+        return self.module(z_t, t, x, bandwidth_id, start=start, length=length)
 
 
 class DiTRFE2ETTSMultiTaskBackbone(Backbone):

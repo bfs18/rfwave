@@ -1,4 +1,5 @@
 # some code from lthotse https://github.com/lhotse-speech/lhotse
+import os
 import warnings
 import random
 import copy
@@ -308,7 +309,7 @@ class DynamicBucketingDataset(torch.utils.data.Dataset):
 
     def get_dynamic_batches(self):
         if self.shuffle:
-            print(f"shuffle data at epoch {self.epoch}")
+            print(f"pid [{os.getpid()}] shuffle data at epoch [{self.epoch}]")
 
         def is_ready(bucket):
             tot = self.constraint.copy()
@@ -368,14 +369,21 @@ class DynamicBucketingSampler(object):
             self.num_replicas = 1
             self.rank = 0
         self.dataset = dataset
+        self.next_batches = self.dataset.get_dynamic_batches()
+        self.current_batch = None
 
     def __iter__(self):
         # shuffle each epoch
-        batches = self.dataset.get_dynamic_batches()
+        batches = self.next_batches
+        self.current_batch = self.next_batches
         batches = batches[: len(batches) // self.num_replicas * self.num_replicas]
-        batches = batches[self.rank::self.num_replicas]
         batch_indices = [[c.index for c in b] for b in batches]
-        return iter(batch_indices)
+        batch_iter = iter(batch_indices)
+        self.next_batches = self.dataset.get_dynamic_batches()
+        return batch_iter
+
+    def __len__(self):
+        return len(self.current_batch)
 
 
 if __name__ == '__main__':
