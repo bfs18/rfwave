@@ -684,9 +684,9 @@ class E2ETTSCtxDataset(DynamicBucketingDataset):
         if y.size(-1) > self.min_context * self.hop_length * 2:
             max_context = np.minimum(num_frames // 2, self.max_context)
             ctx_n_frame = np.random.randint(self.min_context, max_context)
-            ctx_start_frame = np.random.randint(0, num_frames - ctx_n_frame)
+            ctx_start_frame = np.random.randint(0, num_frames - ctx_n_frame - 1)
         else:
-            ctx_n_frame = num_frames // 2
+            ctx_n_frame = num_frames // 2 - 1
             ctx_start_frame = 0 if np.random.rand() < 0.5 else ctx_n_frame
 
         # get context

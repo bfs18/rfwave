@@ -225,7 +225,7 @@ class AlignmentBlock(nn.Module):
         nn.init.constant_(self.adaLN_modulation[-1].weight, 0)
         nn.init.constant_(self.adaLN_modulation[-1].bias, 0)
 
-    def forward(self, x, context, x_freqs_cis, c_freqs_cis, x_mask, c_mask, mod_c):
+    def forward(self, x, context, x_freqs_cis, c_freqs_cis, c_mask, mod_c):
         context = self.ctx_proj(context).transpose(1, 2)
         rpt = self.dim // x_freqs_cis.size(2)
         x_freqs_cis = x_freqs_cis.repeat_interleave(rpt, dim=-1)

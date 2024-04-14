@@ -329,36 +329,37 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         return self.module.time_embed(t)
 
     def forward(self, z_t: torch.Tensor, t: torch.Tensor, x: torch.Tensor,
-                bandwidth_id: torch.Tensor=None, start=None, token_ref_length=None):
+                bandwidth_id: torch.Tensor=None, num_tokens=None,
+                ctx_length=None, token_exp_scale=None):
+        # pos_embed for z_t1
+        assert num_tokens is not None
+        assert ctx_length is not None
+        assert token_exp_scale is not None
+
         z_t1, z_t2 = torch.split(z_t, [self.output_channels1, self.output_channels2], dim=1)
         z_t1 = self.z_t1_proj(z_t1)
 
-        # pos_embed for z_t1
-        assert start is not None
-        assert token_ref_length is not None
-
-        start = _get_start(z_t, start)
-        length = _get_len(z_t, None)  # length is None
+        start = _get_start(z_t, None)  # always start from 0 for sentence training.
+        length = torch.round(num_tokens * token_exp_scale).long()
+        z_mask = score_mask(length)
         z_freq_cis = self.get_pos_embed(start, length.max())
         # pos_embed for token and ref
-        token_length, ref_length, token_exp_scale = token_ref_length.unbind(1)
-        token_length, ref_length = token_length.long(), ref_length.long()
-        token_mask = score_mask(token_length)
-        ref_mask = score_mask(ref_length)
+        token_mask = score_mask(num_tokens)
+        ref_mask = score_mask(ctx_length)
         zero_start = _get_start(z_t, None)
-        token_freq_cis = self.get_pos_embed(zero_start, token_length.max(), scale=token_exp_scale)
+        token_freq_cis = self.get_pos_embed(zero_start, num_tokens.max(), scale=token_exp_scale)
         # ref_freq_cis = self.get_pos_embed(zero_start, ref_length.max())
-        ref_freq_cis = self.get_non_pos_embed(z_t.size(0), ref_length.max(), z_t.device)
+        ref_freq_cis = self.get_non_pos_embed(z_t.size(0), ctx_length.max(), z_t.device)
         ctx_mask = torch.cat([token_mask, ref_mask], dim=-1)
         ctx_freq_cis = torch.cat([token_freq_cis, ref_freq_cis], dim=1)
 
         te = self.time_embed(t)
         z_t1 = z_t1.transpose(1, 2)
-        ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, None, ctx_mask, mod_c=te)
+        ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
         if self.align_block is not None:
             # before or after cross attention
-            ctx, attn = self.align_block(ctx, x, z_freq_cis, ctx_freq_cis, None, ctx_mask, mod_c=te)
-            attn, _ = torch.split(attn, [token_length.max(), ref_length.max()], dim=-1)
+            ctx, attn = self.align_block(ctx, x, z_freq_cis, ctx_freq_cis, ctx_mask, mod_c=te)
+            attn, _ = torch.split(attn, [num_tokens.max(), ctx_length.max()], dim=-1)
             attn = attn / attn.sum(dim=-1, keepdim=True)  # renorm attn
         else:
             attn = None
@@ -366,70 +367,19 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         return self.module(z_t, t, ctx, bandwidth_id, start=start), attn
 
 
-def find_segment_tokens_(attn, thres=2., win=4):
-    expected_frames = attn.sum(0)
-    expected_frames = F.pad(expected_frames, (win // 2, win // 2))
-    l = expected_frames.size(0)
-
-    for i in range(win // 2, l - win // 2):
-        if (torch.all(expected_frames[i - win // 2: i] < thres) and
-                torch.all(expected_frames[i: i + win // 2] >= thres)):
-            break
-    s = i - 2
-    for i in reversed(range(win // 2, l - win // 2)):
-        if (torch.all(expected_frames[i - win // 2: i] >= thres) and
-                torch.all(expected_frames[i: i + win // 2] < thres)):
-            break
-    e = i - 2
-    return s, e
-
-
-def find_segment_tokens(attn, thres=2., win=4):
-    expected_frames = attn.sum(0)
-    expected_frames = F.pad(expected_frames, (win // 2, win // 2 - 1))
-    used_tokens = expected_frames >= thres
-    used_tokens = used_tokens.unfold(0, 4, 1)
-    start_patt = torch.tensor([0] * (win // 2) + [1] * (win // 2), dtype=torch.bool, device=attn.device)
-    end_patt = torch.tensor([1] * (win // 2) + [0] * (win // 2), dtype=torch.bool, device=attn.device)
-    s = torch.where(torch.all(used_tokens == start_patt, dim=1))[0]
-    e = torch.where(torch.all(used_tokens == end_patt, dim=1))[0]
-    if s.numel() > 0 and e.numel() > 0:
-        return s[0], e[-1]
-    else:
-        return 0, 0
-
-
-def compute_alignment_loss(attn, start, token_ref_length):
+def compute_alignment_loss(attn, num_tokens, token_exp_scale):
     attn = attn.reshape(-1, *attn.shape[-2:])
-    segment_attn = []
-    segment_length = []
-    aco_length = attn.size(1)
-    token_length, _, token_exp_scale = token_ref_length.unbind(1)
-    token_length = token_length.long()
-    for attn_i, aco_start_i, token_length_i, token_exp_scale_i in zip(
-            attn, start, token_length, token_exp_scale):
-        attn_i = attn_i[:, :token_length_i]
-        s, e = find_segment_tokens(attn_i)
-        min_start = aco_start_i / token_exp_scale_i - 10
-        max_end = (aco_start_i + aco_length) / token_exp_scale_i + 10
-        if min_start <= s < e <= max_end:
-            attn_i = attn_i[:, s: e]
-            segment_attn.append(attn_i)
-            segment_length.append(e - s)
-    if len(segment_attn) == 0:
-        return 0.
-    max_seg_len = max(segment_length)
-    batch_size = len(segment_attn)
-    attn = torch.zeros([batch_size, aco_length, max_seg_len], device=attn.device)
-    target = torch.zeros([batch_size, max_seg_len], device=attn.device, dtype=torch.long)
-    for i, (seg_len, seg_attn) in enumerate(zip(segment_length, segment_attn)):
-        attn[i, :, :seg_len] = seg_attn
-        target[i, :seg_len] = torch.arange(1, seg_len + 1, device=attn.device)
-    attn = F.pad(attn, (1, 0, 0, 0, 0, 0), value=0.2)  # prob for blank.
+    bsz = attn.shape[0]
+    rpt = bsz // num_tokens.size(0)
+    num_tokens = num_tokens.repeat_interleave(rpt, 0)
+    token_exp_scale = token_exp_scale.repeat_interleave(rpt, 0)
+    length = torch.round(num_tokens * token_exp_scale).long()
+    target = torch.zeros([bsz, num_tokens.max()], device=attn.device, dtype=torch.long)
+    for i, n_tok in enumerate(num_tokens):
+        target[i, :n_tok] = torch.arange(1, n_tok + 1, device=attn.device)
+    attn = F.pad(attn, (1, 0, 0, 0, 0, 0), value=0.25)  # prob for blank.
     attn = attn / attn.sum(dim=-1, keepdim=True)
     log_prob = torch.log(attn.clamp_min_(1e-5))
-    input_lengths = torch.ones([batch_size], device=attn.device, dtype=torch.long) * aco_length
-    target_lengths = torch.tensor(segment_length, device=attn.device, dtype=torch.long)
     loss = F.ctc_loss(log_prob.transpose(1, 0), targets=target, zero_infinity=True,
-                      input_lengths=input_lengths, target_lengths=target_lengths, blank=0)
+                      input_lengths=length, target_lengths=num_tokens, blank=0)
     return loss

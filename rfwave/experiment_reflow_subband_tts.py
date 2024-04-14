@@ -279,14 +279,12 @@ class RectifiedFlow(nn.Module):
         return text, bandwidth_id, (zt, t, target)
 
     def get_pred(self, z_t, t, text, bandwidth_id, **kwargs):
+        _backbone_keys = ['start', 'length', 'num_tokens', 'ctx_length', 'token_exp_scale']
         backbone_kwargs = {}
-        n_rpt = z_t.size(0) // kwargs['start'].size(0)
-        if 'start' in kwargs:
-            backbone_kwargs['start'] = torch.repeat_interleave(kwargs['start'], n_rpt, 0)
-        if 'length' in kwargs:
-            backbone_kwargs['length'] = torch.repeat_interleave(kwargs['length'], n_rpt, 0)
-        if 'token_ref_length' in kwargs:
-            backbone_kwargs['token_ref_length'] = torch.repeat_interleave(kwargs['token_ref_length'], n_rpt, 0)
+        for k in _backbone_keys:
+            if k in kwargs:
+                n_rpt = z_t.size(0) // kwargs[k].size(0)
+                backbone_kwargs[k] = torch.repeat_interleave(kwargs[k], n_rpt, 0)
         pred = self.backbone(z_t, t, text, bandwidth_id, **backbone_kwargs)
         return pred if isinstance(pred, tuple) else (pred, None)
 
@@ -550,8 +548,8 @@ class RectifiedFlow(nn.Module):
     @staticmethod
     def compute_alignment_loss(opt_attn, **kwargs):
         if opt_attn is not None:
-            assert 'start' in kwargs and 'token_ref_length' in kwargs
-            attn_loss = compute_alignment_loss(opt_attn, kwargs['start'], kwargs['token_ref_length'])
+            assert 'num_tokens' in kwargs and 'token_exp_scale' in kwargs
+            attn_loss = compute_alignment_loss(opt_attn, kwargs['num_tokens'], kwargs['token_exp_scale'])
         else:
             attn_loss = 0.
         return attn_loss
@@ -693,8 +691,14 @@ class VocosExp(pl.LightningModule):
         elif isinstance(input_adaptor, E2ECtxCharInputAdaptor):
             assert len(phone_info) == 6
             phone_info[2] = self.feature_extractor(phone_info[2])
-            pi_kwargs['start'] = phone_info[1]
-            pi_kwargs['token_ref_length'] = phone_info[3]
+            # num_tokens * epx_scale to get num_frames
+            length = torch.round(phone_info[1] * phone_info[5]).long()
+            pi_kwargs['num_tokens'] = phone_info[1]
+            pi_kwargs['ctx_length'] = phone_info[4]
+            pi_kwargs['token_exp_scale'] = phone_info[5]
+            ctx_kwargs['length'] = length
+            ctx_kwargs['ctx_start'] = phone_info[3]
+            ctx_kwargs['ctx_length'] = phone_info[4]
             phone_info = [phone_info[0], phone_info[2]]
         elif isinstance(input_adaptor, CtxCharInputAdaptor):
             assert len(phone_info) == 10
