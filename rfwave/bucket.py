@@ -307,6 +307,9 @@ class DynamicBucketingDataset(torch.utils.data.Dataset):
             self.buckets[bucket_idx].append(cut)
 
     def get_dynamic_batches(self):
+        if self.shuffle:
+            print(f"shuffle data at epoch {self.epoch}")
+
         def is_ready(bucket):
             tot = self.constraint.copy()
             for c in bucket:
@@ -368,7 +371,7 @@ class DynamicBucketingSampler(object):
 
     def __iter__(self):
         # shuffle each epoch
-        batches = self.daset.get_dynamic_batches()
+        batches = self.dataset.get_dynamic_batches()
         batches = batches[: len(batches) // self.num_replicas * self.num_replicas]
         batches = batches[self.rank::self.num_replicas]
         batch_indices = [[c.index for c in b] for b in batches]
