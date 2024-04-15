@@ -308,8 +308,10 @@ class DynamicBucketingDataset(torch.utils.data.Dataset):
             self.buckets[bucket_idx].append(cut)
 
     def get_dynamic_batches(self):
-        if self.shuffle:
-            print(f"pid [{os.getpid()}] shuffle data at epoch [{self.epoch}]")
+        # if self.shuffle:
+        #     print(f"pid [{os.getpid()}] shuffle data at epoch [{self.epoch}]")
+        # else:
+        #     print(f"pid [{os.getpid()}] organize data at epoch [{self.epoch}]")
 
         def is_ready(bucket):
             tot = self.constraint.copy()
@@ -369,28 +371,40 @@ class DynamicBucketingSampler(object):
             self.num_replicas = 1
             self.rank = 0
         self.dataset = dataset
-        self.next_batches = self.dataset.get_dynamic_batches()
-        self.current_batch = None
+        self.batches = None
+        self._len = None
+        self.get_batches()
+
+    def get_batches(self):
+        batches = self.dataset.get_dynamic_batches()
+        batches = batches[: len(batches) // self.num_replicas * self.num_replicas]
+        batches = batches[self.rank::self.num_replicas]
+        if self._len is None:
+            self._len = len(batches)
+        elif self._len > len(batches):
+            extra_len = self._len - len(batches)
+            assert extra_len < len(batches), "dataset too small."
+            batches = batches + batches[-extra_len:]
+        elif self._len < len(batches):
+            batches = batches[:self._len]
+        assert len(batches) == self._len
+        self.batches = batches
 
     def __iter__(self):
-        # shuffle each epoch
-        batches = self.next_batches
-        self.current_batch = self.next_batches
-        batches = batches[: len(batches) // self.num_replicas * self.num_replicas]
-        batch_indices = [[c.index for c in b] for b in batches]
-        batch_iter = iter(batch_indices)
-        self.next_batches = self.dataset.get_dynamic_batches()
-        return batch_iter
+        batch_indices = [[c.index for c in b] for b in self.batches]
+        # print(f"pid [{os.getpid()}] rank [{self.rank}] num_samples [{len(batch_indices)}]")
+        self.get_batches()  # shuffle for the next epoch
+        return iter(batch_indices)
 
     def __len__(self):
-        return len(self.current_batch)
+        return self._len
 
 
 if __name__ == '__main__':
     filelist = "/data1/corpus/LJSpeech-1.1/synta_filelist.train"
     dataset = DynamicBucketingDataset(
         filelist_path=filelist, max_duration=100, max_cuts=32, num_buckets=20,
-        shuffle=True, drop_last=False, quadratic_duration=15, filter_max_duration=10.)
+        shuffle=False, drop_last=False, quadratic_duration=15, filter_max_duration=10.)
     batches = dataset.get_dynamic_batches()
     for i, batch in enumerate(batches):
         print('batch idx', i, 'duration', sum([c.duration for c in batch]), 'num_samples', len(batch))

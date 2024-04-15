@@ -116,3 +116,4 @@ trainer:
   devices: [0]
   strategy: auto
   log_every_n_steps: 1000
+  use_distributed_sampler: False
