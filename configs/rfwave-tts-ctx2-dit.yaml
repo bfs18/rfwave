@@ -8,7 +8,6 @@ data:
       sampling_rate: 22050
       batch_size: 1
       num_workers: 8
-      cache: True
       task: tts
       hop_length: 256
       padding: "center"
@@ -23,7 +22,6 @@ data:
       sampling_rate: 22050
       batch_size: 1
       num_workers: 4
-      cache: True
       task: tts
       hop_length: 256
       padding: "center"

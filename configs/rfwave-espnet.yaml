@@ -9,7 +9,6 @@ data:
       num_samples: 33600
       batch_size: 64
       num_workers: 8
-      cache: True
 
     val_params:
       filelist_path: wav_filelist.valid
@@ -17,7 +16,6 @@ data:
       num_samples: 67200
       batch_size: 16
       num_workers: 4
-      cache: True
 
 model:
   class_path: rfwave.experiment_reflow_subband.VocosExp

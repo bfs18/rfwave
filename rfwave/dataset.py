@@ -22,7 +22,7 @@ class DataConfig:
     num_workers: int
     sampling_rate: int = 24000
     num_samples: int = 65280
-    cache: bool = True
+    cache: bool = False
     task: str = "voc"
     hop_length: int = None
     padding: str = None
