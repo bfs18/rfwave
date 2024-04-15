@@ -30,7 +30,6 @@ class RectifiedFlow(nn.Module):
     def __init__(self, backbon: Backbone, head: FourierHead,
                  num_steps=10, feature_loss=False, wave=False, num_bands=8, p_uncond=0., guidance_scale=1.):
         super().__init__()
-        # self.backbone = torch.compile(backbon)
         self.backbone = backbon
         self.head = head
         self.N = num_steps
@@ -459,7 +458,6 @@ class VocosExp(pl.LightningModule):
         feature_extractor: FeatureExtractor,
         backbone: Backbone,
         head: FourierHead,
-        input_adaptor: InputAdaptor = None,
         task: str = "voc",
         sample_rate: int = 24000,
         initial_learning_rate: float = 2e-4,
@@ -469,13 +467,14 @@ class VocosExp(pl.LightningModule):
         guidance_scale: float = 1.,
         p_uncond: float = 0.2,
         num_warmup_steps: int = 0,
+        torch_compile=False
     ):
         super().__init__()
-        self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head", "input_adaptor"])
-
+        self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head"])
+        if torch_compile:
+            backbone = torch.compile(backbone)
         self.task = task
         self.feature_extractor = feature_extractor
-        self.input_adaptor = input_adaptor
         self.reflow = RectifiedFlow(
             backbone, head, feature_loss=feature_loss, wave=wave, num_bands=num_bands,
             guidance_scale=guidance_scale, p_uncond=p_uncond)
@@ -644,7 +643,6 @@ class VocosEncodecExp(VocosExp):
             feature_extractor=feature_extractor,
             backbone=backbone,
             head=head,
-            input_adaptor=None,
             task="voc",
             sample_rate=sample_rate,
             initial_learning_rate=initial_learning_rate,

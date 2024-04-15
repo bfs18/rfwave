@@ -46,7 +46,6 @@ class RectifiedFlow(nn.Module):
     def __init__(self, backbon: Backbone, head: FourierHead,
                  num_steps=10, feature_loss=False, wave=False, num_bands=8, intt=0., p_uncond=0., guidance_scale=1.):
         super().__init__()
-        # self.backbone = torch.compile(backbon)
         self.backbone = backbon
         self.head = head
         self.N = num_steps
@@ -601,6 +600,7 @@ class VocosExp(pl.LightningModule):
         guidance_scale: float = 1.,
         p_uncond: float = 0.2,
         num_warmup_steps: int = 0,
+        torch_compile: bool = False
     ):
         """
         Args:
@@ -624,7 +624,11 @@ class VocosExp(pl.LightningModule):
             print(f"using intt {intt:.2f}")
         self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head", "input_adaptor"])
         self.feature_extractor = feature_extractor
-        # self.input_adaptor = torch.compile(input_adaptor)
+
+        if torch_compile:
+            input_adaptor = torch.compile(input_adaptor)
+            backbone = torch.compile(backbone)
+
         self.input_adaptor = input_adaptor
         self.reflow = RectifiedFlow(
             backbone, head, feature_loss=feature_loss, wave=wave, num_bands=num_bands, intt=intt,

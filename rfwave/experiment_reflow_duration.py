@@ -21,7 +21,6 @@ from rfwave.dit import DiTRFBackbone
 class RectifiedFlow(nn.Module):
     def __init__(self, backbone, num_steps=10., p_uncond=0., guidance_scale=1.):
         super().__init__()
-        # self.backbone = torch.compile(backbone)
         self.backbone = backbone
         self.N = num_steps
         self.cfg = guidance_scale > 1.
@@ -104,11 +103,14 @@ class VocosExp(pl.LightningModule):
         guidance_scale: float = 1.,
         p_uncond: float = 0.2,
         num_warmup_steps: int = 0,
+        torch_compile: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["backbone", "input_adaptor"])
         self.task = task
-        # self.input_adaptor = torch.compile(input_adaptor)
+        if torch_compile:
+            input_adaptor = torch.compile(input_adaptor)
+            backbone = torch.compile(backbone)
         self.input_adaptor = input_adaptor
         self.reflow = RectifiedFlow(backbone, p_uncond=p_uncond, guidance_scale=guidance_scale)
         self.validation_step_outputs = []
