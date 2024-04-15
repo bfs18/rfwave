@@ -261,7 +261,7 @@ def estimate_duration_buckets(
 class DynamicBucketingDataset(torch.utils.data.Dataset):
     def __init__(self, filelist_path, max_duration, max_cuts, num_buckets,
                  shuffle=False, drop_last=False, quadratic_duration=None,
-                 filter_max_duration=None):
+                 filter_max_duration=None, buffer_size=1000):
         self.max_duration = max_duration
         self.max_cuts = max_cuts
         self.shuffle = shuffle
@@ -273,6 +273,7 @@ class DynamicBucketingDataset(torch.utils.data.Dataset):
         self.rng = None
         self.epoch = 0
         self.seed = 1234
+        self.buffer_size = buffer_size
 
         with open(filelist_path) as f:
             self.filelist = f.read().splitlines()
@@ -282,7 +283,8 @@ class DynamicBucketingDataset(torch.utils.data.Dataset):
         # filter by length here.
         self.cuts = self.get_cuts(self.filelist)
         self.duration_bins = estimate_duration_buckets(self.cuts, num_buckets=num_buckets)
-        self.buckets = None
+        self.buckets = [deque() for _ in range(len(self.duration_bins) + 1)]
+        self.cuts_iter = iter(self.cuts)
 
     def filter_by_duration(self):
         filelist = []
@@ -301,11 +303,14 @@ class DynamicBucketingDataset(torch.utils.data.Dataset):
             cuts.append(Cut(index=i, name=name, duration=duration))
         return cuts
 
-    def collect_cuts_in_buckets(self):
-        self.buckets = [deque() for _ in range(len(self.duration_bins) + 1)]
-        for cut in self.cuts:
-            bucket_idx = bisect_right(self.duration_bins, cut.duration)
-            self.buckets[bucket_idx].append(cut)
+    def _collect_cuts_in_buckets(self, n_cuts: int):
+        try:
+            for _ in range(n_cuts):
+                cut = next(self.cuts_iter)
+                bucket_idx = bisect_right(self.duration_bins, cut.duration)
+                self.buckets[bucket_idx].append(cut)
+        except StopIteration:
+            pass
 
     def get_dynamic_batches(self):
         # if self.shuffle:
@@ -321,7 +326,7 @@ class DynamicBucketingDataset(torch.utils.data.Dataset):
                     return True
             return False
 
-        self.collect_cuts_in_buckets()
+        self._collect_cuts_in_buckets(self.buffer_size)
         self.rng = random.Random(self.epoch + self.seed)
         self.epoch += 1
         batches = []
@@ -357,8 +362,14 @@ class DynamicBucketingDataset(torch.utils.data.Dataset):
                     # No shuffling, remove first N
                     for _ in range(batch_size):
                         sampling_bucket.popleft()
+                self._collect_cuts_in_buckets(batch_size)
         except StopIteration:
             pass
+
+        # clean up
+        self.cuts_iter = iter(self.cuts)
+        self.buckets = [deque() for _ in range(len(self.duration_bins) + 1)]
+
         return batches
 
 
