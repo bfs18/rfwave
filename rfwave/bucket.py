@@ -329,6 +329,7 @@ class DynamicBucketingDataset(torch.utils.data.Dataset):
         self._collect_cuts_in_buckets(self.buffer_size)
         self.rng = random.Random(self.epoch + self.seed)
         self.epoch += 1
+        batch_index = 0
         batches = []
         try:
             while True:
@@ -343,12 +344,15 @@ class DynamicBucketingDataset(torch.utils.data.Dataset):
                         # Sample from partial batches that are left.
                         ready_buckets = non_empty_buckets
 
-                sampling_bucket = self.rng.choice(ready_buckets)
-                maybe_shuffled = sampling_bucket
                 indexes_used = []
                 if self.shuffle:
+                    sampling_bucket = self.rng.choice(ready_buckets)
                     maybe_shuffled = pick_at_random(
-                        maybe_shuffled, rng=self.rng, out_indexes_used=indexes_used)
+                        sampling_bucket, rng=self.rng, out_indexes_used=indexes_used)
+                else:
+                    sampling_bucket = self.buckets[batch_index % len(self.buckets)]
+                    maybe_shuffled = sampling_bucket
+                batch_index += 1
                 batcher = DurationBatcher(maybe_shuffled, constraint=self.constraint.copy())
                 batch = next(iter(batcher))
                 batch_size = len(batch)
