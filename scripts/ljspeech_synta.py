@@ -67,7 +67,7 @@ if __name__ == '__main__':
             duration = torch.tensor(d['dur'], dtype=torch.long)
             alignment_fp = Path(alignment_dir) / f"{fn}.th"
             wav = Path(wav_dir) / f"{fn}.wav"
-            dur = librosa.get_duration(filename=wav)
+            dur = librosa.get_duration(path=wav)
             torch.save({'tokens': phones, 'durations': duration}, alignment_fp)
             filelist.append('|'.join([fn, str(wav), str(alignment_fp), str(len(phones)), f'{dur:.2f}']))
             phoneset.update(phones)

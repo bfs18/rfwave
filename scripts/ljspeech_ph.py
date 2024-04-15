@@ -36,7 +36,7 @@ if __name__ == '__main__':
         fn = json_fp.stem
         alignment_fp = Path(args.alignment_dir) / f"{fn}.th"
         wav = Path(args.wav_dir) / f"{fn}.wav"
-        dur = librosa.get_duration(filename=wav)
+        dur = librosa.get_duration(path=wav)
         data = load_annotated_json(json_fp)
         torch.save(data, alignment_fp)
         filelist.append('|'.join([fn, str(wav), str(alignment_fp), f"{dur:.2f}"]))
