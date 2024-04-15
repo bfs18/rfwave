@@ -36,6 +36,7 @@ class DataConfig:
     drop_last: bool = False
     quadratic_duration: Optional[float] = None
     filter_max_duration: Optional[float] = None
+    random_batch_every_epoch: bool = False
 
 
 class VocosDataModule(LightningDataModule):
@@ -72,7 +73,7 @@ class VocosDataModule(LightningDataModule):
                 dataset, batch_size=cfg.batch_size, num_workers=cfg.num_workers, shuffle=train,
                 pin_memory=True, collate_fn=collate_fn, persistent_workers=True)
         else:
-            batch_sampler = DynamicBucketingSampler(dataset)
+            batch_sampler = DynamicBucketingSampler(dataset, random_batch_every_epoch=cfg.random_batch_every_epoch)
             dataloader = DataLoader(
                 dataset, batch_sampler=batch_sampler, num_workers=cfg.num_workers,
                 pin_memory=True, collate_fn=collate_fn, persistent_workers=True)

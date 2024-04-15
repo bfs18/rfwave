@@ -363,13 +363,16 @@ class DynamicBucketingDataset(torch.utils.data.Dataset):
 
 
 class DynamicBucketingSampler(object):
-    def __init__(self, dataset: DynamicBucketingDataset):
+    def __init__(self, dataset: DynamicBucketingDataset, random_batch_every_epoch=False):
         if dist.is_available() and dist.is_initialized():
             self.num_replicas = dist.get_world_size()
             self.rank = dist.get_rank()
         else:
             self.num_replicas = 1
             self.rank = 0
+        self.random_batch_every_epoch = random_batch_every_epoch
+        self.dataset_shuffle = dataset.shuffle
+
         self.dataset = dataset
         self.batches = None
         self._len = None
@@ -393,7 +396,11 @@ class DynamicBucketingSampler(object):
     def __iter__(self):
         batch_indices = [[c.index for c in b] for b in self.batches]
         # print(f"pid [{os.getpid()}] rank [{self.rank}] num_samples [{len(batch_indices)}]")
-        self.get_batches()  # shuffle for the next epoch
+        if self.random_batch_every_epoch and self.dataset_shuffle:
+            self.get_batches()  # shuffle for the next epoch, time-consuming for large dataset.
+        elif self.dataset_shuffle:
+            rng = random.Random(self.dataset.epoch + self.dataset.seed)  # use a known rng for reproduce.
+            rng.shuffle(self.batches)
         return iter(batch_indices)
 
     def __len__(self):
