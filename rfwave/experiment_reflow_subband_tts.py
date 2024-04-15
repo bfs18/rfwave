@@ -29,10 +29,6 @@ from rfwave.dit import DiTRFTTSMultiTaskBackbone, compute_alignment_loss
 from rfwave.logit_normal import LogitNormal
 
 
-# change to False if training crashes.
-DYNAMIC_COMPILE = True
-
-
 def sequence_mask_with_ctx(length, ctx_start=None, ctx_length=None, max_length=None):
     non_padding = sequence_mask(length, max_length)
     if ctx_length is None or ctx_start is None:
@@ -46,12 +42,12 @@ def sequence_mask_with_ctx(length, ctx_start=None, ctx_length=None, max_length=N
         return torch.logical_and(non_ctx, non_padding)
 
 
-
 class RectifiedFlow(nn.Module):
     def __init__(self, backbon: Backbone, head: FourierHead,
                  num_steps=10, feature_loss=False, wave=False, num_bands=8, intt=0., p_uncond=0., guidance_scale=1.):
         super().__init__()
-        self.backbone = torch.compile(backbon, dynamic=DYNAMIC_COMPILE)
+        # self.backbone = torch.compile(backbon)
+        self.backbone = backbon
         self.head = head
         self.N = num_steps
         self.feature_loss = feature_loss
@@ -628,7 +624,8 @@ class VocosExp(pl.LightningModule):
             print(f"using intt {intt:.2f}")
         self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head", "input_adaptor"])
         self.feature_extractor = feature_extractor
-        self.input_adaptor = torch.compile(input_adaptor, dynamic=DYNAMIC_COMPILE)
+        # self.input_adaptor = torch.compile(input_adaptor)
+        self.input_adaptor = input_adaptor
         self.reflow = RectifiedFlow(
             backbone, head, feature_loss=feature_loss, wave=wave, num_bands=num_bands, intt=intt,
             guidance_scale=guidance_scale, p_uncond=p_uncond)
