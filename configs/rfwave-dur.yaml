@@ -75,3 +75,4 @@ trainer:
   devices: [0]
   strategy: auto
   log_every_n_steps: 1000
+  precision: 16-mixed
