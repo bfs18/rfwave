@@ -20,8 +20,8 @@ for dataset in datasets:
         spk_dir = fid.split('_')[0]
         audio_fp = flac_dir / spk_dir / f'{fid}.flac'
         align_fp = flac_dir / spk_dir / f'{fid}.th'
-        dur = librosa.get_duration(path=audio_fp)
         if audio_fp.exists() and align_fp.exists():
+            dur = librosa.get_duration(path=audio_fp)
             tokens = torch.load(align_fp)['tokens']
             filelist.append('|'.join([fid, str(audio_fp), str(align_fp), f'{dur:.2f}']))
             phoneset.update(tokens)
