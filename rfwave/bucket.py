@@ -338,7 +338,7 @@ class DynamicBucketingDataset(torch.utils.data.Dataset):
         self._collect_cuts_in_buckets(self.buffer_size)
         self.rng = random.Random(self.epoch + self.seed)
         self.epoch += 1
-        batch_index = 0
+        batch_index = len(self.buckets) - 1  # test long sentence.
         batches = []
         try:
             while True:
