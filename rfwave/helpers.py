@@ -52,6 +52,21 @@ def plot_spectrogram_to_numpy(spectrogram: np.ndarray) -> np.ndarray:
     return data
 
 
+def plot_attention_to_numpy(attention: np.ndarray) -> np.ndarray:
+    attention = attention.T.astype(np.float32)
+    fig, ax = plt.subplots(figsize=(12, 3))
+    im = ax.imshow(attention, aspect="auto", origin="lower", interpolation="none")
+    plt.colorbar(im, ax=ax)
+    plt.xlabel("Frames")
+    plt.ylabel("Chars")
+    plt.tight_layout()
+
+    fig.canvas.draw()
+    data = save_figure_to_numpy(fig)
+    plt.close()
+    return data
+
+
 class GradNormCallback(Callback):
     """
     Callback to log the gradient norm.

@@ -12,7 +12,7 @@ from functools import partial
 from torch import nn
 from rfwave.feature_extractors import FeatureExtractor
 from rfwave.heads import FourierHead
-from rfwave.helpers import plot_spectrogram_to_numpy, save_figure_to_numpy
+from rfwave.helpers import plot_spectrogram_to_numpy, plot_attention_to_numpy
 from rfwave.loss import MelSpecReconstructionLoss
 from rfwave.models import Backbone
 from rfwave.modules import safe_log, safe_log10, pseudo_huber_loss
@@ -579,7 +579,7 @@ class RectifiedFlow(nn.Module):
         overlap_loss = self.compute_overlap_loss(pred2) if self.overlap_loss else 0.
         attn_loss = self.compute_alignment_loss(opt_attn, **kwargs)
         loss_dict = {"loss1": loss1, "loss2": loss2, "stft_loss": stft_loss, "phase_loss": phase_loss,
-                     "overlap_loss": overlap_loss, "attn_loss": attn_loss}
+                     "overlap_loss": overlap_loss, "attn_loss": attn_loss, "attn": opt_attn}
         return loss1 * 5. + loss2 + (stft_loss + phase_loss + overlap_loss + attn_loss) * 0.1, loss_dict
 
 
@@ -779,6 +779,10 @@ class VocosExp(pl.LightningModule):
                 {"train/total_loss": loss, "train/cond_mel_loss": cond_mel_loss,
                  "train/mel_loss": mel_loss, "train/tandem_mel_loss": tandem_mel_loss},
                 step=self.global_step)
+            attn = loss_dict.pop('attn', None)
+            if attn is not None:
+                attn = attn[0, 0].detach().cpu().numpy()
+                self.logger.experiment.log({"train_media/attn": wandb.Image(plot_attention_to_numpy(attn))})
             loss_dict = dict((f'train/{k}', v) for k, v in loss_dict.items())
             self.logger.log_metrics(loss_dict, step=self.global_step)
             rvm_loss = self.rvm(audio_hat.unsqueeze(1), audio_input.unsqueeze(1))
