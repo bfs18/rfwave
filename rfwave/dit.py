@@ -294,9 +294,13 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
 
         params = ModelArgs(dim=dim, n_heads=num_heads, dropout=dropout)
         self.z_t1_proj = nn.Conv1d(output_channels1, dim, 1)
-        self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
         if rad_align:
+            assert num_ctx_layers % 2 == 0 and num_ctx_layers // 2 >= 1
+            self.cross_attn1 = ContextBlock(params, input_channels, num_ctx_layers // 2, modulate=True)
+            self.cross_attn2 = ContextBlock(params, input_channels, num_ctx_layers // 2, modulate=True)
             self.align_block = AlignmentBlock(dim, input_channels)
+        else:
+            self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
 
         self.module = DiTRFBackbone(
             input_channels=dim,
@@ -343,27 +347,33 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         length = torch.round(num_tokens * token_exp_scale).long()
         z_mask = score_mask(length)
         z_freq_cis = self.get_pos_embed(start, length.max())
+
         # pos_embed for token and ref
         token_mask = score_mask(num_tokens)
         ref_mask = score_mask(ctx_length)
         zero_start = _get_start(z_t, None)
         token_freq_cis = self.get_pos_embed(zero_start, num_tokens.max(), scale=token_exp_scale)
-        # ref_freq_cis = self.get_pos_embed(zero_start, ref_length.max())
-        ref_freq_cis = self.get_non_pos_embed(z_t.size(0), ctx_length.max(), z_t.device)
+        ref_freq_cis = self.get_pos_embed(zero_start, ctx_length.max())
+        # ref_freq_cis = self.get_non_pos_embed(z_t.size(0), ctx_length.max(), z_t.device)
         ctx_mask = torch.cat([token_mask, ref_mask], dim=-1)
         ctx_freq_cis = torch.cat([token_freq_cis, ref_freq_cis], dim=1)
 
+        x_token, x_ref = torch.split(x, [num_tokens.max(), ctx_length.max()], dim=-1)
+
         te = self.time_embed(t)
         z_t1 = z_t1.transpose(1, 2)
-        ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
         if self.align_block is not None:
-            # before or after cross attention
-            ctx, attn = self.align_block(ctx, x, z_freq_cis, ctx_freq_cis, ctx_mask, mod_c=te)
-            attn, _ = torch.split(attn, [num_tokens.max(), ctx_length.max()], dim=-1)
-            attn = attn / attn.sum(dim=-1, keepdim=True)  # renorm attn
+            # preprocess input, only inject ref
+            ctx = self.cross_attn1(z_t1, x_ref, z_freq_cis, ref_freq_cis, z_mask, ref_mask, mod_c=te)
+            # inject text information and get align attn
+            ctx, attn = self.align_block(ctx, x_token, z_freq_cis, token_freq_cis, token_mask, mod_c=te)
+            # postprocess input, inject text and ref
+            ctx = self.cross_attn2(ctx, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
         else:
+            ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
             attn = None
         ctx = ctx.transpose(1, 2)
+
         return self.module(z_t, t, ctx, bandwidth_id, start=start), attn
 
 
