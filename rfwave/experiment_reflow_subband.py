@@ -24,6 +24,7 @@ from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_err
 from rfwave.feature_weight import get_feature_weight, get_feature_weight2
 from rfwave.logit_normal import LogitNormal
 from rfwave.attention import sequence_mask
+from rfwave.dit import DiTRFBackbone
 
 
 class RectifiedFlow(nn.Module):

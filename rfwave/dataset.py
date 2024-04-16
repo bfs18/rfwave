@@ -47,9 +47,14 @@ class VocosDataModule(LightningDataModule):
 
     def _get_dataloder(self, cfg: DataConfig, train: bool):
         if cfg.task == "voc":
-            if cfg.filelist_path.endswith(".scp"):
-                dataset = ArkDataset(cfg, train=train)
+            if cfg.segment:
+                if cfg.filelist_path.endswith(".scp"):
+                    dataset = ArkDatasetSegment(cfg, train=train)
+                else:
+                    dataset = VocosDatasetSegment(cfg, train=train)
             else:
+                assert not cfg.filelist_path.endswith(".scp"), \
+                    "filelist should not be in .scp format when using segment input"
                 dataset = VocosDataset(cfg, train=train)
             collate_fn = voc_collate
         elif cfg.task == "tts":
@@ -86,7 +91,7 @@ class VocosDataModule(LightningDataModule):
         return self._get_dataloder(self.val_config, train=False)
 
 
-class VocosDataset(Dataset):
+class VocosDatasetSegment(Dataset):
     def __init__(self, cfg: DataConfig, train: bool):
         assert cfg.task == "voc"
         with open(cfg.filelist_path) as f:
@@ -130,12 +135,58 @@ class VocosDataset(Dataset):
         return y[0], torch.tensor(start), self.num_samples
 
 
+class VocosDataset(DynamicBucketingDataset):
+    def __init__(self, cfg: DataConfig, train: bool):
+        # inheritage make sure use the same filelist.
+        super(VocosDataset, self).__init__(
+            filelist_path=cfg.filelist_path,
+            max_duration=cfg.max_duration,
+            max_cuts=cfg.max_cuts,
+            num_buckets=cfg.num_buckets,
+            shuffle=train,
+            drop_last=cfg.drop_last,
+            quadratic_duration=cfg.quadratic_duration,
+            filter_max_duration=cfg.filter_max_duration)
+        assert cfg.task == "voc"
+        assert cfg.hop_length is not None
+        with open(cfg.filelist_path) as f:
+            self.filelist = f.read().splitlines()
+        self.sampling_rate = cfg.sampling_rate
+        self.train = train
+        self.hop_length = cfg.hop_length
+        self._cache = dict() if getattr(cfg, 'cache', False) else None
+
+    def __len__(self) -> int:
+        return len(self.filelist)
+
+    def __getitem__(self, index: int):
+        audio_path = self.filelist[index]
+        fn = Path(audio_path).name
+        if self._cache is None or fn not in self._cache:
+            y, sr = torchaudio.load(audio_path)
+            if self._cache is not None:
+                self._cache[fn] = (y, sr)
+        else:
+            y, sr = self._cache[fn]
+        if y.size(0) > 1:
+            # mix to mono
+            y = y.mean(dim=0, keepdim=True)
+        if sr != self.sampling_rate:
+            y = torchaudio.functional.resample(y, orig_freq=sr, new_freq=self.sampling_rate)
+        y = y[:, :y.size(1) // self.hop_length * self.hop_length]
+        gain = np.random.uniform(-1, -6) if self.train else -3
+        y, _ = torchaudio.sox_effects.apply_effects_tensor(y, sr, [["norm", f"{gain:.2f}"]])
+        start = 0
+        num_samples = y.shape[1]
+        return y[0], torch.tensor(start), num_samples
+
+
 def load_ark_scp(scp_fp):
     ark_dict = kaldiio.load_scp(scp_fp, max_cache_fd=32)
     return ark_dict
 
 
-class ArkDataset(torch.utils.data.Dataset):
+class ArkDatasetSegment(torch.utils.data.Dataset):
     def __init__(self, cfg: DataConfig, train: bool):
         assert cfg.task == "voc"
         self.sampling_rate = cfg.sampling_rate
@@ -308,7 +359,6 @@ class TTSDataset(DynamicBucketingDataset):
         assert cfg.padding is not None
         self.num_tokens = [int(fl.split('|')[3]) for fl in self.filelist]
         self.sampling_rate = cfg.sampling_rate
-        self.num_samples = cfg.num_samples
         self.train = train
         self.hop_length = cfg.hop_length
         self.padding = cfg.padding
@@ -548,7 +598,6 @@ class TTSCtxDataset(DynamicBucketingDataset):
         with open(cfg.filelist_path) as f:
             self.filelist = f.read().splitlines()
         self.sampling_rate = cfg.sampling_rate
-        self.num_samples = cfg.num_samples
         self.train = train
         self.hop_length = cfg.hop_length
         self.padding = cfg.padding
@@ -647,7 +696,6 @@ class E2ETTSCtxDataset(DynamicBucketingDataset):
         with open(cfg.filelist_path) as f:
             self.filelist = f.read().splitlines()
         self.sampling_rate = cfg.sampling_rate
-        self.num_samples = cfg.num_samples
         self.train = train
         self.hop_length = cfg.hop_length
         self.padding = cfg.padding
@@ -1007,5 +1055,23 @@ def test_tts_e2e():
         print('batch idx', i, 'batch size', batch[0].size(0))
 
 
+def test_voc():
+    cfg = DataConfig(
+        filelist_path="/Users/liupeng/wd_disk/dataset/LJSpeech-1.1/wav_filelist.train",
+        sampling_rate=22050,
+        batch_size=1,
+        num_workers=0,
+        cache=False,
+        task="voc",
+        hop_length=256,
+        padding="center",
+    )
+    dataset = VocosDataset(cfg, train=True)
+    sampler = DynamicBucketingSampler(dataset)
+    dataloader = DataLoader(dataset, batch_sampler=sampler, num_workers=0, collate_fn=voc_collate)
+    for i, batch in enumerate(dataloader):
+        print('batch idx', i, 'batch size', batch[0].size(0))
+
+
 if __name__ == '__main__':
-    test_tts_e2e()
+    test_voc()

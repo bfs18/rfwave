@@ -2,12 +2,14 @@
 import os
 import warnings
 import random
+import librosa
 import copy
 
 from bisect import bisect_right
 from typing import Iterable, Optional, Tuple, Union, List, Generator
 from dataclasses import dataclass
 from collections import deque
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -286,11 +288,19 @@ class DynamicBucketingDataset(torch.utils.data.Dataset):
         self.buckets = [deque() for _ in range(len(self.duration_bins) + 1)]
         self.cuts_iter = iter(self.cuts)
 
+    def get_name_duration(self, filelist_line):
+        fields = filelist_line.split('|')
+        if len(fields) > 1:
+            name, duration = fields[0], float(fields[-1])
+        else:
+            name = Path(filelist_line).stem
+            duration = librosa.get_duration(path=filelist_line)
+        return name, duration
+
     def filter_by_duration(self):
         filelist = []
         for l in self.filelist:
-            fields = l.split('|')
-            name, duration = fields[0], float(fields[-1])
+            name, duration = self.get_name_duration(l)
             if duration < self.filter_max_duration:
                 filelist.append(l)
         return filelist
@@ -298,8 +308,7 @@ class DynamicBucketingDataset(torch.utils.data.Dataset):
     def get_cuts(self, filelist):
         cuts = []
         for i, l in enumerate(filelist):
-            fields = l.split('|')
-            name, duration = fields[0], float(fields[-1])
+            name, duration = self.get_name_duration(l)
             cuts.append(Cut(index=i, name=name, duration=duration))
         return cuts
 
