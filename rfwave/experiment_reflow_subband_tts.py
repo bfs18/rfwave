@@ -478,16 +478,17 @@ class RectifiedFlow(nn.Module):
         phase_loss = compute_phase_loss(pred_if, targ_if)
         return phase_loss
 
-    def compute_rf_loss1(self, pred, target):
-        return F.mse_loss(pred, target)
+    def compute_rf_loss1(self, pred, target, mask_factor=None):
+        loss = F.mse_loss(pred, target, reduction='none').mean(dim=(1, 2))
+        return loss.mean() if mask_factor is None else (mask_factor * loss).mean()
 
-    def compute_rf_loss2(self, pred, target, bandwidth_id):
+    def compute_rf_loss2(self, pred, target, bandwidth_id, mask_factor=None):
         if self.wave:
             if self.time_balance_loss:
                 pred, target = self.time_balance_for_loss(pred, target)
             diff = pred - target
             diff = self._place_diff(diff, bandwidth_id)
-            loss = self.istft(diff).pow(2.).mean()
+            loss = self.istft(diff).pow(2.).mean(dim=(1, 2))
         else:
             if self.feature_loss:
                 if self.time_balance_loss:
@@ -496,13 +497,13 @@ class RectifiedFlow(nn.Module):
                 diff = (pred - target) * np.sqrt(self.head.n_fft).astype(np.float32)
                 diff = self._place_diff(diff, bandwidth_id)
                 diff = torch.einsum("bct,dc->bdt", diff, self.feature_weight)
-                feature_loss = torch.mean(diff ** 2) * self.num_bands
+                feature_loss = torch.mean(diff ** 2, dim=(1, 2)) * self.num_bands
                 loss = feature_loss
             else:
                 if self.time_balance_loss:
                     pred, target = self.time_balance_for_loss(pred, target)
-                loss = F.mse_loss(pred, target)
-        return loss
+                loss = F.mse_loss(pred, target, reduction='none').mean(dim=(1, 2))
+        return loss.mean() if mask_factor is None else (mask_factor * loss).mean()
 
     def split(self, feat):
         return torch.split(feat, [self.output_channels1, self.output_channels2], dim=1)
@@ -563,6 +564,10 @@ class RectifiedFlow(nn.Module):
         pred, opt_attn = self.get_pred(z_t, t, text, bandwidth_id, **kwargs)
         if mask is not None:
             pred = torch.where(mask.unsqueeze(1), pred, target)
+            mask_factor = mask.size(1) / mask.sum(1)
+        else:
+            mask_factor = None
+
         pred, z_t, t, target = [v.float() for v in (pred, z_t, t, target)]
         opt_attn = opt_attn.float() if opt_attn is not None else None
         t_ = t.view(-1, 1, 1)
@@ -574,8 +579,8 @@ class RectifiedFlow(nn.Module):
         target1, target2 = self.split(target)
         stft_loss = self.compute_stft_loss(z_t2, t, target2, pred2, bandwidth_id) if self.stft_loss else 0.
         phase_loss = self.compute_phase_loss(z_t2, t, target2, pred2, bandwidth_id) if self.phase_loss else 0.
-        loss1 = self.compute_rf_loss1(pred1, target1)
-        loss2 = self.compute_rf_loss2(pred2, target2, bandwidth_id)
+        loss1 = self.compute_rf_loss1(pred1, target1, mask_factor)
+        loss2 = self.compute_rf_loss2(pred2, target2, bandwidth_id, mask_factor)
         overlap_loss = self.compute_overlap_loss(pred2) if self.overlap_loss else 0.
         attn_loss = self.compute_alignment_loss(opt_attn, **kwargs)
         loss_dict = {"loss1": loss1, "loss2": loss2, "stft_loss": stft_loss, "phase_loss": phase_loss,
