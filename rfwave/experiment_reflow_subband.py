@@ -27,6 +27,16 @@ from rfwave.attention import sequence_mask
 from rfwave.dit import DiTRFBackbone
 
 
+def masked_mse_loss(pred, target, mask=None):
+    loss = F.mse_loss(pred, target, reduction='none')
+    if mask is None:
+        return loss.mean()
+    else:
+        loss = (loss * mask.unsqueeze(1)).mean(dim=(1, 2))
+        mask_factor = mask.size(1) / mask.sum(1)
+        return (loss * mask_factor).mean()
+
+
 class RectifiedFlow(nn.Module):
     def __init__(self, backbon: Backbone, head: FourierHead,
                  num_steps=10, feature_loss=False, wave=False, num_bands=8, p_uncond=0., guidance_scale=1.):
@@ -566,7 +576,8 @@ class VocosExp(pl.LightningModule):
             audio_hat_traj = self.reflow.sample_ode(features, N=100, **kwargs)
         audio_hat = audio_hat_traj[-1]
 
-        mel_loss = F.mse_loss(self.feature_extractor(audio_hat, **kwargs), features)
+        mask = sequence_mask(num_frames)
+        mel_loss = masked_mse_loss(self.feature_extractor(audio_hat, **kwargs), features, mask)
         rvm_loss = self.rvm(audio_hat.unsqueeze(1), audio_input.unsqueeze(1))
         phase_loss = compute_phase_error(audio_hat, audio_input, self.reflow.head.get_spec)
 

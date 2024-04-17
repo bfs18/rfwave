@@ -44,6 +44,16 @@ def sequence_mask_with_ctx(length, ctx_start=None, ctx_length=None, max_length=N
         return torch.logical_and(non_ctx, non_padding)
 
 
+def masked_mse_loss(pred, target, mask=None):
+    loss = F.mse_loss(pred, target, reduction='none')
+    if mask is None:
+        return loss.mean()
+    else:
+        loss = (loss * mask.unsqueeze(1)).mean(dim=(1, 2))
+        mask_factor = mask.size(1) / mask.sum(1)
+        return (loss * mask_factor).mean()
+
+
 class RectifiedFlow(nn.Module):
     def __init__(self, backbon: Backbone, head: FourierHead,
                  num_steps=10, feature_loss=False, wave=False, num_bands=8, intt=0., p_uncond=0., guidance_scale=1.):
@@ -817,8 +827,9 @@ class VocosExp(pl.LightningModule):
         audio_hat = audio_hat_traj[-1]
         mel_hat = mel_hat_traj[-1]
 
-        tandem_mel_loss = F.mse_loss(mel_hat, tandem_feat)
-        mel_loss = F.mse_loss(self.feature_extractor(audio_hat), mel)
+        mask = sequence_mask(ctx_kwargs['length']) if 'length' in ctx_kwargs else None
+        tandem_mel_loss = masked_mse_loss(mel_hat, tandem_feat, mask)
+        mel_loss = masked_mse_loss(self.feature_extractor(audio_hat), mel, mask)
         rvm_loss = self.rvm(audio_hat.unsqueeze(1), audio_input.unsqueeze(1))
         cond_mel_loss = (F.mse_loss(cond_mel_hat, mel) if cond_mel_hat is not None
                          else torch.zeros(1, device=self.device))
