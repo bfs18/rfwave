@@ -881,7 +881,7 @@ def e2e_tts_ctx_collate(data):
         y_ctx_pad[i, :ctx.size(0)] = ctx
     num_tokens_ = torch.tensor([ti[1] for ti in token_info])
     num_tokens = get_num_tokens(token_ids)
-    assert num_tokens_.sum() + len(data) == num_tokens.sum() + (token_ids != 0).sum()
+    assert num_tokens_.sum() + len(data) == num_tokens.sum() + (token_ids[:, -1] != 0).sum()
     ctx_start = torch.tensor([ti[3] for ti in token_info])
     ctx_n_frame = torch.tensor([ti[4] for ti in token_info])
     exp_scale = torch.tensor([ti[5] for ti in token_info])
