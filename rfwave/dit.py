@@ -301,6 +301,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             self.align_block = AlignmentBlock(dim, input_channels)
         else:
             self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
+            self.align_block = None
 
         self.module = DiTRFBackbone(
             input_channels=dim,

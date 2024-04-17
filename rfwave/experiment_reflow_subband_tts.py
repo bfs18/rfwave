@@ -488,7 +488,7 @@ class RectifiedFlow(nn.Module):
                 pred, target = self.time_balance_for_loss(pred, target)
             diff = pred - target
             diff = self._place_diff(diff, bandwidth_id)
-            loss = self.istft(diff).pow(2.).mean(dim=(1, 2))
+            loss = self.istft(diff).pow(2.).mean(dim=(1,))
         else:
             if self.feature_loss:
                 if self.time_balance_loss:
@@ -503,6 +503,8 @@ class RectifiedFlow(nn.Module):
                 if self.time_balance_loss:
                     pred, target = self.time_balance_for_loss(pred, target)
                 loss = F.mse_loss(pred, target, reduction='none').mean(dim=(1, 2))
+        rpt = mask_factor.size(0) // loss.size(0)
+        mask_factor = mask_factor.reshape(loss.size(0), rpt, *mask_factor.shape[1:])[:, 0]
         return loss.mean() if mask_factor is None else (mask_factor * loss).mean()
 
     def split(self, feat):
