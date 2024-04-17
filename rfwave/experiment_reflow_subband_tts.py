@@ -503,9 +503,12 @@ class RectifiedFlow(nn.Module):
                 if self.time_balance_loss:
                     pred, target = self.time_balance_for_loss(pred, target)
                 loss = F.mse_loss(pred, target, reduction='none').mean(dim=(1, 2))
-        rpt = mask_factor.size(0) // loss.size(0)
-        mask_factor = mask_factor.reshape(loss.size(0), rpt, *mask_factor.shape[1:])[:, 0]
-        return loss.mean() if mask_factor is None else (mask_factor * loss).mean()
+        if mask_factor is not None:
+            rpt = mask_factor.size(0) // loss.size(0)
+            mask_factor = mask_factor.reshape(loss.size(0), rpt)[:, 0]
+            return (mask_factor * loss).mean()
+        else:
+            return loss.mean()
 
     def split(self, feat):
         return torch.split(feat, [self.output_channels1, self.output_channels2], dim=1)
