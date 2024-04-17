@@ -884,7 +884,14 @@ def e2e_tts_ctx_collate(data):
     assert num_tokens_.sum() + len(data) == num_tokens.sum() + (token_ids[:, -1] != 0).sum()
     ctx_start = torch.tensor([ti[3] for ti in token_info])
     ctx_n_frame = torch.tensor([ti[4] for ti in token_info])
-    exp_scale = torch.tensor([ti[5] for ti in token_info])
+    exp_scale_ = torch.tensor([ti[6] for ti in token_info])
+    #TODO: a special case, not correct. #tok + 1 = max #tok
+    special_exp_scale = torch.round(num_tokens_ * exp_scale_) / (num_tokens_ + 1)
+    exp_scale = torch.where(num_tokens_ == num_tokens_.max() - 1, special_exp_scale, exp_scale_)
+    # assert torch.all(torch.tensor([yl // 256 + 1 for yl in y_lens]) == get_exp_length(num_tokens, exp_scale)), \
+    #     (f'num_tokens_: {num_tokens_}, num_tokens:{num_tokens}, frames: {[yl // 256 + 1 for yl in y_lens]}, '
+    #      f'exp_scal1:{torch.round(exp_scale_ * num_tokens_).long()} '
+    #      f'exp_scale2: {get_exp_length(num_tokens, exp_scale)}')
     return y, [token_ids, num_tokens, y_ctx_pad, ctx_start, ctx_n_frame, exp_scale]
 
 
@@ -1052,7 +1059,7 @@ def test_tts_ctx_sentence():
 
 def test_tts_e2e():
     cfg = DataConfig(
-        filelist_path="/data1/corpus/LJSpeech-1.1/synta_filelist.valid",
+        filelist_path="/Users/liupeng/wd_disk/dataset/LJSpeech-1.1/synta_filelist.train",
         sampling_rate=22050,
         num_samples=65280,
         batch_size=8,
@@ -1061,7 +1068,7 @@ def test_tts_e2e():
         task="e2e",
         hop_length=256,
         padding="center",
-        phoneset="/data1/corpus/LJSpeech-1.1/synta_phoneset.th",
+        phoneset="/Users/liupeng/wd_disk/dataset/LJSpeech-1.1/synta_phoneset.th",
     )
     dataset = E2ETTSCtxDataset(cfg, train=True)
     sampler = DynamicBucketingSampler(dataset)
@@ -1091,4 +1098,5 @@ def test_voc():
 
 
 if __name__ == '__main__':
-    test_voc()
+    # test_voc()
+    test_tts_e2e()
