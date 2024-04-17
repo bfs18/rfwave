@@ -531,7 +531,7 @@ class VocosExp(pl.LightningModule):
         bi = kwargs.get("encodec_bandwidth_id", None)
         kwargs['start'] = start
         kwargs['length'] = num_frames
-        mask = sequence_mask(num_frames)
+        mask = sequence_mask(num_frames + 1)[:, :-1]  # 1 padding frame got trained for layer norm
         mask = mask.repeat_interleave(z_t.size(0) // mask.size(0), 0)
         loss, loss_dict = self.reflow.compute_loss(
             z_t, t, target, features_ext, bandwidth_id=bandwidth_id, encodec_bandwidth_id=bi, mask=mask, **kwargs)

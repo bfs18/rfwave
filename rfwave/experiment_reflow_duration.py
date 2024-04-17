@@ -16,6 +16,8 @@ from rfwave.lr_schedule import get_cosine_schedule_with_warmup
 from rfwave.logit_normal import LogitNormal
 from rfwave.helpers import save_code
 from rfwave.dit import DiTRFBackbone
+from rfwave.attention import sequence_mask
+from rfwave.dataset import get_num_tokens
 
 
 class RectifiedFlow(nn.Module):
@@ -82,13 +84,14 @@ class RectifiedFlow(nn.Module):
                 traj.append(self.dur_processor.return_sample(z.detach()))
         return traj
 
-    def compute_loss(self, z_t, t, target, text):
+    def compute_loss(self, z_t, t, target, text, mask=None):
         if self.cfg and np.random.uniform() < self.p_uncond:
             text = torch.ones_like(text) * text.mean(dim=(0, 2), keepdim=True)
         pred = self.get_pred(z_t, t, text)
+        if mask is not None:
+            pred = torch.where(mask.unsqueeze(1), pred, target)
         pred, z_t, t, target = [v.float() for v in (pred, z_t, t, target)]
-        mask = (text.abs().sum(1, keepdim=True) > 0.).float()
-        loss = ((pred - target) ** 2 * mask).sum() / mask.sum()
+        loss = F.mse_loss(pred, target)
         return loss
 
 
@@ -152,7 +155,9 @@ class VocosExp(pl.LightningModule):
         opt_gen.zero_grad()
         features = self.input_adaptor(token_ids)
         z_t, t, target = self.reflow.get_train_tuple(features, durs)
-        loss = self.reflow.compute_loss(z_t, t, target, features)
+        num_tokens = get_num_tokens(token_ids, padding_value=0)
+        mask = sequence_mask(num_tokens + 1)[:, :-1]  # 1 padding frame got trained for layer norm
+        loss = self.reflow.compute_loss(z_t, t, target, features, mask)
         self.manual_backward(loss)
         opt_gen.step()
         sch_gen.step()

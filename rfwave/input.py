@@ -5,6 +5,7 @@ from rfwave.models import ConvNeXtV2Block
 from rfwave.attention import (
     Attention, CrossAttention, FeedForward, MLP, ConvFeedForward, RMSNorm, apply_rotary_emb,
     get_pos_embed_indices, score_mask, precompute_freqs_cis, score_mask_from_bool_mask, modulate, _get_start)
+from rfwave.dataset import get_num_tokens
 
 import torch
 import math
@@ -115,26 +116,26 @@ class CharInputAdaptor(InputAdaptor):
         h = self.dropout(h)
 
         freqs_cis = self.get_pos_embed(phone_start, num_phones)
-        phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
+        # phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
+        phone_mask = score_mask(get_num_tokens(tokens, self.pad_token))
 
         for layer in self.layers:
             h = layer(h, freqs_cis, mask=phone_mask)
         h = self.attn_norm(h)
         h = self.attn_output(h)
-        non_padding = (tokens != self.pad_token).type_as(h)
-        return h * non_padding.unsqueeze(2)
+        return h
 
     def expand(self, encoded_phone, lengths):
-        out = []
-        for phn, l in zip(encoded_phone, lengths):
-            out.append(phn.repeat_interleave(l, dim=0))
-        return torch.stack(out, dim=0)
+        l = torch.max(lengths.sum(1))
+        out = torch.zeros([encoded_phone.size(0), l, encoded_phone.size(2)], device=encoded_phone.device)
+        for i, (phn, l) in enumerate(zip(encoded_phone, lengths)):
+            out[i, :l.sum()] = phn.repeat_interleave(l, dim=0)
+        return out
 
     def forward(self, tokens: torch.Tensor, token_frames: torch.Tensor,
                 phone_start: torch.Tensor, frame_start: torch.Tensor, *args):
         encoded_phone = self.forward_phone(tokens, phone_start)
         expanded_phone = self.expand(encoded_phone, token_frames)
-        non_padding = (expanded_phone.abs().sum(2) > 0.).type_as(expanded_phone)
         num_frames = torch.sum(token_frames, dim=1).long()
         freqs_cis = self.get_pos_embed(frame_start, num_frames.max())
         rpt = expanded_phone.size(-1) // freqs_cis.size(-1)
@@ -142,7 +143,6 @@ class CharInputAdaptor(InputAdaptor):
         expanded_phone = apply_rotary_emb(expanded_phone, freqs_cis)
         output = self.convnext(expanded_phone.transpose(1, 2))
         output = self.output(output.transpose(1, 2))
-        output = output * non_padding.unsqueeze(2)
         return output.transpose(1, 2)
 
 
@@ -355,15 +355,15 @@ class CtxCharInputAdaptor(InputAdaptor):
         h = self.dropout(h)
 
         freqs_cis = self.get_pos_embed(phone_start, num_phones)
-        phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
+        # phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
+        phone_mask = score_mask(get_num_tokens(tokens, self.pad_token))
 
         for layer in self.layers:
             h = layer(h, freqs_cis, mask=phone_mask)
 
         h = self.attn_norm(h)
         h = self.attn_output(h)
-        non_padding = (tokens != self.pad_token).type_as(h)
-        return h * non_padding.unsqueeze(2)
+        return h
 
     def expand(self, encoded_phone, lengths):
         l = torch.max(lengths.sum(1))
@@ -390,7 +390,6 @@ class CtxCharInputAdaptor(InputAdaptor):
         output = self.ctx_attn(
             expanded_phone, context, freqs_cis, ctx_freqs_cis, x_mask, ctx_mask)
 
-        output = output * non_padding.unsqueeze(2)
         return output.transpose(1, 2)
 
 
@@ -455,15 +454,15 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         h = self.dropout(h)
 
         freqs_cis = self.get_pos_embed(phone_start, num_phones)
-        phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
+        # phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
+        phone_mask = score_mask(get_num_tokens(tokens, self.pad_token))
 
         for layer in self.layers:
             h = layer(h, freqs_cis, mask=phone_mask)
 
         h = self.attn_norm(h)
         h = self.attn_output(h)
-        non_padding = (tokens != self.pad_token).type_as(h)
-        return h * non_padding.unsqueeze(2)
+        return h
 
     def expand(self, encoded_phone, lengths):
         l = torch.max(lengths.sum(1))
@@ -514,7 +513,6 @@ class Ctx2CharInputAdaptor(InputAdaptor):
         output = self.ctx_attn(
             expanded_phone, context, freqs_cis, ctx_freqs_cis, x_mask, ctx_mask)
 
-        output = output * non_padding.unsqueeze(2)
         return output.transpose(1, 2)
 
 
@@ -565,15 +563,14 @@ class DurInputAdaptor(InputAdaptor):
         phone_start = torch.zeros([_bsz], dtype=torch.long, device=h.device)
 
         freqs_cis = self.get_pos_embed(phone_start, num_phones)
-        phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
+        # phone_mask = score_mask_from_bool_mask(tokens == self.pad_token)
+        phone_mask = score_mask(get_num_tokens(tokens, self.pad_token))
 
         for layer in self.layers:
             h = layer(h, freqs_cis, mask=phone_mask)
         h = self.attn_norm(h)
         h = self.attn_output(h)
-        non_padding = (tokens != self.pad_token).type_as(h)
-        out = h * non_padding.unsqueeze(2)
-        return out.transpose(1, 2)
+        return h.transpose(1, 2)
 
 
 class E2ECtxCharInputAdaptor(InputAdaptor):
@@ -603,10 +600,10 @@ class InputAdaptorProject(nn.Module):
         super().__init__()
         self.linear = nn.Linear(input_channels, output_channels)
 
-    def forward(self, x, pad_val=0.):
+    def forward(self, x, padding_val=0.):
         non_padding = (x.abs().sum(1, keepdim=True) > 0.).type_as(x)
         out = self.linear(x.transpose(1, 2)).transpose(1, 2)
-        return out * non_padding + pad_val * (1. - non_padding)
+        return out * non_padding + padding_val * (1. - non_padding)
 
 
 if __name__ == '__main__':

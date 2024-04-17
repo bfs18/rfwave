@@ -27,10 +27,12 @@ from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_err
 from rfwave.feature_weight import get_feature_weight, get_feature_weight2
 from rfwave.dit import DiTRFTTSMultiTaskBackbone, compute_alignment_loss
 from rfwave.logit_normal import LogitNormal
+from rfwave.dataset import get_exp_length
 
 
 def sequence_mask_with_ctx(length, ctx_start=None, ctx_length=None, max_length=None):
-    non_padding = sequence_mask(length, max_length)
+    non_padding = sequence_mask(length + 1, max_length)
+    non_padding = non_padding[:, :-1]  # 1 padding frame got trained for layer norm
     if ctx_length is None or ctx_start is None:
         return non_padding
     else:
@@ -714,7 +716,8 @@ class VocosExp(pl.LightningModule):
             assert len(phone_info) == 6
             phone_info[2] = self.feature_extractor(phone_info[2])
             # num_tokens * epx_scale to get num_frames
-            length = torch.round(phone_info[1] * phone_info[5]).long()
+            # length = torch.round(phone_info[1] * phone_info[5]).long()
+            length = get_exp_length(phone_info[1], phone_info[5])
             pi_kwargs['num_tokens'] = phone_info[1]
             pi_kwargs['ctx_length'] = phone_info[4]
             pi_kwargs['token_exp_scale'] = phone_info[5]

@@ -15,6 +15,20 @@ from torch.nn import functional as F
 torch.set_num_threads(1)
 
 
+def get_num_tokens(tokens, padding_value=0):
+    # take 1 pad in to consideration.
+    num_tokens = (tokens != padding_value).sum(1)
+    num_tokens += (tokens[:, -1] == padding_value)
+    return num_tokens
+
+
+def get_exp_length(num_tokens, token_exp_scale):
+    max_val = num_tokens.max()
+    num_tokens = torch.where(num_tokens == max_val, num_tokens, num_tokens - 1)
+    length = torch.round(num_tokens * token_exp_scale).long()
+    return length
+
+
 @dataclass
 class DataConfig:
     filelist_path: str
@@ -796,7 +810,7 @@ def tts_collate(data):
     token_info = [d[1] for d in data]
     num_phones = [ti[0].size(0) for ti in token_info]
     num_frames = [torch.sum(ti[1]) for ti in token_info]
-    max_num_phone = max(num_phones) + 1  # an extra phone for expanded padding
+    max_num_phone = max(num_phones)  # + 1 an extra phone for expanded padding
     max_num_frame = max(num_frames)
     y = torch.zeros([len(data), max_y_len], dtype=torch.float)
     token_ids = torch.zeros([len(data), max_num_phone], dtype=torch.long)
@@ -805,8 +819,8 @@ def tts_collate(data):
         y[i, :y_lens[i]] = data[i][0]
         token_ids[i, :ti.size(0)] = ti
         durations[i, :ti.size(0)] = d
-        token_ids[i, -1] = 0  # for expanded padding
-        durations[i, -1] = max_num_frame - torch.sum(d)
+        # token_ids[i, -1] = 0  # for expanded padding
+        # durations[i, -1] = max_num_frame - torch.sum(d)
     start_phone_idx = torch.tensor([ti[2] for ti in token_info])
     start_frame = torch.tensor([ti[3] for ti in token_info])
     return y, [token_ids, durations, start_phone_idx, start_frame]
@@ -818,7 +832,7 @@ def tts_ctx_collate(data):
     token_info = [d[1] for d in data]
     num_phones = [ti[0].size(0) for ti in token_info]
     num_frames = [torch.sum(ti[1]) for ti in token_info]
-    max_num_phones = max(num_phones) + 1  # an extra phone for expanded padding
+    max_num_phones = max(num_phones)  # + 1 an extra phone for expanded padding
     max_num_frame = max(num_frames)
     y = torch.zeros([len(data), max_y_len], dtype=torch.float)
     y_ctx = [ti[5] for ti in token_info]
@@ -834,8 +848,8 @@ def tts_ctx_collate(data):
         y[i, :y_lens[i]] = data[i][0]
         token_ids[i, :ti.size(0)] = ti
         durations[i, :ti.size(0)] = d
-        token_ids[i, -1] = 0  # for expanded padding
-        durations[i, -1] = max_num_frame - torch.sum(d)
+        # token_ids[i, -1] = 0  # for expanded padding
+        # durations[i, -1] = max_num_frame - torch.sum(d)
         y_ctx_pad[i, :ctx.size(0)] = ctx
         ctx_token_ids[i, :cti.size(0)] = cti
         ctx_durations[i, :cd.size(0)] = cd
@@ -844,7 +858,8 @@ def tts_ctx_collate(data):
     num_frames = torch.tensor([ti[4] for ti in token_info])
     ctx_start_frame = torch.tensor([ti[6] for ti in token_info])
     ctx_n_frame = torch.tensor([ti[7] for ti in token_info])
-    assert torch.all(durations[:, :-1].sum(1) == num_frames)
+    # assert torch.all(durations[:, :-1].sum(1) == num_frames)
+    assert torch.all(durations.sum(1) == num_frames)
     return y, [token_ids, durations, start_phone_idx, start_frame, num_frames, y_ctx_pad,
                ctx_start_frame, ctx_n_frame, ctx_token_ids, ctx_durations]
 
@@ -864,7 +879,9 @@ def e2e_tts_ctx_collate(data):
         y[i, :y_lens[i]] = data[i][0]
         token_ids[i, :ti.size(0)] = ti
         y_ctx_pad[i, :ctx.size(0)] = ctx
-    num_tokens = torch.tensor([ti[1] for ti in token_info])
+    num_tokens_ = torch.tensor([ti[1] for ti in token_info])
+    num_tokens = get_num_tokens(token_ids)
+    assert num_tokens_.sum() + len(data) == num_tokens.sum() + (token_ids != 0).sum()
     ctx_start = torch.tensor([ti[3] for ti in token_info])
     ctx_n_frame = torch.tensor([ti[4] for ti in token_info])
     exp_scale = torch.tensor([ti[5] for ti in token_info])

@@ -8,6 +8,7 @@ from rfwave.models import Backbone, Base2FourierFeatures
 from rfwave.input import ModelArgs, ContextBlock, AlignmentBlock
 from rfwave.attention import (Attention, FeedForward, ConvFeedForward, MLP, precompute_freqs_cis,  RMSNorm,
                               get_pos_embed_indices, modulate, score_mask, _get_len, _get_start)
+from rfwave.dataset import get_exp_length
 
 
 class DiTBlock(nn.Module):
@@ -345,7 +346,8 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         z_t1 = self.z_t1_proj(z_t1)
 
         start = _get_start(z_t, None)  # always start from 0 for sentence training.
-        length = torch.round(num_tokens * token_exp_scale).long()
+        # length = torch.round(num_tokens * token_exp_scale).long()
+        length = get_exp_length(num_tokens, token_exp_scale)
         z_mask = score_mask(length)
         z_freq_cis = self.get_pos_embed(start, length.max())
 
@@ -384,7 +386,8 @@ def compute_alignment_loss(attn, num_tokens, token_exp_scale):
     rpt = bsz // num_tokens.size(0)
     num_tokens = num_tokens.repeat_interleave(rpt, 0)
     token_exp_scale = token_exp_scale.repeat_interleave(rpt, 0)
-    length = torch.round(num_tokens * token_exp_scale).long()
+    # length = torch.round(num_tokens * token_exp_scale).long()
+    length = get_exp_length(num_tokens, token_exp_scale)
     target = torch.zeros([bsz, num_tokens.max()], device=attn.device, dtype=torch.long)
     for i, n_tok in enumerate(num_tokens):
         target[i, :n_tok] = torch.arange(1, n_tok + 1, device=attn.device)
