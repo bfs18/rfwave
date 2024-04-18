@@ -884,7 +884,7 @@ def e2e_tts_ctx_collate(data):
     assert num_tokens_.sum() + len(data) == num_tokens.sum() + (token_ids[:, -1] != 0).sum()
     ctx_start = torch.tensor([ti[3] for ti in token_info])
     ctx_n_frame = torch.tensor([ti[4] for ti in token_info])
-    exp_scale_ = torch.tensor([ti[6] for ti in token_info])
+    exp_scale_ = torch.tensor([ti[5] for ti in token_info])
     #TODO: a special case, not correct. #tok + 1 = max #tok
     special_exp_scale = torch.round(num_tokens_ * exp_scale_) / (num_tokens_ + 1)
     exp_scale = torch.where(num_tokens_ == num_tokens_.max() - 1, special_exp_scale, exp_scale_)
