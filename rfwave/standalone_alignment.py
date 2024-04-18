@@ -91,13 +91,23 @@ class StandaloneAlignment(torch.nn.Module):
         eps = 1e-8
         attn = -temp * attn.sum(1, keepdim=True)
         if attn_prior is not None:
-            attn = self.log_softmax(attn) + torch.log(attn_prior[:, None] + eps)
+            attn = self.log_softmax(attn) + torch.log(attn_prior.unsqueeze(1) + eps)
         if mask is not None:
             attn = attn + mask
 
         attn_logprob = attn.clone()
         attn = self.softmax(attn)  # softmax along T2
         return attn, attn_logprob
+
+
+def gaussian_prior(num_tokens, token_exp_scale, gamma=0.2, strength=0.1):
+    length = get_exp_length(num_tokens, token_exp_scale)
+    ts = torch.arange(length.max(), device=num_tokens.device).unsqueeze(0) / length.unsqueeze(1)
+    ns = torch.arange(num_tokens.max(), device=num_tokens.device).unsqueeze(0) / num_tokens.unsqueeze(1)
+    # ts[ts >= 1.] = 0.
+    # ns[ns >= 1.] = 0.
+    prior = torch.exp(-(ts.unsqueeze(2) - ns.unsqueeze(1)) ** 2 / (2 * gamma ** 2))
+    return prior * strength
 
 
 def standalone_compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_logprob=-1):
@@ -135,24 +145,24 @@ class EmptyAlignmentBlock(torch.nn.Module):
         return out
 
 
-def beta_binomial_prior_distribution(phoneme_count, mel_count,
-                                     scaling_factor=0.05):
-    P = phoneme_count
-    M = mel_count
-    x = np.arange(0, P)
-    mel_text_probs = []
-    for i in range(1, M+1):
-        a, b = scaling_factor*i, scaling_factor*(M+1-i)
-        rv = betabinom(P - 1, a, b)
-        mel_i_prob = rv.pmf(x)
-        mel_text_probs.append(mel_i_prob)
-    return torch.tensor(np.array(mel_text_probs))
-
-
 if __name__ == '__main__':
-    attn_ = np.load(sys.argv[1])
-    attn = attn_.squeeze()
-    save_plot('orig.png', attn)
-    binarized = mas_width1(attn)
-    save_plot('binarized.png', binarized)
-
+    # attn_ = np.load(sys.argv[1])
+    # attn = attn_.squeeze()
+    # save_plot('orig.png', attn)
+    # binarized = mas_width1(attn)
+    # save_plot('binarized.png', binarized)
+    num_tokens = torch.tensor([10, 17])
+    token_exp_scale = torch.tensor([8.7, 7.3])
+    prior = gaussian_prior(num_tokens, token_exp_scale, gamma=0.2)
+    print(prior.shape)
+    import matplotlib
+    matplotlib.use('TkAgg')
+    from matplotlib import pyplot
+    pyplot.imshow(prior[0].numpy(), origin='lower', aspect='auto')
+    pyplot.colorbar()
+    pyplot.tight_layout()
+    pyplot.show()
+    pyplot.imshow(prior[1].numpy(), origin='lower', aspect='auto')
+    pyplot.colorbar()
+    pyplot.tight_layout()
+    pyplot.show()

@@ -26,7 +26,7 @@ from rfwave.helpers import save_code
 from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_error, compute_instantaneous_frequency
 from rfwave.feature_weight import get_feature_weight, get_feature_weight2
 from rfwave.dit import DiTRFTTSMultiTaskBackbone, DiTRFE2ETTSMultiTaskBackbone, compute_alignment_loss
-from rfwave.standalone_alignment import StandaloneAlignment, standalone_compute_alignment_loss
+from rfwave.standalone_alignment import StandaloneAlignment, standalone_compute_alignment_loss, gaussian_prior
 from rfwave.logit_normal import LogitNormal
 from rfwave.dataset import get_exp_length
 
@@ -776,7 +776,8 @@ class VocosExp(pl.LightningModule):
         # tokens contains text token and reference mel.
         tokens, _ = torch.split(tokens, [num_tokens.max(), ctx_length.max()], dim=2)
         mask = score_mask(num_tokens)
-        attn, attn_logprob = self.standalone_align(mel, tokens, mask, attn_prior=None)
+        attn_prior = gaussian_prior(num_tokens, token_exp_scale)
+        attn, attn_logprob = self.standalone_align(mel, tokens, mask, attn_prior=attn_prior)
         sa_loss = standalone_compute_alignment_loss(attn_logprob, num_tokens, token_exp_scale)
         return attn, sa_loss
 
@@ -826,6 +827,7 @@ class VocosExp(pl.LightningModule):
                  "train/mel_loss": mel_loss, "train/tandem_mel_loss": tandem_mel_loss},
                 step=self.global_step)
             attn = loss_dict.pop('attn', None)
+            loss_dict['sa_attn_loss'] = sa_loss
             if attn is not None:
                 attn = attn[0, 0].detach().cpu().numpy()
                 self.logger.experiment.log(
