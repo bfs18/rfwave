@@ -56,11 +56,11 @@ class StandaloneAlignment(torch.nn.Module):
         self.log_softmax = torch.nn.LogSoftmax(dim=3)
 
         self.key_proj = nn.Sequential(
-            nn.Conv1d(n_mel_channels, n_channels, 1), nn.LayerNorm(n_channels),
+            nn.Conv1d(n_text_channels, n_channels, 1),
             *[ConvNeXtV2Block(n_channels, n_channels * 3) for _ in range(num_layers)])
 
         self.query_proj = nn.Sequential(
-            nn.Conv1d(n_text_channels, n_channels, 1), nn.LayerNorm(n_channels),
+            nn.Conv1d(n_mel_channels, n_channels, 1),
             *[ConvNeXtV2Block(n_channels, n_channels * 3) for _ in range(num_layers)])
 
     def forward(self, queries, keys, mask=None, attn_prior=None):
@@ -92,13 +92,10 @@ class StandaloneAlignment(torch.nn.Module):
         attn = -temp * attn.sum(1, keepdim=True)
         if attn_prior is not None:
             attn = self.log_softmax(attn) + torch.log(attn_prior[:, None] + eps)
+        if mask is not None:
+            attn = attn + mask
 
         attn_logprob = attn.clone()
-
-        if mask is not None:
-            attn.data.masked_fill_(
-                mask.permute(0, 2, 1).unsqueeze(2), -float("inf"))
-
         attn = self.softmax(attn)  # softmax along T2
         return attn, attn_logprob
 
@@ -132,7 +129,7 @@ class EmptyAlignmentBlock(torch.nn.Module):
 
     def forward(self, x, context, attn, mod_c):
         context = self.ctx_proj(context).transpose(1, 2)
-        context_time_expanded = torch.bmm(attn, context)
+        context_time_expanded = torch.bmm(attn.squeeze(1), context)
         gate = self.adaLN_modulation(mod_c)
         out = x + gate.unsqueeze(1) * context_time_expanded
         return out

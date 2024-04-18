@@ -307,7 +307,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             self.align_block = AlignmentBlock(dim, input_channels)
         elif self.standalone_align:
             self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
-            self.standalone_align = EmptyAlignmentBlock(dim, input_channels)
+            self.sa_align_block = EmptyAlignmentBlock(dim, input_channels)
         else:
             self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
 
@@ -381,9 +381,9 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             ctx = self.cross_attn2(ctx, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
         elif self.standalone_align:
             assert standalone_attn is not None
-            ctx = self.standalone_align(z_t1, x_token, standalone_attn, mod_c=te)
+            ctx = self.sa_align_block(z_t1, x_token, standalone_attn, mod_c=te)
             ctx = self.cross_attn(ctx, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
-            attn = None
+            attn = standalone_attn
         else:
             ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
             attn = None

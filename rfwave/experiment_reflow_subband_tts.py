@@ -20,7 +20,7 @@ from rfwave.multi_band_processor import MultiBandProcessor, PQMFProcessor, STFTP
 from rfwave.rvm import RelativeVolumeMel
 from rfwave.lr_schedule import get_cosine_schedule_with_warmup
 from rfwave.input import (InputAdaptor, InputAdaptorProject, CtxCharInputAdaptor, Ctx2CharInputAdaptor,
-                          E2ECtxCharInputAdaptor, CharInputAdaptor)
+                          E2ECtxCharInputAdaptor, CharInputAdaptor, score_mask)
 from rfwave.attention import sequence_mask
 from rfwave.helpers import save_code
 from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_error, compute_instantaneous_frequency
@@ -295,10 +295,11 @@ class RectifiedFlow(nn.Module):
         return text, bandwidth_id, (zt, t, target)
 
     def get_pred(self, z_t, t, text, bandwidth_id, **kwargs):
-        _backbone_keys = ['start', 'length', 'num_tokens', 'ctx_length', 'token_exp_scale']
+        _backbone_keys = ['start', 'length', 'num_tokens', 'ctx_length',
+                          'token_exp_scale', 'standalone_attn']
         backbone_kwargs = {}
         for k in _backbone_keys:
-            if k in kwargs:
+            if k in kwargs and kwargs[k] is not None:
                 n_rpt = z_t.size(0) // kwargs[k].size(0)
                 backbone_kwargs[k] = torch.repeat_interleave(kwargs[k], n_rpt, 0)
         pred = self.backbone(z_t, t, text, bandwidth_id, **backbone_kwargs)
@@ -567,10 +568,9 @@ class RectifiedFlow(nn.Module):
         pred2 = torch.where(m, zero2, pred2)
         return pred1, pred2
 
-    @staticmethod
-    def compute_alignment_loss(opt_attn, **kwargs):
-        if opt_attn is not None:
-            assert 'num_tokens' in kwargs and 'token_exp_scale' in kwargs
+    def compute_alignment_loss(self, opt_attn, **kwargs):
+        if self.backbone.rad_align:
+            assert 'num_tokens' in kwargs and 'token_exp_scale' in kwargs and opt_attn is not None
             attn_loss = compute_alignment_loss(opt_attn, kwargs['num_tokens'], kwargs['token_exp_scale'])
         else:
             attn_loss = 0.
@@ -664,7 +664,8 @@ class VocosExp(pl.LightningModule):
         self.standalone_align = standalone_align
 
         if standalone_align is not None:
-            assert isinstance(backbone, DiTRFE2ETTSMultiTaskBackbone)
+            assert isinstance(backbone._orig_mod if hasattr(backbone, '_orig_mod') else backbone,
+                              DiTRFE2ETTSMultiTaskBackbone)
             assert not backbone.rad_align and backbone.standalone_align
         assert input_adaptor is not None
         self.aux_loss = False
@@ -772,9 +773,13 @@ class VocosExp(pl.LightningModule):
             raise ValueError(f"Invalid phone_info, #fields {len(phone_info)}")
         return phone_info, pi_kwargs, ctx_kwargs
 
-    def compute_sa_align(self, mel, text, text_length):
-        mask = sequence_mask(text_length)
-        attn, attn_logprob = self.standalone_align(mel, text, mask)
+    def compute_sa_align(self, mel, tokens, num_tokens, token_exp_scale, ctx_length, *args, **kwargs):
+        # tokens contains text token and reference mel.
+        tokens, _ = torch.split(tokens, [num_tokens.max(), ctx_length.max()], dim=2)
+        mask = score_mask(num_tokens)
+        attn, attn_logprob = self.standalone_align(mel, tokens, mask, attn_prior=None)
+        sa_loss = standalone_compute_alignment_loss(attn_logprob, num_tokens, token_exp_scale)
+        return attn, sa_loss
 
     def on_before_optimizer_step(self, optimizer):
         # Note: `unscale` happens after the closure is executed, but before the `on_before_optimizer_step` hook.
@@ -792,14 +797,17 @@ class VocosExp(pl.LightningModule):
 
         opt_gen.zero_grad()
         text = self.input_adaptor(*phone_info)
+        sa_attn, sa_loss = (self.compute_sa_align(mel, text, **pi_kwargs)
+                            if self.standalone_align else (None, 0.))
         cond_mel_loss = self.compute_aux_loss(text, audio_input, self.aux_type) if self.aux_loss else 0.
         text_ext, bandwidth_id, (z_t, t, target) = self.reflow.get_train_tuple(text, tandem_feat, audio_input)
         kwargs.update(**pi_kwargs)
         ctx_mask = sequence_mask_with_ctx(**ctx_kwargs)
         ctx_mask = ctx_mask.repeat_interleave(z_t.size(0) // ctx_mask.size(0), 0)
         loss, loss_dict = self.reflow.compute_loss(
-            z_t, t, target, text_ext, bandwidth_id=bandwidth_id, mask=ctx_mask, **kwargs)
-        loss = loss + cond_mel_loss
+            z_t, t, target, text_ext, bandwidth_id=bandwidth_id, mask=ctx_mask,
+            standalone_attn=sa_attn, **kwargs)
+        loss = loss + cond_mel_loss + sa_loss
         self.manual_backward(loss)
         opt_gen.step()
         sch_gen.step()
@@ -836,8 +844,11 @@ class VocosExp(pl.LightningModule):
             mel = self.feature_extractor(audio_input, **kwargs)
             tandem_feat = mel if self.tandem_type == "mel" else self.get_log_spec(audio_input)
             text = self.input_adaptor(*phone_info)
+            sa_attn, sa_loss = (self.compute_sa_align(mel, text, **pi_kwargs)
+                                if self.standalone_align else (None, 0.))
             kwargs.update(**pi_kwargs)
             kwargs['out_length'] = mel.size(2)
+            kwargs['standalone_attn'] = sa_attn
             mel_hat_traj, audio_hat_traj = self.reflow.sample_ode(text, N=100, **kwargs)
             cond_mel_hat = self.input_adaptor_proj(text) if self.aux_loss else None
         audio_hat = audio_hat_traj[-1]
