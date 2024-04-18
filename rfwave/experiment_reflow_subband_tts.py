@@ -654,8 +654,9 @@ class VocosExp(pl.LightningModule):
         self.feature_extractor = feature_extractor
 
         if torch_compile:
-            input_adaptor = torch.compile(input_adaptor)
-            backbone = torch.compile(backbone)
+            # input_adaptor = torch.compile(input_adaptor)
+            # backbone = torch.compile(backbone)
+            backbone.module = torch.compile(backbone.module)
 
         self.input_adaptor = input_adaptor
         self.reflow = RectifiedFlow(
@@ -664,8 +665,7 @@ class VocosExp(pl.LightningModule):
         self.standalone_align = standalone_align
 
         if standalone_align is not None:
-            assert isinstance(backbone._orig_mod if hasattr(backbone, '_orig_mod') else backbone,
-                              DiTRFE2ETTSMultiTaskBackbone)
+            assert isinstance(getattr(backbone, "_orig_mod", backbone), DiTRFE2ETTSMultiTaskBackbone)
             assert not backbone.rad_align and backbone.standalone_align
         assert input_adaptor is not None
         self.aux_loss = False
@@ -726,8 +726,7 @@ class VocosExp(pl.LightningModule):
     def process_context(self, phone_info):
         pi_kwargs = {}
         ctx_kwargs = {}
-        input_adaptor = (self.input_adaptor._orig_mod if hasattr(self.input_adaptor, '_orig_mod')
-                         else self.input_adaptor)
+        input_adaptor = getattr(self.input_adaptor, "_orig_mod", self.input_adaptor)
         if isinstance(input_adaptor, CharInputAdaptor):
             assert len(phone_info) == 4
             pi_kwargs['start'] = phone_info[3]
@@ -816,6 +815,7 @@ class VocosExp(pl.LightningModule):
         if self.global_step % 1000 == 0 and self.global_rank == 0:
             with torch.no_grad():
                 kwargs['out_length'] = z_t.size(2)
+                kwargs['standalone_attn'] = sa_attn
                 mel_hat_traj, audio_hat_traj = self.reflow.sample_ode(text, N=100, **kwargs)
             audio_hat = audio_hat_traj[-1]
             mel_hat = mel_hat_traj[-1]
