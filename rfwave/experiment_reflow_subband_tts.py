@@ -809,7 +809,8 @@ class VocosExp(pl.LightningModule):
             attn = loss_dict.pop('attn', None)
             if attn is not None:
                 attn = attn[0, 0].detach().cpu().numpy()
-                self.logger.experiment.log({"train_media/attn": wandb.Image(plot_attention_to_numpy(attn))})
+                self.logger.experiment.log(
+                    {"train_media/attn": wandb.Image(plot_attention_to_numpy(attn))}, step=self.global_step)
             loss_dict = dict((f'train/{k}', v) for k, v in loss_dict.items())
             self.logger.log_metrics(loss_dict, step=self.global_step)
             rvm_loss = self.rvm(audio_hat.unsqueeze(1), audio_input.unsqueeze(1))
