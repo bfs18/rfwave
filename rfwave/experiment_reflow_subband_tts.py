@@ -25,7 +25,8 @@ from rfwave.attention import sequence_mask
 from rfwave.helpers import save_code
 from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_error, compute_instantaneous_frequency
 from rfwave.feature_weight import get_feature_weight, get_feature_weight2
-from rfwave.dit import DiTRFTTSMultiTaskBackbone, compute_alignment_loss
+from rfwave.dit import DiTRFTTSMultiTaskBackbone, DiTRFE2ETTSMultiTaskBackbone, compute_alignment_loss
+from rfwave.standalone_alignment import StandaloneAlignment, standalone_compute_alignment_loss
 from rfwave.logit_normal import LogitNormal
 from rfwave.dataset import get_exp_length
 
@@ -617,6 +618,7 @@ class VocosExp(pl.LightningModule):
         backbone: Backbone,
         head: FourierHead,
         input_adaptor: InputAdaptor = None,
+        standalone_align: StandaloneAlignment = None,
         sample_rate: int = 24000,
         initial_learning_rate: float = 2e-4,
         feature_loss: bool = False,
@@ -659,6 +661,11 @@ class VocosExp(pl.LightningModule):
         self.reflow = RectifiedFlow(
             backbone, head, feature_loss=feature_loss, wave=wave, num_bands=num_bands, intt=intt,
             guidance_scale=guidance_scale, p_uncond=p_uncond)
+        self.standalone_align = standalone_align
+
+        if standalone_align is not None:
+            assert isinstance(backbone, DiTRFE2ETTSMultiTaskBackbone)
+            assert not backbone.rad_align and backbone.standalone_align
         assert input_adaptor is not None
         self.aux_loss = False
         self.aux_type = 'mel'
@@ -764,6 +771,10 @@ class VocosExp(pl.LightningModule):
         else:
             raise ValueError(f"Invalid phone_info, #fields {len(phone_info)}")
         return phone_info, pi_kwargs, ctx_kwargs
+
+    def compute_sa_align(self, mel, text, text_length):
+        mask = sequence_mask(text_length)
+        attn, attn_logprob = self.standalone_align(mel, text, mask)
 
     def on_before_optimizer_step(self, optimizer):
         # Note: `unscale` happens after the closure is executed, but before the `on_before_optimizer_step` hook.

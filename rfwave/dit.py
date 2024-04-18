@@ -9,6 +9,7 @@ from rfwave.input import ModelArgs, ContextBlock, AlignmentBlock
 from rfwave.attention import (Attention, FeedForward, ConvFeedForward, MLP, precompute_freqs_cis,  RMSNorm,
                               get_pos_embed_indices, modulate, score_mask, _get_len, _get_start)
 from rfwave.dataset import get_exp_length
+from rfwave.standalone_alignment import EmptyAlignmentBlock
 
 
 class DiTBlock(nn.Module):
@@ -286,23 +287,29 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         pe_scale: float = 1000.,
         with_fourier_features: bool = True,
         rad_align: bool = True,
+        standalone_align: bool = False,
     ):
         super().__init__()
         self.input_channels = input_channels
         self.output_channels1 = output_channels1
         self.output_channels2 = output_channels2
         self.num_bands = num_bands
+        self.rad_align = rad_align
+        self.standalone_align = standalone_align
+        assert not (self.rad_align and self.standalone_align)
 
         params = ModelArgs(dim=dim, n_heads=num_heads, dropout=dropout)
         self.z_t1_proj = nn.Conv1d(output_channels1, dim, 1)
-        if rad_align:
+        if self.rad_align:
             assert num_ctx_layers % 2 == 0 and num_ctx_layers // 2 >= 1
             self.cross_attn1 = ContextBlock(params, input_channels, num_ctx_layers // 2, modulate=True)
             self.cross_attn2 = ContextBlock(params, input_channels, num_ctx_layers // 2, modulate=True)
             self.align_block = AlignmentBlock(dim, input_channels)
+        elif self.standalone_align:
+            self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
+            self.standalone_align = EmptyAlignmentBlock(dim, input_channels)
         else:
             self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
-            self.align_block = None
 
         self.module = DiTRFBackbone(
             input_channels=dim,
@@ -336,7 +343,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
 
     def forward(self, z_t: torch.Tensor, t: torch.Tensor, x: torch.Tensor,
                 bandwidth_id: torch.Tensor=None, num_tokens=None,
-                ctx_length=None, token_exp_scale=None):
+                ctx_length=None, token_exp_scale=None, standalone_attn=None):
         # pos_embed for z_t1
         assert num_tokens is not None
         assert ctx_length is not None
@@ -365,13 +372,18 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
 
         te = self.time_embed(t)
         z_t1 = z_t1.transpose(1, 2)
-        if self.align_block is not None:
+        if self.rad_align:
             # preprocess input, only inject ref
             ctx = self.cross_attn1(z_t1, x_ref, z_freq_cis, ref_freq_cis, z_mask, ref_mask, mod_c=te)
             # inject text information and get align attn
             ctx, attn = self.align_block(ctx, x_token, z_freq_cis, token_freq_cis, token_mask, mod_c=te)
             # postprocess input, inject text and ref
             ctx = self.cross_attn2(ctx, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
+        elif self.standalone_align:
+            assert standalone_attn is not None
+            ctx = self.standalone_align(z_t1, x_token, standalone_attn, mod_c=te)
+            ctx = self.cross_attn(ctx, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
+            attn = None
         else:
             ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
             attn = None
