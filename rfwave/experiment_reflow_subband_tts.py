@@ -354,11 +354,11 @@ class RectifiedFlow(nn.Module):
             if self.cfg:
                 text_ = torch.cat([text, torch.ones_like(text) * text.mean(dim=(0, 2), keepdim=True)], dim=0)
                 (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t, bandwidth_id)]
-                pred, opt_attn = self.get_pred(z_, t_.to(text.device), text_, bandwidth_id_, **kwargs)
+                pred, opt_score = self.get_pred(z_, t_.to(text.device), text_, bandwidth_id_, **kwargs)
                 pred, uncond_pred = torch.chunk(pred, 2, dim=0)
                 pred = uncond_pred + self.guidance_scale * (pred - uncond_pred)
             else:
-                pred, opt_attn = self.get_pred(z, t.to(text.device), text, bandwidth_id, **kwargs)
+                pred, opt_score = self.get_pred(z, t.to(text.device), text, bandwidth_id, **kwargs)
             if self.wave:
                 pred1, pred2 = self.split(pred)
                 if self.prev_cond or not self.parallel_uncond:
@@ -569,13 +569,13 @@ class RectifiedFlow(nn.Module):
         pred2 = torch.where(m, zero2, pred2)
         return pred1, pred2
 
-    def compute_alignment_loss(self, opt_attn, **kwargs):
+    def compute_alignment_loss(self, opt_score, **kwargs):
         if self.backbone.rad_align:
-            assert 'num_tokens' in kwargs and 'token_exp_scale' in kwargs and opt_attn is not None
-            attn_loss = compute_alignment_loss(opt_attn, kwargs['num_tokens'], kwargs['token_exp_scale'])
+            assert 'num_tokens' in kwargs and 'token_exp_scale' in kwargs and opt_score is not None
+            attn_loss = compute_alignment_loss(opt_score, kwargs['num_tokens'], kwargs['token_exp_scale'])
         elif self.backbone.standalone_align and self.backbone.standalone_distill:
             assert 'standalone_attn' in kwargs and kwargs['standalone_attn'] is not None
-            attn_loss = compute_attention_distill_loss(opt_attn, kwargs['standalone_attn'])
+            attn_loss = compute_attention_distill_loss(opt_score, kwargs['standalone_attn'])
         else:
             attn_loss = 0.
         return attn_loss
@@ -587,7 +587,7 @@ class RectifiedFlow(nn.Module):
         else:
             cfg_iter = False
 
-        pred, opt_attn = self.get_pred(z_t, t, text, bandwidth_id, **kwargs)
+        pred, opt_score = self.get_pred(z_t, t, text, bandwidth_id, **kwargs)
         if mask is not None:
             pred = torch.where(mask.unsqueeze(1), pred, target)
             mask_factor = mask.size(1) / mask.sum(1)
@@ -595,7 +595,7 @@ class RectifiedFlow(nn.Module):
             mask_factor = None
 
         pred, z_t, t, target = [v.float() for v in (pred, z_t, t, target)]
-        opt_attn = opt_attn.float() if opt_attn is not None else None
+        opt_score = opt_score.float() if opt_score is not None else None
         t_ = t.view(-1, 1, 1)
         z_t1, z_t2 = self.split(z_t)
         if self.intt > 0.:
@@ -608,9 +608,9 @@ class RectifiedFlow(nn.Module):
         loss1 = self.compute_rf_loss1(pred1, target1, mask_factor)
         loss2 = self.compute_rf_loss2(pred2, target2, bandwidth_id, mask_factor)
         overlap_loss = self.compute_overlap_loss(pred2) if self.overlap_loss else 0.
-        attn_loss = self.compute_alignment_loss(opt_attn, **kwargs) if not cfg_iter else 0.
+        attn_loss = self.compute_alignment_loss(opt_score, **kwargs) if not cfg_iter else 0.
         loss_dict = {"loss1": loss1, "loss2": loss2, "stft_loss": stft_loss, "phase_loss": phase_loss,
-                     "overlap_loss": overlap_loss, "attn_loss": attn_loss, "attn": opt_attn}
+                     "overlap_loss": overlap_loss, "attn_loss": attn_loss, "score": opt_score}
         return loss1 * 5. + loss2 + (stft_loss + phase_loss + overlap_loss + attn_loss) * 0.1, loss_dict
 
 
@@ -830,10 +830,10 @@ class VocosExp(pl.LightningModule):
                 {"train/total_loss": loss, "train/cond_mel_loss": cond_mel_loss,
                  "train/mel_loss": mel_loss, "train/tandem_mel_loss": tandem_mel_loss},
                 step=self.global_step)
-            attn = loss_dict.pop('attn', None)
             loss_dict['sa_attn_loss'] = sa_loss
-            if attn is not None:
-                attn = attn[0, 0].detach().cpu().numpy()
+            score = loss_dict.pop('score', None)
+            if score is not None:
+                attn = torch.softmax(score, dim=-1)[0, 0].detach().cpu().numpy()
                 self.logger.experiment.log(
                     {"train_media/attn": wandb.Image(plot_attention_to_numpy(attn))}, step=self.global_step)
             loss_dict = dict((f'train/{k}', v) for k, v in loss_dict.items())

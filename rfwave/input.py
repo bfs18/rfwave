@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Optional
 from rfwave.models import ConvNeXtV2Block
 from rfwave.attention import (
-    Attention, CrossAttention, FeedForward, MLP, ConvFeedForward, RMSNorm, apply_rotary_emb,
+    Attention, CrossAttentionWithPrior, FeedForward, MLP, ConvFeedForward, RMSNorm, apply_rotary_emb,
     get_pos_embed_indices, score_mask, precompute_freqs_cis, score_mask_from_bool_mask, modulate, _get_start)
 from rfwave.dataset import get_num_tokens
 
@@ -206,9 +206,9 @@ class AlignmentBlock(nn.Module):
         args = ModelArgs(dim, n_heads=1, multiple_of=128)
         self.dim = dim
         self.ctx_proj = nn.Conv1d(ctx_dim, args.dim, 1) if ctx_dim != args.dim else nn.Identity()
-        self.align_attn = CrossAttention(
+        self.align_attn = CrossAttentionWithPrior(
             dim=args.dim, num_heads=args.n_heads, qkv_bias=False, qk_norm=args.qk_norm,
-            attn_drop=args.dropout, proj_drop=args.dropout, norm_layer=RMSNorm, return_attn_probs=True)
+            attn_drop=args.dropout, proj_drop=args.dropout, norm_layer=RMSNorm)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(), nn.Linear(self.dim, 3 * self.dim, bias=True))
         self.cross_attention_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
@@ -225,17 +225,17 @@ class AlignmentBlock(nn.Module):
         nn.init.constant_(self.adaLN_modulation[-1].weight, 0)
         nn.init.constant_(self.adaLN_modulation[-1].bias, 0)
 
-    def forward(self, x, context, x_freqs_cis, c_freqs_cis, c_mask, mod_c):
+    def forward(self, x, context, x_freqs_cis, c_freqs_cis, c_mask, mod_c, attn_prior):
         context = self.ctx_proj(context).transpose(1, 2)
         rpt = self.dim // x_freqs_cis.size(2)
         x_freqs_cis = x_freqs_cis.repeat_interleave(rpt, dim=-1)
         c_freqs_cis = c_freqs_cis.repeat_interleave(rpt, dim=-1)
         shift_crs, scale_crs, gate_crs = self.adaLN_modulation(mod_c).chunk(3, dim=1)
-        h, attn = self.align_attn(
+        h, score = self.align_attn(
             modulate(self.cross_attention_norm(x), shift_crs, scale_crs),
-            context, x_freqs_cis, c_freqs_cis, c_mask)
+            context, x_freqs_cis, c_freqs_cis, c_mask, attn_prior=attn_prior)
         h = x + (gate_crs.unsqueeze(1) * h)
-        return h, attn
+        return h, score
 
 
 class ContextBlock(nn.Module):

@@ -9,7 +9,7 @@ from rfwave.input import ModelArgs, ContextBlock, AlignmentBlock
 from rfwave.attention import (Attention, FeedForward, ConvFeedForward, MLP, precompute_freqs_cis,  RMSNorm,
                               get_pos_embed_indices, modulate, score_mask, _get_len, _get_start)
 from rfwave.dataset import get_exp_length
-from rfwave.standalone_alignment import EmptyAlignmentBlock
+from rfwave.standalone_alignment import EmptyAlignmentBlock, gaussian_prior
 
 
 class DiTBlock(nn.Module):
@@ -380,7 +380,9 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             # preprocess input, only inject ref
             ctx = self.cross_attn1(z_t1, x_ref, z_freq_cis, ref_freq_cis, z_mask, ref_mask, mod_c=te)
             # inject text information and get align attn
-            ctx, attn = self.align_block(ctx, x_token, z_freq_cis, token_freq_cis, token_mask, mod_c=te)
+            attn_prior = gaussian_prior(num_tokens, token_exp_scale)
+            ctx, attn = self.align_block(ctx, x_token, z_freq_cis, token_freq_cis, token_mask,
+                                         mod_c=te, attn_prior=attn_prior)
             # postprocess input, inject text and ref
             ctx = self.cross_attn2(ctx, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
         elif self.standalone_align and not self.standalone_distill:

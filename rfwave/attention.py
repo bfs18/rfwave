@@ -204,7 +204,6 @@ class CrossAttention(nn.Module):
         attn_drop: float = 0.,
         proj_drop: float = 0.,
         norm_layer: nn.Module = nn.LayerNorm,
-        return_attn_probs=False
     ) -> None:
         super().__init__()
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
@@ -219,7 +218,6 @@ class CrossAttention(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
-        self.return_attn_probs = return_attn_probs
 
         # use flash attention or a manual implementation?
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
@@ -248,7 +246,7 @@ class CrossAttention(nn.Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        if self.flash and not self.return_attn_probs:
+        if self.flash:
             x = F.scaled_dot_product_attention(
                 q, k, v, attn_mask=mask, dropout_p=self.attn_drop.p if self.training else 0.)
         else:
@@ -263,10 +261,7 @@ class CrossAttention(nn.Module):
         x = x.transpose(1, 2).contiguous().reshape(bsz, q_seqlen, ch)
         x = self.proj(x)
         x = self.proj_drop(x)
-        if self.return_attn_probs:
-            return x, attn
-        else:
-            return x
+        return x
 
 
 class Attention(CrossAttention):
@@ -280,3 +275,70 @@ class Attention(CrossAttention):
         mask: torch.Tensor
     ):
         return super().forward(x, x, freqs_cis, freqs_cis, mask)
+
+
+class CrossAttentionWithPrior(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 8,
+        qkv_bias: bool = False,
+        qk_norm: bool = False,
+        attn_drop: float = 0.,
+        proj_drop: float = 0.,
+        norm_layer: nn.Module = nn.LayerNorm,
+    ) -> None:
+        super().__init__()
+        assert dim % num_heads == 0, 'dim should be divisible by num_heads'
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        self.q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.kv = nn.Linear(dim, 2 * dim, bias=qkv_bias)
+        self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+        self.prior_strength = 0.1
+
+    def forward(
+        self,
+        q_x: torch.Tensor,
+        kv_x: torch.Tensor,
+        q_freqs_cis: torch.Tensor,
+        k_freqs_cis: torch.Tensor,
+        mask: torch.Tensor,
+        attn_prior: torch.Tensor) -> (torch.Tensor, torch.Tensor):
+        bsz, q_seqlen, ch = q_x.shape
+        _, kv_seqlen, _ = kv_x.shape
+
+        q = self.q(q_x).reshape(bsz, q_seqlen, self.num_heads, self.head_dim)
+        kv = self.kv(kv_x).reshape(bsz, kv_seqlen, 2, self.num_heads, self.head_dim).permute(2, 0, 1, 3, 4)
+        k, v = kv.unbind(0)
+        q, k = self.q_norm(q), self.k_norm(k)
+        q = apply_rotary_emb(q, q_freqs_cis)
+        k = apply_rotary_emb(k, k_freqs_cis)
+
+        # (bs, n_local_heads, q_seqlen, head_dim)
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        q = q * self.scale
+        attn = q @ k.transpose(-2, -1)
+        if attn_prior is not None:
+            attn = (torch.log_softmax(attn, dim=-1) +
+                    torch.log((attn_prior.unsqueeze(1) + 1e-8) * self.prior_strength))
+        if mask is not None:
+            attn = attn + mask
+        score = attn
+        attn = attn.float().softmax(dim=-1).type_as(attn)
+        attn = self.attn_drop(attn)
+        x = attn @ v
+
+        x = x.transpose(1, 2).contiguous().reshape(bsz, q_seqlen, ch)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x, score
