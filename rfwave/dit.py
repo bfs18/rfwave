@@ -288,6 +288,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         with_fourier_features: bool = True,
         rad_align: bool = True,
         standalone_align: bool = False,
+        standalone_distill: Optional[bool] = None,
     ):
         super().__init__()
         self.input_channels = input_channels
@@ -296,16 +297,19 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         self.num_bands = num_bands
         self.rad_align = rad_align
         self.standalone_align = standalone_align
+        self.standalone_distill = standalone_distill
         assert not (self.rad_align and self.standalone_align)
+        # standalone distill must be assigned when using standalone_align
+        assert not standalone_align or (standalone_align and self.standalone_distill is not None)
 
         params = ModelArgs(dim=dim, n_heads=num_heads, dropout=dropout)
         self.z_t1_proj = nn.Conv1d(output_channels1, dim, 1)
-        if self.rad_align:
+        if self.rad_align or (self.standalone_align and self.standalone_distill):
             assert num_ctx_layers % 2 == 0 and num_ctx_layers // 2 >= 1
             self.cross_attn1 = ContextBlock(params, input_channels, num_ctx_layers // 2, modulate=True)
             self.cross_attn2 = ContextBlock(params, input_channels, num_ctx_layers // 2, modulate=True)
             self.align_block = AlignmentBlock(dim, input_channels)
-        elif self.standalone_align:
+        elif self.standalone_align and not self.standalone_distill:
             self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
             self.sa_align_block = EmptyAlignmentBlock(dim, input_channels)
         else:
@@ -372,14 +376,14 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
 
         te = self.time_embed(t)
         z_t1 = z_t1.transpose(1, 2)
-        if self.rad_align:
+        if self.rad_align or (self.standalone_align and self.standalone_distill):
             # preprocess input, only inject ref
             ctx = self.cross_attn1(z_t1, x_ref, z_freq_cis, ref_freq_cis, z_mask, ref_mask, mod_c=te)
             # inject text information and get align attn
             ctx, attn = self.align_block(ctx, x_token, z_freq_cis, token_freq_cis, token_mask, mod_c=te)
             # postprocess input, inject text and ref
             ctx = self.cross_attn2(ctx, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
-        elif self.standalone_align:
+        elif self.standalone_align and not self.standalone_distill:
             assert standalone_attn is not None
             ctx = self.sa_align_block(z_t1, x_token, standalone_attn, mod_c=te)
             ctx = self.cross_attn(ctx, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
@@ -390,22 +394,3 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         ctx = ctx.transpose(1, 2)
 
         return self.module(z_t, t, ctx, bandwidth_id, start=start), attn
-
-
-def compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_prob=0.25):
-    attn = attn.reshape(-1, *attn.shape[-2:])
-    bsz = attn.shape[0]
-    rpt = bsz // num_tokens.size(0)
-    num_tokens = num_tokens.repeat_interleave(rpt, 0)
-    token_exp_scale = token_exp_scale.repeat_interleave(rpt, 0)
-    # length = torch.round(num_tokens * token_exp_scale).long()
-    length = get_exp_length(num_tokens, token_exp_scale)
-    target = torch.zeros([bsz, num_tokens.max()], device=attn.device, dtype=torch.long)
-    for i, n_tok in enumerate(num_tokens):
-        target[i, :n_tok] = torch.arange(1, n_tok + 1, device=attn.device)
-    attn = F.pad(attn, (1, 0, 0, 0, 0, 0), value=blank_prob)  # prob for blank.
-    attn = attn / attn.sum(dim=-1, keepdim=True)
-    log_prob = torch.log(attn.clamp_min_(1e-5))
-    loss = F.ctc_loss(log_prob.transpose(1, 0), targets=target, zero_infinity=True,
-                      input_lengths=length, target_lengths=num_tokens, blank=0)
-    return loss

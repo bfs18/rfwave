@@ -49,15 +49,48 @@ def mas_width1(attn_map):
     return opt
 
 
+def compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_prob=0.25):
+    attn = attn.reshape(-1, *attn.shape[-2:])
+    bsz = attn.shape[0]
+    rpt = bsz // num_tokens.size(0)
+    num_tokens = num_tokens.repeat_interleave(rpt, 0)
+    token_exp_scale = token_exp_scale.repeat_interleave(rpt, 0)
+    # length = torch.round(num_tokens * token_exp_scale).long()
+    length = get_exp_length(num_tokens, token_exp_scale)
+    target = torch.zeros([bsz, num_tokens.max()], device=attn.device, dtype=torch.long)
+    for i, n_tok in enumerate(num_tokens):
+        target[i, :n_tok] = torch.arange(1, n_tok + 1, device=attn.device)
+    attn = F.pad(attn, (1, 0, 0, 0, 0, 0), value=blank_prob)  # prob for blank.
+    attn = attn / attn.sum(dim=-1, keepdim=True)
+    # float to compute loss.
+    log_prob = torch.log(attn.clamp_min_(1e-5)).float()
+    loss = F.ctc_loss(log_prob.transpose(1, 0), targets=target, zero_infinity=True,
+                      input_lengths=length, target_lengths=num_tokens, blank=0)
+    return loss
+
+
+def compute_attention_distill_loss(pred_attn, target_attn):
+    # deal with band repeat.
+    rpt = pred_attn.size(0) // target_attn.size(0)
+    # float to compute loss.
+    pred_attn, target_attn = pred_attn.float(), target_attn.float()
+    target_attn = target_attn.repeat_interleave(rpt, 0)
+    log_pred_attn = torch.log(pred_attn.clamp_min(1e-6))
+    loss = F.kl_div(log_pred_attn, target_attn, reduction='none')  # , reduction='batchmean')
+    loss = loss.sum(dim=-1).mean()
+    return loss
+
+
 class StandaloneAlignment(torch.nn.Module):
     def __init__(self, n_mel_channels, n_text_channels, n_channels,
-                 num_layers=3, temperature=1.0, type='guassian'):
+                 num_layers=3, temperature=1.0, type='guassian', prior_strength=0.1):
         assert type in ['gaussian', 'dot_product']
         super(StandaloneAlignment, self).__init__()
         self.temperature = temperature
         self.log_softmax = torch.nn.LogSoftmax(dim=3)
         self.scale = n_channels ** -0.5
         self.type = type
+        self.prior_strength = prior_strength
 
         self.key_proj = nn.Sequential(
             nn.Conv1d(n_text_channels, n_channels, 1),
@@ -104,7 +137,7 @@ class StandaloneAlignment(torch.nn.Module):
             attn = attn + mask
         attn = torch.softmax(attn.float() / self.temperature, dim=-1).type_as(attn)  # softmax along T2
         if attn_prior is not None:
-            attn = attn + attn_prior
+            attn = attn + attn_prior * self.prior_strength
             attn = attn / attn.sum(dim=-1, keepdim=True)
         return attn
 
@@ -114,11 +147,12 @@ class StandaloneAlignment(torch.nn.Module):
         # Beware can only do this since query_dim = attn_dim = n_mel_channels
         queries_enc = self.query_proj(queries)
 
+        pos_a = np.sqrt(self.prior_strength)
         start = _get_start(keys_enc, None)
         keys_length = _get_len(keys_enc, None)  # length is None
         queries_length = _get_len(queries_enc, None)
-        key_freq_cis = self.get_pos_embed(start, keys_length.max())
-        query_freq_cis = self.get_pos_embed(start, queries_length.max())
+        key_freq_cis = self.get_pos_embed(start, keys_length.max()) * pos_a
+        query_freq_cis = self.get_pos_embed(start, queries_length.max()) * pos_a
         keys_enc = apply_rotary_emb(keys_enc.transpose(-2, -1), key_freq_cis)
         queries_enc = apply_rotary_emb(queries_enc.transpose(-2, -1), query_freq_cis)
 
@@ -137,12 +171,10 @@ class StandaloneAlignment(torch.nn.Module):
             return self.forward_dot_product(queries, keys, mask, attn_prior)
 
 
-def gaussian_prior(num_tokens, token_exp_scale, gamma=0.2, strength=0.1):
+def gaussian_prior(num_tokens, token_exp_scale, gamma=0.2, strength=1.):
     length = get_exp_length(num_tokens, token_exp_scale)
     ts = torch.arange(length.max(), device=num_tokens.device).unsqueeze(0) / length.unsqueeze(1)
     ns = torch.arange(num_tokens.max(), device=num_tokens.device).unsqueeze(0) / num_tokens.unsqueeze(1)
-    # ts[ts >= 1.] = 0.
-    # ns[ns >= 1.] = 0.
     prior = torch.exp(-(ts.unsqueeze(2) - ns.unsqueeze(1)) ** 2 / (2 * gamma ** 2))
     return prior * strength
 

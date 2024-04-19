@@ -25,8 +25,9 @@ from rfwave.attention import sequence_mask
 from rfwave.helpers import save_code
 from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_error, compute_instantaneous_frequency
 from rfwave.feature_weight import get_feature_weight, get_feature_weight2
-from rfwave.dit import DiTRFTTSMultiTaskBackbone, DiTRFE2ETTSMultiTaskBackbone, compute_alignment_loss
-from rfwave.standalone_alignment import StandaloneAlignment, gaussian_prior
+from rfwave.dit import DiTRFTTSMultiTaskBackbone, DiTRFE2ETTSMultiTaskBackbone
+from rfwave.standalone_alignment import (
+    StandaloneAlignment, gaussian_prior, compute_alignment_loss, compute_attention_distill_loss)
 from rfwave.logit_normal import LogitNormal
 from rfwave.dataset import get_exp_length
 
@@ -572,6 +573,9 @@ class RectifiedFlow(nn.Module):
         if self.backbone.rad_align:
             assert 'num_tokens' in kwargs and 'token_exp_scale' in kwargs and opt_attn is not None
             attn_loss = compute_alignment_loss(opt_attn, kwargs['num_tokens'], kwargs['token_exp_scale'])
+        elif self.backbone.standalone_align and self.backbone.standalone_distill:
+            assert 'standalone_attn' in kwargs and kwargs['standalone_attn'] is not None
+            attn_loss = compute_attention_distill_loss(opt_attn, kwargs['standalone_attn'])
         else:
             attn_loss = 0.
         return attn_loss
@@ -807,7 +811,7 @@ class VocosExp(pl.LightningModule):
         loss, loss_dict = self.reflow.compute_loss(
             z_t, t, target, text_ext, bandwidth_id=bandwidth_id, mask=ctx_mask,
             standalone_attn=sa_attn, **kwargs)
-        loss = loss + cond_mel_loss + sa_loss
+        loss = loss + cond_mel_loss + sa_loss * 0.1
         self.manual_backward(loss)
         opt_gen.step()
         sch_gen.step()

@@ -69,6 +69,7 @@ model:
         num_heads: 6
         rad_align: False
         standalone_align: True
+        standalone_distill: True
 
     head:
       class_path: rfwave.heads.RFSTFTHead
