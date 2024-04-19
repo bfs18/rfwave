@@ -392,7 +392,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         return self.module(z_t, t, ctx, bandwidth_id, start=start), attn
 
 
-def compute_alignment_loss(attn, num_tokens, token_exp_scale):
+def compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_prob=0.25):
     attn = attn.reshape(-1, *attn.shape[-2:])
     bsz = attn.shape[0]
     rpt = bsz // num_tokens.size(0)
@@ -403,7 +403,7 @@ def compute_alignment_loss(attn, num_tokens, token_exp_scale):
     target = torch.zeros([bsz, num_tokens.max()], device=attn.device, dtype=torch.long)
     for i, n_tok in enumerate(num_tokens):
         target[i, :n_tok] = torch.arange(1, n_tok + 1, device=attn.device)
-    attn = F.pad(attn, (1, 0, 0, 0, 0, 0), value=0.25)  # prob for blank.
+    attn = F.pad(attn, (1, 0, 0, 0, 0, 0), value=blank_prob)  # prob for blank.
     attn = attn / attn.sum(dim=-1, keepdim=True)
     log_prob = torch.log(attn.clamp_min_(1e-5))
     loss = F.ctc_loss(log_prob.transpose(1, 0), targets=target, zero_infinity=True,

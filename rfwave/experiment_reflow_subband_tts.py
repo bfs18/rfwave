@@ -26,7 +26,7 @@ from rfwave.helpers import save_code
 from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_error, compute_instantaneous_frequency
 from rfwave.feature_weight import get_feature_weight, get_feature_weight2
 from rfwave.dit import DiTRFTTSMultiTaskBackbone, DiTRFE2ETTSMultiTaskBackbone, compute_alignment_loss
-from rfwave.standalone_alignment import StandaloneAlignment, standalone_compute_alignment_loss, gaussian_prior
+from rfwave.standalone_alignment import StandaloneAlignment, gaussian_prior
 from rfwave.logit_normal import LogitNormal
 from rfwave.dataset import get_exp_length
 
@@ -777,8 +777,8 @@ class VocosExp(pl.LightningModule):
         tokens, _ = torch.split(tokens, [num_tokens.max(), ctx_length.max()], dim=2)
         mask = score_mask(num_tokens)
         attn_prior = gaussian_prior(num_tokens, token_exp_scale)
-        attn, attn_logprob = self.standalone_align(mel, tokens, mask, attn_prior=attn_prior)
-        sa_loss = standalone_compute_alignment_loss(attn_logprob, num_tokens, token_exp_scale)
+        attn = self.standalone_align(mel, tokens, mask, attn_prior=attn_prior)
+        sa_loss = compute_alignment_loss(attn, num_tokens, token_exp_scale)
         return attn, sa_loss
 
     def on_before_optimizer_step(self, optimizer):

@@ -85,6 +85,7 @@ model:
         vocab_size: 78
         ctx_dim: 100
         num_layers: 4
+
     standalone_align:
       class_path: rfwave.standalone_alignment.StandaloneAlignment
       init_args:
@@ -92,6 +93,7 @@ model:
         n_text_channels: 512
         n_channels: 512
         num_layers: 3
+        type: dot_product
 
 trainer:
   check_val_every_n_epoch: 10
