@@ -76,7 +76,8 @@ def compute_attention_distill_loss(pred_attn, target_attn):
     pred_attn, target_attn = pred_attn.float(), target_attn.float()
     target_attn = target_attn.repeat_interleave(rpt, 0)
     log_pred_attn = torch.log(pred_attn.clamp_min(1e-6))
-    loss = F.kl_div(log_pred_attn, target_attn, reduction='none')  # , reduction='batchmean')
+    log_target_attn = torch.log(target_attn.clamp_min(1e-6))
+    loss = F.kl_div(log_pred_attn, log_target_attn, reduction='none', log_target=True)  # , reduction='batchmean')
     loss = loss.sum(dim=-1).mean()
     return loss
 
@@ -149,7 +150,7 @@ class StandaloneAlignment(torch.nn.Module):
             attn = attn + mask
         attn = torch.softmax(attn.float() / self.temperature, dim=-1).type_as(attn)  # softmax along T2
         if attn_prior is not None:
-            attn = attn + attn_prior * self.prior_strength
+            attn = attn + attn_prior.unsqueeze(1) * self.prior_strength
             attn = attn / attn.sum(dim=-1, keepdim=True)
         return attn
 
