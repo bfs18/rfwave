@@ -151,7 +151,7 @@ class StandaloneAlignment(torch.nn.Module):
         if attn_prior is not None:
             # attn = torch.exp(torch.log(attn.clamp_min(1e-8)) +
             #                  torch.log(attn_prior.unsqueeze(1).clamp_min(1e-8)))
-            attn = attn + attn_prior * self.prior_strength
+            attn = attn + attn_prior.unsqueeze(1) * self.prior_strength
             attn = attn / attn.sum(dim=-1, keepdim=True)
         return attn
 
@@ -181,7 +181,7 @@ class StandaloneAlignment(torch.nn.Module):
         if attn_prior is not None:
             # attn = torch.exp(torch.log(attn.clamp_min(1e-8)) +
             #                  torch.log(attn_prior.unsqueeze(1).clamp_min(1e-8)))
-            attn = attn + attn_prior * self.prior_strength
+            attn = attn + attn_prior.unsqueeze(1) * self.prior_strength
             attn = attn / attn.sum(dim=-1, keepdim=True)
         return attn
 
