@@ -781,7 +781,7 @@ class VocosExp(pl.LightningModule):
         tokens, _ = torch.split(tokens, [num_tokens.max(), ctx_length.max()], dim=2)
         mask = score_mask(num_tokens)
         attn_prior = gaussian_prior(num_tokens, token_exp_scale)
-        attn = self.standalone_align(mel, tokens, mask, attn_prior=attn_prior)
+        attn = self.standalone_align(mel, tokens, token_exp_scale, mask, attn_prior=attn_prior)
         sa_loss = compute_alignment_loss(attn, num_tokens, token_exp_scale)
         return attn, sa_loss
 
