@@ -3,8 +3,9 @@ from dataclasses import dataclass
 from typing import Optional
 from rfwave.models import ConvNeXtV2Block
 from rfwave.attention import (
-    Attention, CrossAttentionWithPrior, FeedForward, MLP, ConvFeedForward, RMSNorm, apply_rotary_emb,
-    get_pos_embed_indices, score_mask, precompute_freqs_cis, score_mask_from_bool_mask, modulate, _get_start)
+    Attention, CrossAttention, CrossAttentionWithPrior, FeedForward,
+    MLP, ConvFeedForward, RMSNorm, apply_rotary_emb, get_pos_embed_indices,
+    score_mask, precompute_freqs_cis, score_mask_from_bool_mask, modulate, _get_start)
 from rfwave.dataset import get_num_tokens
 
 import torch

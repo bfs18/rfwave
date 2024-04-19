@@ -654,7 +654,8 @@ class VocosExp(pl.LightningModule):
         assert 0. <= intt < 1.
         if intt > 0.:
             print(f"using intt {intt:.2f}")
-        self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head", "input_adaptor"])
+        self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head", "input_adaptor",
+                                          "input_adaptor_proj", "standalone_align"])
         self.feature_extractor = feature_extractor
 
         if torch_compile:
@@ -694,6 +695,8 @@ class VocosExp(pl.LightningModule):
         ]
         if self.input_adaptor_proj is not None:
             gen_params.append({"params": self.input_adaptor_proj.parameters()})
+        if self.standalone_align is not None:
+            gen_params.append({"params": self.standalone_align.parameters()})
         opt_gen = torch.optim.AdamW(gen_params, lr=self.hparams.initial_learning_rate)
 
         max_steps = self.trainer.max_steps  # // 2  # Max steps per optimizer
