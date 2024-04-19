@@ -149,8 +149,9 @@ class StandaloneAlignment(torch.nn.Module):
             attn = attn + mask
         attn = torch.softmax(attn.float() / self.temperature, dim=-1).type_as(attn)  # softmax along T2
         if attn_prior is not None:
-            attn = torch.exp(torch.log(attn.clamp_min(1e-8)) +
-                             torch.log(attn_prior.unsqueeze(1).clamp_min(1e-8)))
+            # attn = torch.exp(torch.log(attn.clamp_min(1e-8)) +
+            #                  torch.log(attn_prior.unsqueeze(1).clamp_min(1e-8)))
+            attn = attn + attn_prior * self.prior_strength
             attn = attn / attn.sum(dim=-1, keepdim=True)
         return attn
 
@@ -178,8 +179,9 @@ class StandaloneAlignment(torch.nn.Module):
             attn = attn + mask
         attn = torch.softmax(attn.float() / self.temperature, dim=-1).type_as(attn)
         if attn_prior is not None:
-            attn = torch.exp(torch.log(attn.clamp_min(1e-8)) +
-                             torch.log(attn_prior.unsqueeze(1).clamp_min(1e-8)))
+            # attn = torch.exp(torch.log(attn.clamp_min(1e-8)) +
+            #                  torch.log(attn_prior.unsqueeze(1).clamp_min(1e-8)))
+            attn = attn + attn_prior * self.prior_strength
             attn = attn / attn.sum(dim=-1, keepdim=True)
         return attn
 
