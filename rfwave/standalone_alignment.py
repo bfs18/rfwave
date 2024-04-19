@@ -63,7 +63,7 @@ def compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_prob=0.25):
     attn = F.pad(attn, (1, 0, 0, 0, 0, 0), value=blank_prob)  # prob for blank.
     attn = attn / attn.sum(dim=-1, keepdim=True)
     # float to compute loss.
-    log_prob = torch.log(attn.clamp_min_(1e-5)).float()
+    log_prob = torch.log(attn.clamp_min(1e-5)).float()
     loss = F.ctc_loss(log_prob.transpose(1, 0), targets=target, zero_infinity=True,
                       input_lengths=length, target_lengths=num_tokens, blank=0)
     return loss
@@ -88,7 +88,6 @@ class StandaloneAlignment(torch.nn.Module):
         assert type in ['gaussian', 'dot_product']
         super(StandaloneAlignment, self).__init__()
         self.temperature = temperature
-        self.log_softmax = torch.nn.LogSoftmax(dim=3)
         self.scale = n_channels ** -0.5
         self.type = type
         self.prior_strength = prior_strength
@@ -150,7 +149,8 @@ class StandaloneAlignment(torch.nn.Module):
             attn = attn + mask
         attn = torch.softmax(attn.float() / self.temperature, dim=-1).type_as(attn)  # softmax along T2
         if attn_prior is not None:
-            attn = attn + attn_prior.unsqueeze(1) * self.prior_strength
+            attn = torch.exp(torch.log(attn.clamp_min(1e-6)) +
+                             torch.log(attn_prior.unsqueeze(1).clamp_min(1e-6)))
             attn = attn / attn.sum(dim=-1, keepdim=True)
         return attn
 

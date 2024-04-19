@@ -811,7 +811,7 @@ class VocosExp(pl.LightningModule):
         loss, loss_dict = self.reflow.compute_loss(
             z_t, t, target, text_ext, bandwidth_id=bandwidth_id, mask=ctx_mask,
             standalone_attn=sa_attn, **kwargs)
-        loss = loss + cond_mel_loss + sa_loss * 0.1
+        loss = loss + cond_mel_loss + sa_loss
         self.manual_backward(loss)
         opt_gen.step()
         sch_gen.step()
