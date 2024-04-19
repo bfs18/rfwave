@@ -301,7 +301,6 @@ class CrossAttentionWithPrior(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
-        self.prior_strength = 0.1
 
     def forward(
         self,
@@ -328,17 +327,18 @@ class CrossAttentionWithPrior(nn.Module):
 
         q = q * self.scale
         attn = q @ k.transpose(-2, -1)
-        if attn_prior is not None:
-            attn = (torch.log_softmax(attn, dim=-1) +
-                    torch.log((attn_prior.unsqueeze(1) + 1e-8) * self.prior_strength))
         if mask is not None:
             attn = attn + mask
-        score = attn
         attn = attn.float().softmax(dim=-1).type_as(attn)
+        if attn_prior is not None:
+            attn = torch.exp(torch.log(attn.clamp_min(1e-8)) +
+                             torch.log(attn_prior.unsqueeze(1).clamp_min(1e-8)))
+            attn = attn / attn.sum(dim=-1, keepdim=True)
+        attn_before_drop = attn
         attn = self.attn_drop(attn)
         x = attn @ v
 
         x = x.transpose(1, 2).contiguous().reshape(bsz, q_seqlen, ch)
         x = self.proj(x)
         x = self.proj_drop(x)
-        return x, score
+        return x, attn_before_drop

@@ -49,18 +49,21 @@ def mas_width1(attn_map):
     return opt
 
 
-def compute_alignment_loss(score, num_tokens, token_exp_scale, blank_score=-1):
-    score = score.reshape(-1, *score.shape[-2:])
-    bsz = score.shape[0]
+def compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_prob=0.25):
+    attn = attn.reshape(-1, *attn.shape[-2:])
+    bsz = attn.shape[0]
     rpt = bsz // num_tokens.size(0)
     num_tokens = num_tokens.repeat_interleave(rpt, 0)
     token_exp_scale = token_exp_scale.repeat_interleave(rpt, 0)
+    # length = torch.round(num_tokens * token_exp_scale).long()
     length = get_exp_length(num_tokens, token_exp_scale)
-    target = torch.zeros([bsz, num_tokens.max()], device=score.device, dtype=torch.long)
+    target = torch.zeros([bsz, num_tokens.max()], device=attn.device, dtype=torch.long)
     for i, n_tok in enumerate(num_tokens):
-        target[i, :n_tok] = torch.arange(1, n_tok + 1, device=score.device)
-    score = F.pad(score, (1, 0, 0, 0, 0, 0), value=blank_score)  # prob for blank.
-    log_prob = F.log_softmax(score, dim=-1)
+        target[i, :n_tok] = torch.arange(1, n_tok + 1, device=attn.device)
+    attn = F.pad(attn, (1, 0, 0, 0, 0, 0), value=blank_prob)  # prob for blank.
+    attn = attn / attn.sum(dim=-1, keepdim=True)
+    # float to compute loss.
+    log_prob = torch.log(attn.clamp_min(1e-8)).float()
     loss = F.ctc_loss(log_prob.transpose(1, 0), targets=target, zero_infinity=True,
                       input_lengths=length, target_lengths=num_tokens, blank=0)
     return loss
@@ -72,8 +75,8 @@ def compute_attention_distill_loss(pred_attn, target_attn):
     # float to compute loss.
     pred_attn, target_attn = pred_attn.float(), target_attn.float()
     target_attn = target_attn.repeat_interleave(rpt, 0)
-    log_pred_attn = torch.log(pred_attn + 1e-8)
-    log_target_attn = torch.log(target_attn + 1e-8)
+    log_pred_attn = torch.log(pred_attn.clamp_min(1e-8))
+    log_target_attn = torch.log(target_attn.clamp_min(1e-8))
     loss = F.kl_div(log_pred_attn, log_target_attn, reduction='none', log_target=True)  # , reduction='batchmean')
     loss = loss.sum(dim=-1).mean()
     return loss
@@ -142,14 +145,14 @@ class StandaloneAlignment(torch.nn.Module):
 
         # compute log-likelihood from gaussian
         attn = -attn.mean(1, keepdim=True)
-        if attn_prior is not None:
-            attn = (torch.log_softmax(attn, dim=-1) +
-                    torch.log((attn_prior.unsqueeze(1) + 1e-8) * self.prior_strength))
         if mask is not None:
             attn = attn + mask
-        score = attn / self.temperature
-        attn = torch.softmax(score, dim=-1)
-        return attn, score
+        attn = torch.softmax(attn.float() / self.temperature, dim=-1).type_as(attn)  # softmax along T2
+        if attn_prior is not None:
+            attn = torch.exp(torch.log(attn.clamp_min(1e-8)) +
+                             torch.log(attn_prior.unsqueeze(1).clamp_min(1e-8)))
+            attn = attn / attn.sum(dim=-1, keepdim=True)
+        return attn
 
     def forward_dot_product(self, queries, keys, token_exp_scale, mask=None, attn_prior=None):
         # NOTE: attn_prior is not used. rotary positional embedding works as bias.
@@ -171,14 +174,14 @@ class StandaloneAlignment(torch.nn.Module):
         queries_enc = queries_enc * self.scale
         attn = queries_enc @ keys_enc.transpose(-2, -1)
         attn = attn.unsqueeze(1)  # make attention shape consistent.
-        if attn_prior is not None:
-            attn = (torch.log_softmax(attn, dim=-1) +
-                    torch.log((attn_prior.unsqueeze(1) + 1e-8) * self.prior_strength))
         if mask is not None:
             attn = attn + mask
-        score = attn.float() / self.temperature
-        attn = torch.softmax(score, dim=-1).type_as(attn)
-        return attn, score
+        attn = torch.softmax(attn.float() / self.temperature, dim=-1).type_as(attn)
+        if attn_prior is not None:
+            attn = torch.exp(torch.log(attn.clamp_min(1e-8)) +
+                             torch.log(attn_prior.unsqueeze(1).clamp_min(1e-8)))
+            attn = attn / attn.sum(dim=-1, keepdim=True)
+        return attn
 
     def forward(self, queries, keys, token_exp_scale, mask=None, attn_prior=None):
         if self.type == 'gaussian':

@@ -232,11 +232,11 @@ class AlignmentBlock(nn.Module):
         x_freqs_cis = x_freqs_cis.repeat_interleave(rpt, dim=-1)
         c_freqs_cis = c_freqs_cis.repeat_interleave(rpt, dim=-1)
         shift_crs, scale_crs, gate_crs = self.adaLN_modulation(mod_c).chunk(3, dim=1)
-        h, score = self.align_attn(
+        h, attn = self.align_attn(
             modulate(self.cross_attention_norm(x), shift_crs, scale_crs),
             context, x_freqs_cis, c_freqs_cis, c_mask, attn_prior=attn_prior)
         h = x + (gate_crs.unsqueeze(1) * h)
-        return h, score
+        return h, attn
 
 
 class ContextBlock(nn.Module):
