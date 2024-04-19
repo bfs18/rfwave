@@ -671,7 +671,7 @@ class VocosExp(pl.LightningModule):
 
         if standalone_align is not None:
             assert isinstance(getattr(backbone, "_orig_mod", backbone), DiTRFE2ETTSMultiTaskBackbone)
-            assert not backbone.rad_align and backbone.standalone_align
+            assert not (backbone.rad_align and backbone.standalone_align)
         assert input_adaptor is not None
         self.aux_loss = False
         self.aux_type = 'mel'
