@@ -105,7 +105,7 @@ class StandaloneAlignment(torch.nn.Module):
         pos = get_pos_embed_indices(start, length, max_pos=self.freqs_cis.size(0), scale=scale)
         return self.freqs_cis[pos]
 
-    def forward_guassian(self, queries, keys, token_exp_scale, mask=None, attn_prior=None):
+    def forward_gaussian(self, queries, keys, token_exp_scale, mask=None, attn_prior=None):
         """Attention mechanism for radtts. Unlike in Flowtron, we have no
         restrictions such as causality etc, since we only need this during
         training.
@@ -180,7 +180,7 @@ class StandaloneAlignment(torch.nn.Module):
 
     def forward(self, queries, keys, token_exp_scale, mask=None, attn_prior=None):
         if self.type == 'gaussian':
-            return self.forward_guassian(queries, keys, token_exp_scale, mask, attn_prior)
+            return self.forward_gaussian(queries, keys, token_exp_scale, mask, attn_prior)
         else:
             return self.forward_dot_product(queries, keys, token_exp_scale, mask, attn_prior)
 
