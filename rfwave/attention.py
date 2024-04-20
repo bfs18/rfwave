@@ -277,6 +277,21 @@ class Attention(CrossAttention):
         return super().forward(x, x, freqs_cis, freqs_cis, mask)
 
 
+# https://github.com/lucidrains/vector-quantize-pytorch/blob/ce3433256e40328de4a5bf06fadfcda2a227e696/vector_quantize_pytorch/vector_quantize_pytorch.py#L29
+# def cdist(x, y):
+#     x2 = reduce(x ** 2, 'b n d -> b n', 'sum')
+#     y2 = reduce(y ** 2, 'b n d -> b n', 'sum')
+#     xy = einsum('b i d, b j d -> b i j', x, y) * -2
+#     return (rearrange(x2, 'b i -> b i 1') + rearrange(y2, 'b j -> b 1 j') + xy).clamp(min = 0).sqrt()
+def cdist(x, y):
+    # x, y: batch_size, num_heads, seq_len, head_dim
+    x2 = x.pow(2).sum(dim=-1)
+    y2 = y.pow(2).sum(dim=-1)
+    xy = torch.einsum('b k i d , b k j d -> b k i j', x, y)
+    dist = x2.unsqueeze(-1) + y2.unsqueeze(-2) - 2 * xy
+    return dist
+
+
 class CrossAttentionWithPrior(nn.Module):
     def __init__(
         self,
@@ -330,11 +345,11 @@ class CrossAttentionWithPrior(nn.Module):
         v = v.transpose(1, 2)
 
         if self.type == 'gaussian':
-            # attn = (q[:, :, :, None] - k[:, :, None])**2
-            q = q.transpose(-1, -2)
-            k = k.transpose(-1, -2)
-            attn = (q.unsqueeze(-1) - k.unsqueeze(-2))**2
-            attn = -attn.mean(-3, keepdim=False)
+            attn = -cdist(q, k) / self.head_dim
+            # q = q.transpose(-1, -2)
+            # k = k.transpose(-1, -2)
+            # attn = (q.unsqueeze(-1) - k.unsqueeze(-2))**2
+            # attn = -attn.mean(-3, keepdim=False)
         elif self.type == 'dot_product':
             q = q * self.scale
             attn = q @ k.transpose(-2, -1)

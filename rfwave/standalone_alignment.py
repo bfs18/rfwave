@@ -10,7 +10,7 @@ from numba import jit
 from rfwave.models import ConvNeXtV2Block
 from rfwave.dataset import get_exp_length
 from rfwave.attention import (
-    precompute_freqs_cis, get_pos_embed_indices, _get_start, _get_len, apply_rotary_emb)
+precompute_freqs_cis, get_pos_embed_indices, _get_start, _get_len, apply_rotary_emb, cdist)
 
 
 def save_plot(fname, attn_map):
@@ -137,9 +137,13 @@ class StandaloneAlignment(torch.nn.Module):
             # Gaussian Isotopic Attention
             # B x n_attn_dims x T1 x T2
             # attn = (queries_enc[:, :, :, None] - keys_enc[:, :, None])**2
-            attn = (queries_enc.unsqueeze(-1) - keys_enc.unsqueeze(-2))**2
             # compute log-likelihood from gaussian
-            attn = -attn.mean(-3, keepdim=True)
+            # attn = (queries_enc.unsqueeze(-1) - keys_enc.unsqueeze(-2))**2
+            # attn = -attn.mean(-3, keepdim=True)
+            queries_enc = queries_enc.transpose(-2, -1).unsqueeze(1)
+            keys_enc = keys_enc.transpose(-2, -1).unsqueeze(1)
+            attn = -cdist(queries_enc, keys_enc) / keys_enc.size(-1)
+            pass
         elif self.type == 'dot_product':
             queries_enc = queries_enc * self.scale
             attn = queries_enc @ keys_enc.transpose(-2, -1)
