@@ -287,7 +287,9 @@ class CrossAttentionWithPrior(nn.Module):
         attn_drop: float = 0.,
         proj_drop: float = 0.,
         norm_layer: nn.Module = nn.LayerNorm,
+        type: str = 'gaussian'
     ) -> None:
+        assert type in ['gaussian', 'dot_product']
         super().__init__()
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
         self.num_heads = num_heads
@@ -302,6 +304,7 @@ class CrossAttentionWithPrior(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
         self.prior_strength = 0.1
+        self.type = type
 
     def forward(
         self,
@@ -326,8 +329,17 @@ class CrossAttentionWithPrior(nn.Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        q = q * self.scale
-        attn = q @ k.transpose(-2, -1)
+        if self.type == 'gaussian':
+            # attn = (q[:, :, :, None] - k[:, :, None])**2
+            q = q.transpose(-1, -2)
+            k = k.transpose(-1, -2)
+            attn = (q.unsqueeze(-1) - k.unsqueeze(-2))**2
+            attn = -attn.mean(-3, keepdim=False)
+        elif self.type == 'dot_product':
+            q = q * self.scale
+            attn = q @ k.transpose(-2, -1)
+        else:
+            raise ValueError(f'Unknown attention type {self.type}')
         if mask is not None:
             attn = attn + mask
         attn = attn.float().softmax(dim=-1).type_as(attn)

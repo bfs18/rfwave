@@ -289,6 +289,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         rad_align: bool = True,
         standalone_align: bool = False,
         standalone_distill: Optional[bool] = None,
+        align_attention_type: Optional[str] = None,
     ):
         super().__init__()
         self.input_channels = input_channels
@@ -305,10 +306,11 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         params = ModelArgs(dim=dim, n_heads=num_heads, dropout=dropout)
         self.z_t1_proj = nn.Conv1d(output_channels1, dim, 1)
         if self.rad_align or (self.standalone_align and self.standalone_distill):
+            assert align_attention_type is not None
             assert num_ctx_layers % 2 == 0 and num_ctx_layers // 2 >= 1
             self.cross_attn1 = ContextBlock(params, input_channels, num_ctx_layers // 2, modulate=True)
             self.cross_attn2 = ContextBlock(params, input_channels, num_ctx_layers // 2, modulate=True)
-            self.align_block = AlignmentBlock(dim, input_channels)
+            self.align_block = AlignmentBlock(dim, input_channels, attention_type=align_attention_type)
         elif self.standalone_align and not self.standalone_distill:
             self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
             self.sa_align_block = EmptyAlignmentBlock(dim, input_channels)
