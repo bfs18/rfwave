@@ -49,7 +49,7 @@ def mas_width1(attn_map):
     return opt
 
 
-def compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_prob=0.25):
+def compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_prob=0.4):
     attn = attn.reshape(-1, *attn.shape[-2:])
     bsz = attn.shape[0]
     rpt = bsz // num_tokens.size(0)
