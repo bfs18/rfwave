@@ -332,9 +332,9 @@ class CrossAttentionWithPrior(nn.Module):
             attn = attn + mask
         attn = attn.float().softmax(dim=-1).type_as(attn)
         if attn_prior is not None:
-            # attn = torch.exp(torch.log(attn.clamp_min(1e-8)) +
-            #                  torch.log(attn_prior.unsqueeze(1).clamp_min(1e-8)))
-            attn = attn + attn_prior.unsqueeze(1) * self.prior_strength
+            attn = torch.exp(torch.log(attn.clamp_min(1e-8)) +
+                             torch.log(attn_prior.unsqueeze(1).clamp_min(1e-8)))
+            # attn = attn + attn_prior.unsqueeze(1) * self.prior_strength
             attn = attn / attn.sum(dim=-1, keepdim=True)
         attn_before_drop = attn
         attn = self.attn_drop(attn)

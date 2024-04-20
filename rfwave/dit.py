@@ -381,7 +381,8 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             ctx = self.cross_attn1(z_t1, x_ref, z_freq_cis, ref_freq_cis, z_mask, ref_mask, mod_c=te)
             # inject text information and get align attn
             attn_prior = gaussian_prior(num_tokens, token_exp_scale)
-            ctx, attn = self.align_block(ctx, x_token, z_freq_cis, token_freq_cis, token_mask,
+            align_token_freq_cis = self.get_pos_embed(zero_start, num_tokens.max())
+            ctx, attn = self.align_block(ctx, x_token, None, align_token_freq_cis, token_mask,
                                          mod_c=te, attn_prior=attn_prior)
             # postprocess input, inject text and ref
             ctx = self.cross_attn2(ctx, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
