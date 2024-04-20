@@ -99,6 +99,14 @@ class StandaloneAlignment(torch.nn.Module):
         self.query_proj = nn.Sequential(*[ConvNeXtV2Block(n_channels, n_channels * 3) for _ in range(num_layers)])
 
         self.register_buffer("freqs_cis", precompute_freqs_cis(n_channels, 1024), persistent=False)
+        self.apply(self._init_weights)
+
+    @staticmethod
+    def _init_weights(module):
+        if isinstance(module, (nn.Linear, nn.Conv1d)):
+            torch.nn.init.trunc_normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
 
     def get_pos_embed(self, start, length, scale=1.):
         # TODO: theta_rescale performs better at evaluation for dit vocoder.
@@ -127,6 +135,7 @@ class StandaloneAlignment(torch.nn.Module):
         queries = self.query_in(queries.transpose(-2, -1))
         pos_a = np.sqrt(self.prior_strength)
         key_freq_cis = self.get_pos_embed(start, keys_length.max()) * pos_a
+        # rotary is only apply to keys to work as absolute positional embedding.
         keys = apply_rotary_emb(keys, key_freq_cis)
 
         keys_enc = self.key_proj(keys.transpose(-2, -1))  # B x n_attn_dims x T2
@@ -146,7 +155,7 @@ class StandaloneAlignment(torch.nn.Module):
             pass
         elif self.type == 'dot_product':
             queries_enc = queries_enc * self.scale
-            attn = queries_enc @ keys_enc.transpose(-2, -1)
+            attn = queries_enc.transpose(-2, -1) @ keys_enc
             attn = attn.unsqueeze(1)  # make attention shape consistent.
         else:
             raise ValueError(f'Unknown attention type {self.type}')
