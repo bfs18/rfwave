@@ -285,11 +285,14 @@ class Attention(CrossAttention):
 #     return (rearrange(x2, 'b i -> b i 1') + rearrange(y2, 'b j -> b 1 j') + xy).clamp(min = 0).sqrt()
 def cdist(x, y):
     # x, y: batch_size, num_heads, seq_len, head_dim
+    dt = x.dtype
+    x = x.float()
+    y = y.float()
     x2 = x.pow(2).sum(dim=-1)
     y2 = y.pow(2).sum(dim=-1)
     xy = torch.einsum('b k i d , b k j d -> b k i j', x, y)
     dist = x2.unsqueeze(-1) + y2.unsqueeze(-2) - 2 * xy
-    return dist
+    return dist.clamp(0.).to(dt)
 
 
 class CrossAttentionWithPrior(nn.Module):
@@ -362,7 +365,7 @@ class CrossAttentionWithPrior(nn.Module):
             attn = torch.exp(torch.log(attn.clamp_min(1e-8)) +
                              torch.log(attn_prior.unsqueeze(1).clamp_min(1e-8)))
             # attn = attn + attn_prior.unsqueeze(1) * self.prior_strength
-            attn = attn / attn.sum(dim=-1, keepdim=True)
+            attn = attn / (attn.sum(dim=-1, keepdim=True) + 1e-8)
         attn_before_drop = attn
         attn = self.attn_drop(attn)
         x = attn @ v

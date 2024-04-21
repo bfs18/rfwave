@@ -61,7 +61,7 @@ def compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_prob=0.4):
     for i, n_tok in enumerate(num_tokens):
         target[i, :n_tok] = torch.arange(1, n_tok + 1, device=attn.device)
     attn = F.pad(attn, (1, 0, 0, 0, 0, 0), value=blank_prob)  # prob for blank.
-    attn = attn / attn.sum(dim=-1, keepdim=True)
+    attn = attn / (attn.sum(dim=-1, keepdim=True) + 1e-8)
     # float to compute loss.
     log_prob = torch.log(attn.clamp_min(1e-8)).float()
     loss = F.ctc_loss(log_prob.transpose(1, 0), targets=target, zero_infinity=True,
@@ -167,7 +167,7 @@ class StandaloneAlignment(torch.nn.Module):
             attn = torch.exp(torch.log(attn.clamp_min(1e-8)) +
                              torch.log(attn_prior.unsqueeze(1).clamp_min(1e-8)))
             # attn = attn + attn_prior.unsqueeze(1) * self.prior_strength
-            attn = attn / attn.sum(dim=-1, keepdim=True)
+            attn = attn / (attn.sum(dim=-1, keepdim=True) + 1e-8)
         return attn
 
 
