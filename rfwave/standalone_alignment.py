@@ -49,6 +49,29 @@ def mas_width1(attn_map):
     return opt
 
 
+def binarize_attention(attn, in_lens, out_lens):
+    """For training purposes only. Binarizes attention with MAS. These will
+    no longer recieve a gradient
+    Args:
+        attn: B x 1 x max_mel_len x max_text_len
+    """
+    b_size = attn.shape[0]
+    with torch.no_grad():
+        attn_cpu = attn.data.cpu().numpy()
+        attn_out = torch.zeros_like(attn)
+        for ind in range(b_size):
+            hard_attn = mas_width1(attn_cpu[ind, 0, :out_lens[ind], :in_lens[ind]])
+            attn_out[ind, 0, :out_lens[ind], :in_lens[ind]] = torch.tensor(
+                hard_attn, device=attn.get_device())
+    return attn_out
+
+
+def duration_from_attention(attn, in_lens, out_lens):
+    attn_hard = binarize_attention(attn, in_lens, out_lens)
+    attn_hard_reduced = attn_hard.sum(2)[:, 0, :]
+    return attn_hard_reduced.detach()
+
+
 def compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_prob=0.4):
     attn = attn.reshape(-1, *attn.shape[-2:])
     bsz = attn.shape[0]

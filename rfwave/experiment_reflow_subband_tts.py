@@ -26,8 +26,8 @@ from rfwave.helpers import save_code
 from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_error, compute_instantaneous_frequency
 from rfwave.feature_weight import get_feature_weight, get_feature_weight2
 from rfwave.dit import DiTRFTTSMultiTaskBackbone, DiTRFE2ETTSMultiTaskBackbone
-from rfwave.standalone_alignment import (
-    StandaloneAlignment, gaussian_prior, compute_alignment_loss, compute_attention_distill_loss, mas_width1)
+from rfwave.standalone_alignment import (StandaloneAlignment, gaussian_prior, compute_alignment_loss,
+                                         compute_attention_distill_loss, duration_from_attention)
 from rfwave.logit_normal import LogitNormal
 from rfwave.dataset import get_exp_length
 from rfwave.e2e_duration import E2EDuration, DurModel
@@ -676,10 +676,11 @@ class VocosExp(pl.LightningModule):
                 "when using standalone_align model, backbone.rad_align must be False and "
                 "backbone.standalone_align must be True")
 
-            self.dur_output_exp_scale = self.backbone.standalone_distill
+            self.dur_output_exp_scale = backbone.standalone_distill
             self.standalone_dur = E2EDuration(
                 DurModel(self.input_adaptor.embedding_dim, 2),
                 output_exp_scale=self.dur_output_exp_scale)
+            self.standalone_dur_start_step = 50000
 
         assert input_adaptor is not None
         self.aux_loss = False
@@ -800,20 +801,20 @@ class VocosExp(pl.LightningModule):
         return attn, sa_loss
 
     def compute_dur_loss(self, text, standalone_attn, **kwargs):
+        if self.standalone_dur is None:  # or self.global_step < self.standalone_dur_start_step:
+            return 0.
         num_tokens = kwargs['num_tokens']
         ref_length = kwargs['ctx_length']
         token_exp_scale = kwargs['token_exp_scale']
-        if self.standalone_dur is None:
-            return 0.
         dur_out = self.standalone_dur(text, num_tokens, ref_length)
-        dur_out = dur_out.squeeze(1)
         if self.dur_output_exp_scale:
             return F.mse_loss(dur_out, token_exp_scale)
         else:
-            dur = mas_width1(standalone_attn)
+            length = get_exp_length(num_tokens, token_exp_scale)
+            dur = duration_from_attention(standalone_attn, num_tokens, length)
             mask = sequence_mask(num_tokens)
             dur_out = torch.where(mask, dur_out, dur)
-            loss = F.mse_loss(dur_out, dur, reduction='none') * num_tokens.max() / num_tokens
+            loss = F.mse_loss(dur_out, dur, reduction='none').mean(-1) * num_tokens.max() / num_tokens
             return loss.mean()
 
     def on_before_optimizer_step(self, optimizer):

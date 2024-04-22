@@ -553,7 +553,8 @@ class DurInputAdaptor(InputAdaptor):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def get_pos_embed(self, start, length, scale=1.):
-        attn_freqs_cis = self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval
+        # attn_freqs_cis = self.attn_freqs_cis if self.training else self.attn_freqs_cis_eval
+        attn_freqs_cis = self.attn_freqs_cis
         pos = get_pos_embed_indices(start, length, max_pos=attn_freqs_cis.size(0), scale=scale)
         return attn_freqs_cis[pos]
 
@@ -577,6 +578,7 @@ class DurInputAdaptor(InputAdaptor):
 class E2ECtxCharInputAdaptor(InputAdaptor):
     def __init__(self, embedding_dim, vocab_size, ctx_dim, num_layers=4):
         super().__init__()
+        self.embedding_dim = embedding_dim
         self.tok_embeddings = nn.Embedding(vocab_size, embedding_dim)
         self.ctx_proj = nn.Conv1d(ctx_dim, embedding_dim, kernel_size=1)
         self.tok_blocks = nn.Sequential(*[ConvNeXtV2Block(embedding_dim, embedding_dim*3) for _ in range(num_layers)])
