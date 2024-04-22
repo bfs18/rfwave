@@ -672,7 +672,10 @@ class VocosExp(pl.LightningModule):
 
         if standalone_align is not None:
             assert isinstance(getattr(backbone, "_orig_mod", backbone), DiTRFE2ETTSMultiTaskBackbone)
-            assert not backbone.rad_align and backbone.standalone_align
+            assert not backbone.rad_align and backbone.standalone_align, (
+                "when using standalone_align model, backbone.rad_align must be False and "
+                "backbone.standalone_align must be True")
+
             self.dur_output_exp_scale = self.backbone.standalone_distill
             self.standalone_dur = E2EDuration(
                 DurModel(self.input_adaptor.embedding_dim, 2),
