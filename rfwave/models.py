@@ -93,6 +93,7 @@ class VocosRFBackbone(Backbone):
         self.output_channels = output_channels
         self.with_fourier_features = with_fourier_features
         self.num_bands = num_bands
+        self.dim = dim
         if self.with_fourier_features:
             self.fourier_module = Base2FourierFeatures(start=6, stop=8, step=1)
             fourier_dim = output_channels * 2 * (

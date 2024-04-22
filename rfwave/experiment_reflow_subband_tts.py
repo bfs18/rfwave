@@ -27,9 +27,10 @@ from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_err
 from rfwave.feature_weight import get_feature_weight, get_feature_weight2
 from rfwave.dit import DiTRFTTSMultiTaskBackbone, DiTRFE2ETTSMultiTaskBackbone
 from rfwave.standalone_alignment import (
-    StandaloneAlignment, gaussian_prior, compute_alignment_loss, compute_attention_distill_loss)
+    StandaloneAlignment, gaussian_prior, compute_alignment_loss, compute_attention_distill_loss, mas_width1)
 from rfwave.logit_normal import LogitNormal
 from rfwave.dataset import get_exp_length
+from rfwave.e2e_duration import E2EDuration, DurModel
 
 
 def sequence_mask_with_ctx(length, ctx_start=None, ctx_length=None, max_length=None):
@@ -672,6 +673,11 @@ class VocosExp(pl.LightningModule):
         if standalone_align is not None:
             assert isinstance(getattr(backbone, "_orig_mod", backbone), DiTRFE2ETTSMultiTaskBackbone)
             assert not (backbone.rad_align and backbone.standalone_align)
+            self.dur_output_exp_scale = self.backbone.standalone_distill
+            self.standalone_dur = E2EDuration(
+                DurModel(self.input_adaptor.embedding_dim, 2),
+                output_exp_scale=self.dur_output_exp_scale)
+
         assert input_adaptor is not None
         self.aux_loss = False
         self.aux_type = 'mel'
@@ -697,6 +703,8 @@ class VocosExp(pl.LightningModule):
             gen_params.append({"params": self.input_adaptor_proj.parameters()})
         if self.standalone_align is not None:
             gen_params.append({"params": self.standalone_align.parameters()})
+        if self.standalone_dur is not None:
+            gen_params.append({"params": self.standalone_dur.parameters()})
         opt_gen = torch.optim.AdamW(gen_params, lr=self.hparams.initial_learning_rate)
 
         max_steps = self.trainer.max_steps  # // 2  # Max steps per optimizer
@@ -788,6 +796,23 @@ class VocosExp(pl.LightningModule):
         sa_loss = compute_alignment_loss(attn, num_tokens, token_exp_scale)
         return attn, sa_loss
 
+    def compute_dur_loss(self, text, standalone_attn, **kwargs):
+        num_tokens = kwargs['num_tokens']
+        ref_length = kwargs['ctx_length']
+        token_exp_scale = kwargs['token_exp_scale']
+        if self.standalone_dur is None:
+            return 0.
+        dur_out = self.standalone_dur(text, num_tokens, ref_length)
+        dur_out = dur_out.squeeze(1)
+        if self.dur_output_exp_scale:
+            return F.mse_loss(dur_out, token_exp_scale)
+        else:
+            dur = mas_width1(standalone_attn)
+            mask = sequence_mask(num_tokens)
+            dur_out = torch.where(mask, dur_out, dur)
+            loss = F.mse_loss(dur_out, dur, reduction='none') * num_tokens.max() / num_tokens
+            return loss.mean()
+
     def on_before_optimizer_step(self, optimizer):
         # Note: `unscale` happens after the closure is executed, but before the `on_before_optimizer_step` hook.
         self.skip_nan(optimizer)
@@ -806,6 +831,7 @@ class VocosExp(pl.LightningModule):
         text = self.input_adaptor(*phone_info)
         sa_attn, sa_loss = (self.compute_sa_align(mel, text, **pi_kwargs)
                             if self.standalone_align else (None, 0.))
+        dur_loss = self.compute_dur_loss(text, standalone_attn=sa_attn, **pi_kwargs)
         cond_mel_loss = self.compute_aux_loss(text, audio_input, self.aux_type) if self.aux_loss else 0.
         text_ext, bandwidth_id, (z_t, t, target) = self.reflow.get_train_tuple(text, tandem_feat, audio_input)
         kwargs.update(**pi_kwargs)
@@ -814,7 +840,7 @@ class VocosExp(pl.LightningModule):
         loss, loss_dict = self.reflow.compute_loss(
             z_t, t, target, text_ext, bandwidth_id=bandwidth_id, mask=ctx_mask,
             standalone_attn=sa_attn, **kwargs)
-        loss = loss + cond_mel_loss + sa_loss
+        loss = loss + cond_mel_loss + sa_loss + dur_loss
         self.manual_backward(loss)
         opt_gen.step()
         sch_gen.step()
