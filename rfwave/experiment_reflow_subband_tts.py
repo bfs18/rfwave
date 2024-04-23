@@ -861,14 +861,15 @@ class VocosExp(pl.LightningModule):
                 mel_hat_traj, audio_hat_traj = self.reflow.sample_ode(text, N=100, **kwargs)
             audio_hat = audio_hat_traj[-1]
             mel_hat = mel_hat_traj[-1]
-            tandem_mel_loss = F.mse_loss(mel_hat, tandem_feat)
-            mel_loss = F.mse_loss(self.feature_extractor(audio_hat), mel)
+            mask = sequence_mask(ctx_kwargs['length']) if 'length' in ctx_kwargs else None
+            tandem_mel_loss = masked_mse_loss(mel_hat, tandem_feat, mask)
+            mel_loss = masked_mse_loss(self.feature_extractor(audio_hat), mel, mask)
             self.logger.log_metrics(
-                {"train/total_loss": loss, "train/cond_mel_loss": cond_mel_loss,
-                 "train/mel_loss": mel_loss, "train/tandem_mel_loss": tandem_mel_loss},
-                step=self.global_step)
+                {"train/mel_loss": mel_loss, "train/tandem_mel_loss": tandem_mel_loss,
+                 "train/total_loss": loss, "train/cond_mel_loss": cond_mel_loss}, step=self.global_step)
             attn = loss_dict.pop('attn', None)
             loss_dict['sa_attn_loss'] = sa_loss
+            loss_dict['dur_loss'] = dur_loss
             if attn is not None:
                 attn = attn[0, 0].detach().cpu().numpy()
                 self.logger.experiment.log(
@@ -898,7 +899,7 @@ class VocosExp(pl.LightningModule):
             return {'out_length': length.clamp(0).max(), 'duration': dur_out.clamp(0),
                     'token_exp_scale': dur_out.clamp(0).sum(1) / num_tokens.float()}
 
-    def align_or_dur(self, mel, text, **pi_kwargs):
+    def attn_or_dur(self, mel, text, **pi_kwargs):
         if self.standalone_align is None:
             return {}
         elif self.global_step < self.standalone_dur_start_step + 10000:
@@ -918,12 +919,15 @@ class VocosExp(pl.LightningModule):
             kwargs.update(**pi_kwargs)
             kwargs['out_length'] = mel.size(2)
             # out_length, token_exp_scale will be replaced.
-            aod_kwargs = self.align_or_dur(mel, text, **pi_kwargs)
+            aod_kwargs = self.attn_or_dur(mel, text, **pi_kwargs)
             kwargs.update(**aod_kwargs)
             mel_hat_traj, audio_hat_traj = self.reflow.sample_ode(text, N=100, **kwargs)
             cond_mel_hat = self.input_adaptor_proj(text) if self.aux_loss else None
         audio_hat = audio_hat_traj[-1]
         mel_hat = mel_hat_traj[-1]
+        # NOTE: interpolate to calculate loss. not correct
+        audio_hat = F.interpolate(audio_hat.unsqueeze(1), size=audio_input.shape[1:]).squeeze(1)
+        mel_hat = F.interpolate(mel_hat, size=mel.shape[2:])
 
         mask = sequence_mask(ctx_kwargs['length']) if 'length' in ctx_kwargs else None
         tandem_mel_loss = masked_mse_loss(mel_hat, tandem_feat, mask)
@@ -934,11 +938,11 @@ class VocosExp(pl.LightningModule):
         phase_loss = compute_phase_error(audio_hat, audio_input, self.reflow.head.get_spec)
 
         output = {
-            "tandem_mel_loss": tandem_mel_loss,
-            "mel_loss": mel_loss,
             "audio_input": audio_input[0],
             "audio_pred": audio_hat[0],
             "mel_pred": mel_hat[0],
+            "tandem_mel_loss": tandem_mel_loss,
+            "mel_loss": mel_loss,
             "cond_mel_loss": cond_mel_loss,
             "phase_loss": phase_loss,
         }

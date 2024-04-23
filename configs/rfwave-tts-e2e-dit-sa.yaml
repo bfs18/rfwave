@@ -4,28 +4,28 @@ data:
   class_path: rfwave.dataset.VocosDataModule
   init_args:
     train_params:
-      filelist_path: synta_filelist.train
+      filelist_path: /data1/corpus/LJSpeech-1.1/synta_filelist.train
       sampling_rate: 22050
       batch_size: 1
       num_workers: 8
       task: e2e
       hop_length: 256
       padding: "center"
-      phoneset: synta_phoneset.th
+      phoneset:  /data1/corpus/LJSpeech-1.1/synta_phoneset.th
       min_context: 200
       segment: False
       max_duration: 70.
       quadratic_duration: 15.
 
     val_params:
-      filelist_path: synta_filelist.valid
+      filelist_path:  /data1/corpus/LJSpeech-1.1/synta_filelist.valid
       sampling_rate: 22050
       batch_size: 1
       num_workers: 4
       task: e2e
       hop_length: 256
       padding: "center"
-      phoneset: synta_phoneset.th
+      phoneset:  /data1/corpus/LJSpeech-1.1/synta_phoneset.th
       min_context: 200
       segment: False
       max_duration: 80.
@@ -43,7 +43,7 @@ model:
     p_uncond: 0.1
     initial_learning_rate: 1e-4
     num_warmup_steps: 20_000 # Optimizers warmup steps
-    torch_compile: True
+    torch_compile: False
 
     feature_extractor:
       class_path: rfwave.feature_extractors.MelSpectrogramFeatures
@@ -69,8 +69,8 @@ model:
         num_heads: 6
         rad_align: False
         standalone_align: True
-        standalone_distill: True
-        align_attention_type: gaussian
+        standalone_distill: False
+        align_attention_type: dot_product
 
     head:
       class_path: rfwave.heads.RFSTFTHead
@@ -95,7 +95,7 @@ model:
         n_text_channels: 512
         n_channels: 512
         num_layers: 3
-        type: gaussian
+        type: dot_product
 
 trainer:
   check_val_every_n_epoch: 10
