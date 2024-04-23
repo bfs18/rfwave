@@ -209,9 +209,20 @@ class EmptyAlignmentBlock(torch.nn.Module):
         self.ctx_proj = nn.Conv1d(ctx_dim, dim, 1) if ctx_dim != dim else nn.Identity()
         self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(self.dim, self.dim, bias=True))
 
-    def forward(self, x, context, attn, mod_c):
+    def expand(self, encoded_phone, lengths):
+        l = torch.max(lengths.sum(1))
+        out = torch.zeros([encoded_phone.size(0), l, encoded_phone.size(2)], device=encoded_phone.device)
+        for i, (phn, l) in enumerate(zip(encoded_phone, lengths)):
+            out[i, :l.sum()] = phn.repeat_interleave(l, dim=0)
+        return out
+
+    def forward(self, x, context, attn, duration, mod_c):
+        assert not (attn is None and duration is None)
         context = self.ctx_proj(context).transpose(1, 2)
-        context_time_expanded = torch.bmm(attn.squeeze(1), context)
+        if attn is not None:
+            context_time_expanded = torch.bmm(attn.squeeze(1), context)
+        else:
+            context_time_expanded = self.expand(context, duration)
         gate = self.adaLN_modulation(mod_c)
         out = x + gate.unsqueeze(1) * context_time_expanded
         return out

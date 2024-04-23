@@ -14,14 +14,15 @@ class ExpScale(nn.Module):
         self.token_dur_model = token_dur_model
         dim = self.token_dur_model.dim
         self.output_proj = nn.Sequential(
-            nn.Linear(dim * 2, dim * 4), nn.SiLU(), nn.Linear(dim * 4, 1))
+            nn.Linear(dim, dim * 4), nn.SiLU(), nn.Linear(dim * 4, 1))
 
     def forward(self, x, num_tokens, ref_length):
         token_out = self.token_dur_model.forward_(x, num_tokens, ref_length)
         mask = sequence_mask(num_tokens)
         token_out = token_out * mask.unsqueeze(-1).float()
-        out = token_out.sum([1, 2]) / num_tokens
-        return out
+        avg_out = token_out.sum(1) / num_tokens.unsqueeze(1)
+        out = self.output_proj(avg_out)
+        return out.squeeze(-1)
 
 
 class DurModel(nn.Module):
@@ -39,10 +40,6 @@ class DurModel(nn.Module):
 
         # init all weights
         self.apply(self._init_weights)
-        # apply special scaled init to the residual projections, per GPT-2 paper
-        for pn, p in self.named_parameters():
-            if pn.endswith('proj.weight') or pn.endswith('fc2.weight') or pn.endswith('w3.weight'):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * params.n_layers))
 
     def _init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Conv1d)):

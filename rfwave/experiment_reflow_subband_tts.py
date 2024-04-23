@@ -298,7 +298,7 @@ class RectifiedFlow(nn.Module):
 
     def get_pred(self, z_t, t, text, bandwidth_id, **kwargs):
         _backbone_keys = ['start', 'length', 'num_tokens', 'ctx_length',
-                          'token_exp_scale', 'standalone_attn']
+                          'token_exp_scale', 'standalone_attn', 'token', 'duration']
         backbone_kwargs = {}
         for k in _backbone_keys:
             if k in kwargs and kwargs[k] is not None:
@@ -805,8 +805,8 @@ class VocosExp(pl.LightningModule):
             return 0.
         num_tokens = kwargs['num_tokens']
         ref_length = kwargs['ctx_length']
-        token_exp_scale = kwargs['token_exp_scale']
         dur_out = self.standalone_dur(text, num_tokens, ref_length)
+        token_exp_scale = kwargs['token_exp_scale']
         if self.dur_output_exp_scale:
             return F.mse_loss(dur_out, token_exp_scale)
         else:
@@ -876,6 +876,33 @@ class VocosExp(pl.LightningModule):
                 self.logger.log_metrics({f"train/{k}": v}, step=self.global_step)
         return loss
 
+    def infer_dur(self, text, **kwargs):
+        if self.standalone_dur is None:  # or self.global_step < self.standalone_dur_start_step:
+            return {}
+        num_tokens = kwargs['num_tokens']
+        ref_length = kwargs['ctx_length']
+        dur_out = self.standalone_dur(text, num_tokens, ref_length)
+        if self.dur_output_exp_scale:
+            length = get_exp_length(num_tokens, dur_out)
+            return {'out_length': length.clamp(0).max(), 'token_exp_scale': dur_out.clamp(0)}
+        else:
+            mask = sequence_mask(num_tokens)
+            dur_out = dur_out * mask
+            dur_out = torch.ceil(dur_out).long()
+            length = dur_out.sum(-1)
+            return {'out_length': length.clamp(0).max(), 'duration': dur_out.clamp(0),
+                    'token_exp_scale': dur_out.clamp(0).sum(1) / num_tokens.float()}
+
+    def align_or_dur(self, mel, text, **pi_kwargs):
+        if self.standalone_align is None:
+            return {}
+        elif self.global_step < self.standalone_dur_start_step + 10000:
+            sa_attn, sa_loss = (self.compute_sa_align(mel, text, **pi_kwargs)
+                                if self.standalone_align else (None, 0.))
+            return {'standalone_attn': sa_attn}
+        else:
+            return self.infer_dur(text, **pi_kwargs)
+
     def validation_step(self, batch, batch_idx, **kwargs):
         audio_input, phone_info = batch
         phone_info, pi_kwargs, ctx_kwargs = self.process_context(phone_info)
@@ -883,11 +910,11 @@ class VocosExp(pl.LightningModule):
             mel = self.feature_extractor(audio_input, **kwargs)
             tandem_feat = mel if self.tandem_type == "mel" else self.get_log_spec(audio_input)
             text = self.input_adaptor(*phone_info)
-            sa_attn, sa_loss = (self.compute_sa_align(mel, text, **pi_kwargs)
-                                if self.standalone_align else (None, 0.))
             kwargs.update(**pi_kwargs)
             kwargs['out_length'] = mel.size(2)
-            kwargs['standalone_attn'] = sa_attn
+            # out_length, token_exp_scale will be replaced.
+            aod_kwargs = self.align_or_dur(mel, text, **pi_kwargs)
+            kwargs.update(**aod_kwargs)
             mel_hat_traj, audio_hat_traj = self.reflow.sample_ode(text, N=100, **kwargs)
             cond_mel_hat = self.input_adaptor_proj(text) if self.aux_loss else None
         audio_hat = audio_hat_traj[-1]

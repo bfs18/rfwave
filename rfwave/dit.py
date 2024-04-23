@@ -349,8 +349,8 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         return self.module.time_embed(t)
 
     def forward(self, z_t: torch.Tensor, t: torch.Tensor, x: torch.Tensor,
-                bandwidth_id: torch.Tensor=None, num_tokens=None,
-                ctx_length=None, token_exp_scale=None, standalone_attn=None):
+                bandwidth_id: torch.Tensor=None, num_tokens=None, ctx_length=None,
+                token_exp_scale=None, standalone_attn=None, duration=None):
         # pos_embed for z_t1
         assert num_tokens is not None
         assert ctx_length is not None
@@ -391,8 +391,8 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             # postprocess input, inject text and ref
             ctx = self.cross_attn2(ctx, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
         elif self.standalone_align and not self.standalone_distill:
-            assert standalone_attn is not None
-            ctx = self.sa_align_block(z_t1, x_token, standalone_attn, mod_c=te)
+            assert not (standalone_attn is None and duration is None)
+            ctx = self.sa_align_block(z_t1, x_token, standalone_attn, duration, mod_c=te)
             ctx = self.cross_attn(ctx, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
             attn = standalone_attn
         else:
