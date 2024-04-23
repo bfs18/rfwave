@@ -134,3 +134,20 @@ class STFTProcessor(SampleProcessor):
     def return_sample(self, x: torch.Tensor):
         x = x * torch.sqrt(self.var_ema[None, :, None] + 1e-6) + self.mean_ema[None, :, None]
         return x
+
+
+# from radtts
+class DurationProcessor(SampleProcessor):
+    def __init__(self, take_log_of_input=True):
+        super().__init__()
+        self.take_log_of_input = take_log_of_input
+
+    def project_sample(self, x):
+        if self.take_log_of_input:
+            x = torch.log(x + 1)
+        return x
+
+    def return_sample(self, x):
+        if self.take_log_of_input:
+            x = torch.exp(x) - 1
+        return x

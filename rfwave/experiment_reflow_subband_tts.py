@@ -31,6 +31,7 @@ from rfwave.standalone_alignment import (StandaloneAlignment, gaussian_prior, co
 from rfwave.logit_normal import LogitNormal
 from rfwave.dataset import get_exp_length
 from rfwave.e2e_duration import E2EDuration, DurModel
+from rfwave.multi_band_processor import DurationProcessor
 
 
 def sequence_mask_with_ctx(length, ctx_start=None, ctx_length=None, max_length=None):
@@ -680,6 +681,7 @@ class VocosExp(pl.LightningModule):
             self.standalone_dur = E2EDuration(
                 DurModel(self.input_adaptor.embedding_dim, 2),
                 output_exp_scale=self.dur_output_exp_scale)
+            self.dur_processor = DurationProcessor()
             self.standalone_dur_start_step = 50000
 
         assert input_adaptor is not None
@@ -808,12 +810,14 @@ class VocosExp(pl.LightningModule):
         dur_out = self.standalone_dur(text, num_tokens, ref_length)
         token_exp_scale = kwargs['token_exp_scale']
         if self.dur_output_exp_scale:
+            token_exp_scale = self.dur_processor.project_sample(token_exp_scale)
             return F.mse_loss(dur_out, token_exp_scale)
         else:
             length = get_exp_length(num_tokens, token_exp_scale)
             dur = duration_from_attention(standalone_attn, num_tokens, length)
             mask = sequence_mask(num_tokens)
             dur_out = torch.where(mask, dur_out, dur)
+            dur = self.dur_processor.project_sample(dur)
             loss = F.mse_loss(dur_out, dur, reduction='none').mean(-1) * num_tokens.max() / num_tokens
             return loss.mean()
 
@@ -882,6 +886,7 @@ class VocosExp(pl.LightningModule):
         num_tokens = kwargs['num_tokens']
         ref_length = kwargs['ctx_length']
         dur_out = self.standalone_dur(text, num_tokens, ref_length)
+        dur_out = self.dur_processor.return_sample(dur_out)
         if self.dur_output_exp_scale:
             length = get_exp_length(num_tokens, dur_out)
             return {'out_length': length.clamp(0).max(), 'token_exp_scale': dur_out.clamp(0)}
