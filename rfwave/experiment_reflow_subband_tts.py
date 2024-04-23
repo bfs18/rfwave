@@ -671,18 +671,17 @@ class VocosExp(pl.LightningModule):
             guidance_scale=guidance_scale, p_uncond=p_uncond)
         self.standalone_align = standalone_align
 
-        if standalone_align is not None:
+        if standalone_align is not None or backbone.rad_align:
             assert isinstance(getattr(backbone, "_orig_mod", backbone), DiTRFE2ETTSMultiTaskBackbone)
-            assert not backbone.rad_align and backbone.standalone_align, (
-                "when using standalone_align model, backbone.rad_align must be False and "
-                "backbone.standalone_align must be True")
+            assert not (backbone.rad_align and (backbone.standalone_align or standalone_align is not None)), (
+                "standalone align and rad align should not be used at the same time.")
 
-            self.dur_output_exp_scale = backbone.standalone_distill
+            self.dur_output_exp_scale = backbone.standalone_distill or backbone.rad_align
             self.standalone_dur = E2EDuration(
                 DurModel(self.input_adaptor.embedding_dim, 2),
                 output_exp_scale=self.dur_output_exp_scale)
             self.dur_processor = DurationProcessor()
-            self.standalone_dur_start_step = 50000
+            self.standalone_dur_start_step = 10000
 
         assert input_adaptor is not None
         self.aux_loss = False
@@ -803,15 +802,13 @@ class VocosExp(pl.LightningModule):
         return attn, sa_loss
 
     def compute_dur_loss(self, text, standalone_attn, **kwargs):
-        if self.standalone_dur is None:  # or self.global_step < self.standalone_dur_start_step:
-            return 0.
         num_tokens = kwargs['num_tokens']
         ref_length = kwargs['ctx_length']
         dur_out = self.standalone_dur(text, num_tokens, ref_length)
         token_exp_scale = kwargs['token_exp_scale']
         if self.dur_output_exp_scale:
             token_exp_scale = self.dur_processor.project_sample(token_exp_scale)
-            return F.mse_loss(dur_out, token_exp_scale)
+            loss = F.mse_loss(dur_out, token_exp_scale)
         else:
             length = get_exp_length(num_tokens, token_exp_scale)
             dur = duration_from_attention(standalone_attn, num_tokens, length)
@@ -819,7 +816,11 @@ class VocosExp(pl.LightningModule):
             dur_out = torch.where(mask, dur_out, dur)
             dur = self.dur_processor.project_sample(dur)
             loss = F.mse_loss(dur_out, dur, reduction='none').mean(-1) * num_tokens.max() / num_tokens
-            return loss.mean()
+            loss = loss.mean()
+        if self.standalone_dur or self.global_step < self.standalone_dur_start_step:
+            return loss * 0.  # all weights are used.
+        else:
+            return loss
 
     def on_before_optimizer_step(self, optimizer):
         # Note: `unscale` happens after the closure is executed, but before the `on_before_optimizer_step` hook.
@@ -902,7 +903,7 @@ class VocosExp(pl.LightningModule):
     def attn_or_dur(self, mel, text, **pi_kwargs):
         if self.standalone_align is None:
             return {}
-        elif self.global_step < self.standalone_dur_start_step + 10000:
+        elif self.global_step < self.standalone_dur_start_step * 1.5:
             sa_attn, sa_loss = (self.compute_sa_align(mel, text, **pi_kwargs)
                                 if self.standalone_align else (None, 0.))
             return {'standalone_attn': sa_attn}
