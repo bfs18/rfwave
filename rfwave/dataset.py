@@ -29,6 +29,13 @@ def get_exp_length(num_tokens, token_exp_scale):
     return length
 
 
+def get_exp_scale(num_tokens, length):
+    max_val = num_tokens.max()
+    token_exp_scale = torch.where(
+        num_tokens == max_val, length.float() / num_tokens.float(), length.float() / (num_tokens.float() - 1))
+    return token_exp_scale
+
+
 @dataclass
 class DataConfig:
     filelist_path: str

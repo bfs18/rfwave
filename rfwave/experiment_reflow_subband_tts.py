@@ -29,7 +29,7 @@ from rfwave.dit import DiTRFTTSMultiTaskBackbone, DiTRFE2ETTSMultiTaskBackbone
 from rfwave.standalone_alignment import (StandaloneAlignment, gaussian_prior, compute_alignment_loss,
                                          compute_attention_distill_loss, duration_from_attention)
 from rfwave.logit_normal import LogitNormal
-from rfwave.dataset import get_exp_length
+from rfwave.dataset import get_exp_length, get_exp_scale
 from rfwave.e2e_duration import E2EDuration, DurModel
 from rfwave.multi_band_processor import DurationProcessor
 
@@ -898,7 +898,7 @@ class VocosExp(pl.LightningModule):
             dur_out = torch.ceil(dur_out).long()
             length = dur_out.sum(-1)
             return {'out_length': length.clamp(0).max(), 'duration': dur_out.clamp(0),
-                    'token_exp_scale': dur_out.clamp(0).sum(1) / num_tokens.float()}
+                    'token_exp_scale': get_exp_scale(num_tokens, length)}
 
     def attn_or_dur(self, mel, text, **pi_kwargs):
         if self.standalone_dur is None:
