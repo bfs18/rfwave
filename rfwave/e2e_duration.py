@@ -17,12 +17,24 @@ class ExpScale(nn.Module):
             nn.Linear(dim, dim * 4), nn.SiLU(), nn.Linear(dim * 4, 1))
 
     def forward(self, x, num_tokens, ref_length):
-        token_out = self.token_dur_model.forward_(x, num_tokens, ref_length)
+        token_out = self.token_dur_model.forward(x, num_tokens, ref_length)
         mask = sequence_mask(num_tokens)
         token_out = token_out * mask.unsqueeze(-1).float()
         avg_out = token_out.sum(1) / num_tokens.unsqueeze(1)
         out = self.output_proj(avg_out)
         return out.squeeze(-1)
+
+
+class PhnDur(nn.Module):
+    def __init__(self, token_dur_model):
+        super().__init__()
+        self.token_dur_model = token_dur_model
+        dim = self.token_dur_model.dim
+        self.output_proj = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, 1))
+
+    def forward(self, x, num_tokens, ref_length):
+        out = self.token_dur_model.forward(x, num_tokens, ref_length)
+        return self.output_proj(out).squeeze(-1)
 
 
 class DurModel(nn.Module):
@@ -33,7 +45,6 @@ class DurModel(nn.Module):
         self.layers = torch.nn.ModuleList()
         for layer_id in range(params.n_layers):
             self.layers.append(TransformerBlock(layer_id, params))
-        self.output_proj = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, 1))
         self.pad_token = 0
         freqs_cis = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len)
         self.register_buffer("attn_freqs_cis", freqs_cis, persistent=False)
@@ -55,7 +66,7 @@ class DurModel(nn.Module):
         pos = get_pos_embed_indices(start, length, max_pos=attn_freqs_cis.size(0), scale=scale)
         return attn_freqs_cis[pos]
 
-    def forward_(self, x, num_tokens, ref_length):
+    def forward(self, x, num_tokens, ref_length):
         # pos_embed for token and ref
         token_mask = score_mask(num_tokens)
         ref_mask = score_mask(ref_length)
@@ -72,10 +83,6 @@ class DurModel(nn.Module):
             h, [num_tokens.max(), ref_length.max()], dim=1)
         return token_out
 
-    def forward(self, x, num_tokens, ref_length):
-        out = self.forward_(x, num_tokens, ref_length)
-        return self.output_proj(out).squeeze(-1)
-
 
 class E2EDuration(nn.Module):
     def __init__(self, backbone, output_exp_scale, rectified_flow=False):
@@ -84,7 +91,7 @@ class E2EDuration(nn.Module):
         if self.output_exp_scale:
             self.backbone = ExpScale(backbone)
         else:
-            self.backbone = backbone
+            self.backbone = PhnDur(backbone)
 
     def forward(self, x, num_tokens, ref_length):
         return self.backbone(x, num_tokens, ref_length)
