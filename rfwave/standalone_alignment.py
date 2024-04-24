@@ -218,6 +218,8 @@ class EmptyAlignmentBlock(torch.nn.Module):
 
     def forward(self, x, context, attn, duration, mod_c):
         assert not (attn is None and duration is None)
+        if attn is not None and duration is not None:
+            attn = None  # use duration for evaluation.
         context = self.ctx_proj(context).transpose(1, 2)
         if attn is not None:
             context_time_expanded = torch.bmm(attn.squeeze(1), context)

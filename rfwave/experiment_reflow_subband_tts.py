@@ -817,7 +817,7 @@ class VocosExp(pl.LightningModule):
             dur = self.dur_processor.project_sample(dur)
             loss = F.mse_loss(dur_out, dur, reduction='none').mean(-1) * num_tokens.max() / num_tokens
             loss = loss.mean()
-        if self.standalone_dur or self.global_step < self.standalone_dur_start_step:
+        if self.global_step < self.standalone_dur_start_step:
             return loss * 0.  # all weights are used.
         else:
             return loss
@@ -883,7 +883,7 @@ class VocosExp(pl.LightningModule):
         return loss
 
     def infer_dur(self, text, **kwargs):
-        if self.standalone_dur is None:  # or self.global_step < self.standalone_dur_start_step:
+        if self.standalone_dur is None:
             return {}
         num_tokens = kwargs['num_tokens']
         ref_length = kwargs['ctx_length']
@@ -901,7 +901,7 @@ class VocosExp(pl.LightningModule):
                     'token_exp_scale': dur_out.clamp(0).sum(1) / num_tokens.float()}
 
     def attn_or_dur(self, mel, text, **pi_kwargs):
-        if self.standalone_align is None:
+        if self.standalone_dur is None:
             return {}
         elif self.global_step < self.standalone_dur_start_step * 1.5:
             sa_attn, sa_loss = (self.compute_sa_align(mel, text, **pi_kwargs)
@@ -926,17 +926,17 @@ class VocosExp(pl.LightningModule):
             cond_mel_hat = self.input_adaptor_proj(text) if self.aux_loss else None
         audio_hat = audio_hat_traj[-1]
         mel_hat = mel_hat_traj[-1]
-        # NOTE: interpolate to calculate loss. not correct
-        audio_hat = F.interpolate(audio_hat.unsqueeze(1), size=audio_input.shape[1:]).squeeze(1)
-        mel_hat = F.interpolate(mel_hat, size=mel.shape[2:])
+        # NOTE: interpolate to calculate loss. not correct. MCD is too time-consuming
+        audio_hat_interp = F.interpolate(audio_hat.unsqueeze(1), size=audio_input.shape[1:]).squeeze(1)
+        mel_hat_interp = F.interpolate(mel_hat, size=mel.shape[2:])
 
         mask = sequence_mask(ctx_kwargs['length']) if 'length' in ctx_kwargs else None
-        tandem_mel_loss = masked_mse_loss(mel_hat, tandem_feat, mask)
-        mel_loss = masked_mse_loss(self.feature_extractor(audio_hat), mel, mask)
-        rvm_loss = self.rvm(audio_hat.unsqueeze(1), audio_input.unsqueeze(1))
+        tandem_mel_loss = masked_mse_loss(mel_hat_interp, tandem_feat, mask)
+        mel_loss = masked_mse_loss(self.feature_extractor(audio_hat_interp), mel, mask)
+        rvm_loss = self.rvm(audio_hat_interp.unsqueeze(1), audio_input.unsqueeze(1))
         cond_mel_loss = (F.mse_loss(cond_mel_hat, mel) if cond_mel_hat is not None
                          else torch.zeros(1, device=self.device))
-        phase_loss = compute_phase_error(audio_hat, audio_input, self.reflow.head.get_spec)
+        phase_loss = compute_phase_error(audio_hat_interp, audio_input, self.reflow.head.get_spec)
 
         output = {
             "audio_input": audio_input[0],
