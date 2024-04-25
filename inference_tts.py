@@ -22,7 +22,7 @@ def dur(model_dir, text_lines, phone2id, scale, num_samples=1):
     phone_info = {}
     for k, line in text_lines.items():
         token_ids = torch.tensor([phone2id[str(tk)] for tk in line.split()])
-        token_ids_ = token_ids.unsqueeze(0).repeat_interleave(num_samples, dim=0).to(exp.device)
+        token_ids_ = token_ids.unsqueeze(0).to(exp.device)
         features = exp.input_adaptor(token_ids_)
         durations = exp.reflow.sample_ode(features, N=10)[-1].mean(0)[0]
         durations = (durations * scale).round().long()
@@ -69,12 +69,12 @@ def tts(model_dir, phone_info, save_dir, ref_audio, ref_align, sr):
     hop_length = config['data']['init_args']['train_params']['hop_length']
     padding = config['data']['init_args']['train_params']['padding']
     for k, phone_info in phone_info.items():
-        (y_ctx, ctx_n_frame, token_ids, durations
+        (y_ctx, ctx_n_frame, ctx_token_ids, ctx_durations
          ) = get_random_ref(ref_audio, ref_align, hop_length, padding)
         y_ctx = y_ctx
         ctx_n_frame = torch.tensor(ctx_n_frame)
-        if token_ids is not None and durations is not None:
-            ref_info = [y_ctx, ctx_n_frame, token_ids, durations]
+        if ctx_token_ids is not None and ctx_durations is not None:
+            ref_info = [y_ctx, ctx_n_frame, ctx_token_ids, ctx_durations]
         else:
             ref_info = [y_ctx, ctx_n_frame]
         phone_info = [v.unsqueeze(0).to(device) for v in phone_info + ref_info]
@@ -89,12 +89,39 @@ def tts(model_dir, phone_info, save_dir, ref_audio, ref_align, sr):
         soundfile.write(Path(save_dir) / f'{k}-syn.wav', wave[0], sr, 'PCM_16')
 
 
+def tts_e2e(model_dir, text_lines, save_dir, ref_audio, sr, num_samples=1):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    exp = load_model(model_dir, device=device, last=True)
+    config_yaml = Path(model_dir) / 'config.yaml'
+    config = load_config(config_yaml)
+    hop_length = config['data']['init_args']['train_params']['hop_length']
+    padding = config['data']['init_args']['train_params']['padding']
+    for k, line in text_lines.items():
+        token_ids = torch.tensor([phone2id[str(tk)] for tk in line.split()])
+        y_ctx, ctx_n_frame, *_ = get_random_ref(ref_audio, None, hop_length, padding)
+        num_tokens = torch.tensor(token_ids.shape[0])
+        ctx_length = torch.tensor(ctx_n_frame)
+        phone_info = [token_ids, y_ctx, num_tokens, ctx_length]
+        phone_info = [v.unsqueeze(0).to(device) for v in phone_info]
+        pi_kwargs = {'num_tokens': phone_info[2], 'ctx_length': phone_info[3]}
+        phone_info = phone_info[:2]
+        phone_info[1] = exp.feature_extractor(phone_info[1])
+        text = exp.input_adaptor(*phone_info)
+        dur_info = exp.attn_or_dur(None, text, **pi_kwargs)
+        pi_kwargs.update(**dur_info)
+        mel, wave = exp.reflow.sample_ode(text, N=100, **pi_kwargs)
+        mel = mel[-1].detach().cpu().numpy()[0]
+        wave = wave[-1].detach().cpu().numpy()[0]
+        torch.save(mel, Path(save_dir) / f'{k}.th')
+        soundfile.write(Path(save_dir) / f'{k}-syn.wav', wave, samplerate=sr, subtype='PCM_16')
+
+
 if __name__ == '__main__':
     parser = ArgumentParser()
-    parser.add_argument('--dur_model_dir', type=str, required=True)
+    parser.add_argument('--dur_model_dir', type=str, required=False, default=None)
     parser.add_argument('--tts_model_dir', type=str, required=True)
     parser.add_argument('--ref_audio', type=str, required=True)
-    parser.add_argument('--ref_align', type=str, required=False, default='')
+    parser.add_argument('--ref_align', type=str, required=False, default=None)
     parser.add_argument('--phoneset', type=str, required=True)
     parser.add_argument('--test_txt', type=str, required=True)
     parser.add_argument('--save_dir', type=str, required=True)
@@ -107,7 +134,7 @@ if __name__ == '__main__':
     phone2id = dict([(p, i) for i, p in enumerate(phoneset)])
 
     ref_y, sr = torchaudio.load(args.ref_audio)
-    if Path(args.ref_align).exists():
+    if args.ref_align is not None and Path(args.ref_align).exists():
         ref_align = torch.load(args.ref_align)
         ref_align['tokens'] = torch.tensor([phone2id[str(tk)] for tk in ref_align['tokens']])
     else:
@@ -115,5 +142,8 @@ if __name__ == '__main__':
         ref_align = None
 
     lines = dict([l.strip().split('|') for l in Path(args.test_txt).open()])
-    phone_info = dur(args.dur_model_dir, lines, phone2id, 240/256, num_samples=8)
-    tts(args.tts_model_dir, phone_info, args.save_dir, ref_y, ref_align, sr)
+    if args.dur_model_dir is not None and Path(args.ref_align).exists():
+        phone_info = dur(args.dur_model_dir, lines, phone2id, 240/256, num_samples=8)
+        tts(args.tts_model_dir, phone_info, args.save_dir, ref_y, ref_align, sr)
+    else:
+        tts_e2e(args.tts_model_dir, lines, args.save_dir, ref_y, sr)

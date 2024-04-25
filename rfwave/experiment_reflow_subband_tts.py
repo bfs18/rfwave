@@ -903,7 +903,7 @@ class VocosExp(pl.LightningModule):
     def attn_or_dur(self, mel, text, **pi_kwargs):
         if self.standalone_dur is None:
             return {}
-        elif self.global_step < self.standalone_dur_start_step * 1.5:
+        elif mel is not None and self.global_step < self.standalone_dur_start_step * 1.5:
             sa_attn, sa_loss = (self.compute_sa_align(mel, text, **pi_kwargs)
                                 if self.standalone_align else (None, 0.))
             return {'standalone_attn': sa_attn}
