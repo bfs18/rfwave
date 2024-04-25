@@ -44,6 +44,7 @@ model:
     initial_learning_rate: 1e-4
     num_warmup_steps: 20_000 # Optimizers warmup steps
     torch_compile: True
+    aux_loss: False
 
     feature_extractor:
       class_path: rfwave.feature_extractors.MelSpectrogramFeatures

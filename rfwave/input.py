@@ -578,7 +578,7 @@ class DurInputAdaptor(InputAdaptor):
 class E2ECtxCharInputAdaptor(InputAdaptor):
     def __init__(self, embedding_dim, vocab_size, ctx_dim, num_layers=4):
         super().__init__()
-        self.embedding_dim = embedding_dim
+        self.dim = embedding_dim
         self.tok_embeddings = nn.Embedding(vocab_size, embedding_dim)
         self.ctx_proj = nn.Conv1d(ctx_dim, embedding_dim, kernel_size=1)
         self.tok_blocks = nn.Sequential(*[ConvNeXtV2Block(embedding_dim, embedding_dim*3) for _ in range(num_layers)])
@@ -603,10 +603,9 @@ class InputAdaptorProject(nn.Module):
         super().__init__()
         self.linear = nn.Linear(input_channels, output_channels)
 
-    def forward(self, x, padding_val=0.):
-        non_padding = (x.abs().sum(1, keepdim=True) > 0.).type_as(x)
+    def forward(self, x):
         out = self.linear(x.transpose(1, 2)).transpose(1, 2)
-        return out * non_padding + padding_val * (1. - non_padding)
+        return out
 
 
 if __name__ == '__main__':

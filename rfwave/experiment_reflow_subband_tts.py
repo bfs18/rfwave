@@ -26,8 +26,9 @@ from rfwave.helpers import save_code
 from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_error, compute_instantaneous_frequency
 from rfwave.feature_weight import get_feature_weight, get_feature_weight2
 from rfwave.dit import DiTRFTTSMultiTaskBackbone, DiTRFE2ETTSMultiTaskBackbone
-from rfwave.standalone_alignment import (StandaloneAlignment, gaussian_prior, compute_alignment_loss,
-                                         compute_attention_distill_loss, duration_from_attention)
+from rfwave.standalone_alignment import (
+    StandaloneAlignment, gaussian_prior, compute_alignment_loss,
+    compute_attention_distill_loss, duration_from_attention)
 from rfwave.logit_normal import LogitNormal
 from rfwave.dataset import get_exp_length, get_exp_scale
 from rfwave.e2e_duration import E2EDuration, DurModel
@@ -306,7 +307,7 @@ class RectifiedFlow(nn.Module):
                 n_rpt = z_t.size(0) // kwargs[k].size(0)
                 backbone_kwargs[k] = torch.repeat_interleave(kwargs[k], n_rpt, 0)
         pred = self.backbone(z_t, t, text, bandwidth_id, **backbone_kwargs)
-        return pred if isinstance(pred, tuple) else (pred, None)
+        return pred if isinstance(pred, tuple) else (pred, None, None)
 
     def get_intt_dt(self, i, N):
         if i / N < self.intt:
@@ -356,11 +357,11 @@ class RectifiedFlow(nn.Module):
             if self.cfg:
                 text_ = torch.cat([text, torch.ones_like(text) * text.mean(dim=(0, 2), keepdim=True)], dim=0)
                 (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t, bandwidth_id)]
-                pred, opt_attn = self.get_pred(z_, t_.to(text.device), text_, bandwidth_id_, **kwargs)
+                pred, opt_attn, _ = self.get_pred(z_, t_.to(text.device), text_, bandwidth_id_, **kwargs)
                 pred, uncond_pred = torch.chunk(pred, 2, dim=0)
                 pred = uncond_pred + self.guidance_scale * (pred - uncond_pred)
             else:
-                pred, opt_attn = self.get_pred(z, t.to(text.device), text, bandwidth_id, **kwargs)
+                pred, opt_attn, _ = self.get_pred(z, t.to(text.device), text, bandwidth_id, **kwargs)
             if self.wave:
                 pred1, pred2 = self.split(pred)
                 if self.prev_cond or not self.parallel_uncond:
@@ -589,7 +590,7 @@ class RectifiedFlow(nn.Module):
         else:
             cfg_iter = False
 
-        pred, opt_attn = self.get_pred(z_t, t, text, bandwidth_id, **kwargs)
+        pred, opt_attn, ctx = self.get_pred(z_t, t, text, bandwidth_id, **kwargs)
         if mask is not None:
             pred = torch.where(mask.unsqueeze(1), pred, target)
             mask_factor = mask.size(1) / mask.sum(1)
@@ -612,7 +613,7 @@ class RectifiedFlow(nn.Module):
         overlap_loss = self.compute_overlap_loss(pred2) if self.overlap_loss else 0.
         attn_loss = self.compute_alignment_loss(opt_attn, **kwargs) if not cfg_iter else 0.
         loss_dict = {"loss1": loss1, "loss2": loss2, "stft_loss": stft_loss, "phase_loss": phase_loss,
-                     "overlap_loss": overlap_loss, "attn_loss": attn_loss, "attn": opt_attn}
+                     "overlap_loss": overlap_loss, "attn_loss": attn_loss, "attn": opt_attn, 'ctx': ctx}
         return loss1 * 5. + loss2 + (stft_loss + phase_loss + overlap_loss + attn_loss) * 0.1, loss_dict
 
 
@@ -634,7 +635,8 @@ class VocosExp(pl.LightningModule):
         guidance_scale: float = 1.,
         p_uncond: float = 0.2,
         num_warmup_steps: int = 0,
-        torch_compile: bool = False
+        torch_compile: bool = False,
+        aux_loss: bool = False,
     ):
         """
         Args:
@@ -678,17 +680,18 @@ class VocosExp(pl.LightningModule):
 
             self.dur_output_exp_scale = backbone.standalone_distill or backbone.rad_align
             self.standalone_dur = E2EDuration(
-                DurModel(self.input_adaptor.embedding_dim, 2),
+                DurModel(self.input_adaptor.dim, 2),
                 output_exp_scale=self.dur_output_exp_scale)
             self.dur_processor = DurationProcessor()
             self.standalone_dur_start_step = 10000
 
         assert input_adaptor is not None
-        self.aux_loss = False
-        self.aux_type = 'mel'
         self.tandem_type = 'mel'
-        feat_dim = feature_extractor.dim if self.aux_type == 'mel' else self.reflow.head.n_fft // 2 + 1
-        self.input_adaptor_proj = InputAdaptorProject(self.input_adaptor.dim, feat_dim) if self.aux_loss else None
+        self.aux_loss = aux_loss  # aux_loss improve attention learning for E2E
+        aux_input_dim = (backbone.dim if isinstance(backbone, DiTRFE2ETTSMultiTaskBackbone)
+                         else self.input_adaptor.dim)
+        self.input_adaptor_proj = (InputAdaptorProject(aux_input_dim, feature_extractor.dim)
+                                   if self.aux_loss else None)
 
         self.melspec_loss = MelSpecReconstructionLoss(sample_rate=sample_rate)
         self.rvm = RelativeVolumeMel(sample_rate=sample_rate)
@@ -734,13 +737,12 @@ class VocosExp(pl.LightningModule):
         target = torch.log(S.abs().clamp_min_(1e-6))
         return target
 
-    def compute_aux_loss(self, features, audio_input, loss_type):
-        if loss_type == 'mel':
-            target = self.feature_extractor(audio_input)
-        else:
-            target = self.get_log_spec(audio_input)
-        pred = self.input_adaptor_proj(features, torch.min(target))
-        loss = F.mse_loss(pred, target)
+    def compute_aux_loss(self, features, audio_input, mask):
+        rpt = features.size(0) // audio_input.size(0)
+        target = self.feature_extractor(audio_input)
+        target = target.repeat_interleave(rpt, 0)
+        pred = self.input_adaptor_proj(features)
+        loss = masked_mse_loss(pred, target, mask)
         return loss
 
     def process_context(self, phone_info):
@@ -841,7 +843,6 @@ class VocosExp(pl.LightningModule):
         sa_attn, sa_loss = (self.compute_sa_align(mel, text, **pi_kwargs)
                             if self.standalone_align else (None, 0.))
         dur_loss = self.compute_dur_loss(text, standalone_attn=sa_attn, **pi_kwargs)
-        cond_mel_loss = self.compute_aux_loss(text, audio_input, self.aux_type) if self.aux_loss else 0.
         text_ext, bandwidth_id, (z_t, t, target) = self.reflow.get_train_tuple(text, tandem_feat, audio_input)
         kwargs.update(**pi_kwargs)
         ctx_mask = sequence_mask_with_ctx(**ctx_kwargs)
@@ -849,7 +850,9 @@ class VocosExp(pl.LightningModule):
         loss, loss_dict = self.reflow.compute_loss(
             z_t, t, target, text_ext, bandwidth_id=bandwidth_id, mask=ctx_mask,
             standalone_attn=sa_attn, **kwargs)
-        loss = loss + cond_mel_loss + sa_loss + dur_loss
+        aux = loss_dict['ctx'] if loss_dict['ctx'] is not None else text
+        cond_mel_loss = self.compute_aux_loss(aux, audio_input, ctx_mask) if self.aux_loss else 0.
+        loss = loss + sa_loss + dur_loss + cond_mel_loss * 0.1
         self.manual_backward(loss)
         opt_gen.step()
         sch_gen.step()
@@ -923,7 +926,6 @@ class VocosExp(pl.LightningModule):
             aod_kwargs = self.attn_or_dur(mel, text, **pi_kwargs)
             kwargs.update(**aod_kwargs)
             mel_hat_traj, audio_hat_traj = self.reflow.sample_ode(text, N=100, **kwargs)
-            cond_mel_hat = self.input_adaptor_proj(text) if self.aux_loss else None
         audio_hat = audio_hat_traj[-1]
         mel_hat = mel_hat_traj[-1]
         # NOTE: interpolate to calculate loss. not correct. MCD is too time-consuming
@@ -934,8 +936,6 @@ class VocosExp(pl.LightningModule):
         tandem_mel_loss = masked_mse_loss(mel_hat_interp, tandem_feat, mask)
         mel_loss = masked_mse_loss(self.feature_extractor(audio_hat_interp), mel, mask)
         rvm_loss = self.rvm(audio_hat_interp.unsqueeze(1), audio_input.unsqueeze(1))
-        cond_mel_loss = (F.mse_loss(cond_mel_hat, mel) if cond_mel_hat is not None
-                         else torch.zeros(1, device=self.device))
         phase_loss = compute_phase_error(audio_hat_interp, audio_input, self.reflow.head.get_spec)
 
         output = {
@@ -944,11 +944,8 @@ class VocosExp(pl.LightningModule):
             "mel_pred": mel_hat[0],
             "tandem_mel_loss": tandem_mel_loss,
             "mel_loss": mel_loss,
-            "cond_mel_loss": cond_mel_loss,
             "phase_loss": phase_loss,
         }
-        if cond_mel_hat is not None:
-            output['cond_mel_pred'] = cond_mel_hat[0]
         output.update(rvm_loss)
         self.validation_step_outputs.append(output)
         return output
@@ -957,7 +954,6 @@ class VocosExp(pl.LightningModule):
         outputs = self.validation_step_outputs
         tandem_mel_loss = torch.stack([x["tandem_mel_loss"] for x in outputs]).mean()
         mel_loss = torch.stack([x["mel_loss"] for x in outputs]).mean()
-        cond_mel_loss = torch.stack([x["cond_mel_loss"] for x in outputs]).mean()
         phase_loss = torch.stack([x["phase_loss"] for x in outputs]).mean()
         rvm_loss_dict = {}
         for k in outputs[0].keys():
@@ -972,7 +968,6 @@ class VocosExp(pl.LightningModule):
             mel_hat = self.feature_extractor(audio_pred)
             metrics = {
                 "valid/tandem_mel_loss": tandem_mel_loss,
-                "valid/cond_mel_loss": cond_mel_loss,
                 "valid/mel_loss": mel_loss,
                 "valid/phase_loss": phase_loss}
             self.logger.log_metrics({**metrics, **rvm_loss_dict}, step=self.global_step)
@@ -983,11 +978,6 @@ class VocosExp(pl.LightningModule):
                  "valid_media/tandem_mel_hat": wandb.Image(plot_spectrogram_to_numpy(tandem_mel_hat.data.cpu().numpy())),
                  "valid_media/mel_hat": wandb.Image(plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()))},
                 step=self.global_step)
-            if 'cond_mel_pred' in outputs[0]:
-                self.logger.experiment.log(
-                    {"valid_media/cond_mel_hat": wandb.Image(
-                        plot_spectrogram_to_numpy(outputs[0]['cond_mel_pred'].data.cpu().numpy()))},
-                    step=self.global_step)
         self.validation_step_outputs.clear()
 
     # def on_train_epoch_start(self, *args):

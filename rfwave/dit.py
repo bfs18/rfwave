@@ -300,6 +300,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         self.rad_align = rad_align
         self.standalone_align = standalone_align
         self.standalone_distill = standalone_distill
+        self.dim = dim
         assert not (self.rad_align and self.standalone_align)
         # standalone distill must be assigned when using standalone_align
         assert not standalone_align or (standalone_align and self.standalone_distill is not None)
@@ -400,4 +401,4 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             attn = None
         ctx = ctx.transpose(1, 2)
 
-        return self.module(z_t, t, ctx, bandwidth_id, start=start), attn
+        return self.module(z_t, t, ctx, bandwidth_id, start=start), attn, ctx
