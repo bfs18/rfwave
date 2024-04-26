@@ -71,7 +71,7 @@ model:
         rad_align: False
         standalone_align: True
         standalone_distill: True
-        align_attention_type: gaussian
+        align_attention_type: dot_product
 
     head:
       class_path: rfwave.heads.RFSTFTHead
@@ -96,7 +96,7 @@ model:
         n_text_channels: 512
         n_channels: 512
         num_layers: 3
-        type: gaussian
+        type: dot_product
 
 trainer:
   check_val_every_n_epoch: 10

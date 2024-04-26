@@ -611,7 +611,7 @@ class RectifiedFlow(nn.Module):
         loss1 = self.compute_rf_loss1(pred1, target1, mask_factor)
         loss2 = self.compute_rf_loss2(pred2, target2, bandwidth_id, mask_factor)
         overlap_loss = self.compute_overlap_loss(pred2) if self.overlap_loss else 0.
-        attn_loss = self.compute_alignment_loss(opt_attn, **kwargs) if not cfg_iter else 0.
+        attn_loss = self.compute_alignment_loss(opt_attn, **kwargs) * (0. if cfg_iter else 1.)
         loss_dict = {"loss1": loss1, "loss2": loss2, "stft_loss": stft_loss, "phase_loss": phase_loss,
                      "overlap_loss": overlap_loss, "attn_loss": attn_loss, "attn": opt_attn, 'ctx': ctx}
         return loss1 * 5. + loss2 + (stft_loss + phase_loss + overlap_loss + attn_loss) * 0.1, loss_dict
