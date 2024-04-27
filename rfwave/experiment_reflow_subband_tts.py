@@ -75,6 +75,7 @@ class RectifiedFlow(nn.Module):
         self.stft_loss = False
         self.phase_loss = False
         self.overlap_loss = True
+        self.pred1_consistent_loss = True
         self.num_bands = num_bands
         self.num_bins = self.head.n_fft // 2 // self.num_bands
         self.left_overlap = 8
@@ -374,8 +375,7 @@ class RectifiedFlow(nn.Module):
                     pred2 = self.get_joint_subband(pred2).reshape(ss)
             else:
                 pred1, pred2 = self.split(pred)
-            if self.prev_cond or not self.parallel_uncond:
-                pred1 = self.make_pred1_consistent(pred1)
+            pred1 = self.make_pred1_consistent(pred1)
             if self.intt > 0.:
                 if i / N < self.intt:
                     pred2 = torch.zeros_like(pred2)
@@ -563,6 +563,13 @@ class RectifiedFlow(nn.Module):
         loss_r = _overlap_loss(pred_r)
         return (loss_i + loss_r) / self.num_bands
 
+    def compute_pred1_consistent_loss(self, pred1):
+        pred1 = pred1.reshape(pred1.size(0) // self.num_bands, self.num_bands, *pred1.shape[1:])
+        pred1l = pred1[:-1]
+        pred1r = pred1[1:]
+        loss = F.mse_loss(pred1l, pred1r) * pred1l.size(0)
+        return loss
+
     def get_intt_pred(self, t_, pred):
         pred1, pred2 = self.split(pred)
         m = t_ < self.intt
@@ -611,10 +618,12 @@ class RectifiedFlow(nn.Module):
         loss1 = self.compute_rf_loss1(pred1, target1, mask_factor)
         loss2 = self.compute_rf_loss2(pred2, target2, bandwidth_id, mask_factor)
         overlap_loss = self.compute_overlap_loss(pred2) if self.overlap_loss else 0.
+        pred1_consistent_loss = self.compute_pred1_consistent_loss(pred1) if self.pred1_consistent_loss else 0.
         attn_loss = self.compute_alignment_loss(opt_attn, **kwargs) * (0. if cfg_iter else 1.)
         loss_dict = {"loss1": loss1, "loss2": loss2, "stft_loss": stft_loss, "phase_loss": phase_loss,
                      "overlap_loss": overlap_loss, "attn_loss": attn_loss, "attn": opt_attn, 'ctx': ctx}
-        return loss1 * 5. + loss2 + (stft_loss + phase_loss + overlap_loss + attn_loss) * 0.1, loss_dict
+        return (loss1 * 5. + loss2 +
+                (stft_loss + phase_loss + overlap_loss + attn_loss + pred1_consistent_loss) * 0.1, loss_dict)
 
 
 class VocosExp(pl.LightningModule):
