@@ -107,7 +107,7 @@ def compute_attention_distill_loss(pred_attn, target_attn):
 
 class StandaloneAlignment(torch.nn.Module):
     def __init__(self, n_mel_channels, n_text_channels, n_channels,
-                 num_layers=3, temperature=1.0, type='guassian', prior_strength=0.1):
+                 num_layers=3, temperature=1.0, type='guassian', prior_strength=1.):
         assert type in ['gaussian', 'dot_product']
         super(StandaloneAlignment, self).__init__()
         self.temperature = temperature
@@ -156,8 +156,7 @@ class StandaloneAlignment(torch.nn.Module):
 
         keys = self.key_in(keys.transpose(-2, -1))
         queries = self.query_in(queries.transpose(-2, -1))
-        pos_a = np.sqrt(self.prior_strength)
-        key_freq_cis = self.get_pos_embed(start, keys_length.max()) * pos_a
+        key_freq_cis = self.get_pos_embed(start, keys_length.max())
         # rotary is only apply to keys to work as absolute positional embedding.
         keys = apply_rotary_emb(keys, key_freq_cis)
 
