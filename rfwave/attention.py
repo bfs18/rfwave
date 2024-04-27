@@ -292,7 +292,7 @@ def cdist(x, y):
     y2 = y.pow(2).sum(dim=-1)
     xy = torch.einsum('b k i d , b k j d -> b k i j', x, y)
     dist = x2.unsqueeze(-1) + y2.unsqueeze(-2) - 2 * xy
-    return dist.clamp(0.).to(dt)
+    return dist.clamp(1e-8).to(dt)
 
 
 class CrossAttentionWithPrior(nn.Module):

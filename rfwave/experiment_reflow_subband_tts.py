@@ -620,7 +620,8 @@ class RectifiedFlow(nn.Module):
         pred1_consistent_loss = self.compute_pred1_consistent_loss(pred1) if self.pred1_consistent_loss else 0.
         attn_loss = self.compute_alignment_loss(opt_attn, **kwargs) * (0. if cfg_iter else 1.)
         loss_dict = {"loss1": loss1, "loss2": loss2, "stft_loss": stft_loss, "phase_loss": phase_loss,
-                     "overlap_loss": overlap_loss, "attn_loss": attn_loss, "attn": opt_attn, 'ctx': ctx}
+                     "overlap_loss": overlap_loss, "pred1_consistent_loss": pred1_consistent_loss,
+                     "attn_loss": attn_loss, "attn": opt_attn, 'ctx': ctx}
         return (loss1 * 5. + loss2 +
                 (stft_loss + phase_loss + overlap_loss + attn_loss + pred1_consistent_loss) * 0.1, loss_dict)
 
