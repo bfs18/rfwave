@@ -2,7 +2,7 @@ import torch
 
 from torch import nn
 from torch.nn import functional as F
-from rfwave.modules import GRN, ConvNeXtV2Block
+from rfwave.modules import GRN
 
 
 class RMSNorm(torch.nn.Module):
@@ -305,7 +305,6 @@ class CrossAttentionWithPrior(nn.Module):
         attn_drop: float = 0.,
         proj_drop: float = 0.,
         norm_layer: nn.Module = nn.LayerNorm,
-        num_layers: int = 2,
         type: str = 'gaussian'
     ) -> None:
         assert type in ['gaussian', 'dot_product']
@@ -319,9 +318,6 @@ class CrossAttentionWithPrior(nn.Module):
         self.kv = nn.Linear(dim, 2 * dim, bias=qkv_bias)
         self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
         self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        # add conv layers as standalone attention.
-        self.key_proj = nn.Sequential(*[ConvNeXtV2Block(dim, dim * 3) for _ in range(num_layers)])
-        self.query_proj = nn.Sequential(*[ConvNeXtV2Block(dim, dim * 3) for _ in range(num_layers)])
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
@@ -350,11 +346,6 @@ class CrossAttentionWithPrior(nn.Module):
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
-
-        q = q.reshape(-1, q_seqlen, self.head_dim).transpose(1, 2)
-        k = k.reshape(-1, kv_seqlen, self.head_dim).transpose(1, 2)
-        q = self.query_proj(q).transpose(1, 2).reshape(bsz, self.num_heads, q_seqlen, self.head_dim)
-        k = self.key_proj(k).transpose(1, 2).reshape(bsz, self.num_heads, kv_seqlen, self.head_dim)
 
         if self.type == 'gaussian':
             attn = -cdist(q, k) / self.head_dim
