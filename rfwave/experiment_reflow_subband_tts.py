@@ -565,9 +565,8 @@ class RectifiedFlow(nn.Module):
 
     def compute_pred1_consistent_loss(self, pred1):
         pred1 = pred1.reshape(pred1.size(0) // self.num_bands, self.num_bands, *pred1.shape[1:])
-        pred1l = pred1[:-1]
-        pred1r = pred1[1:]
-        loss = F.mse_loss(pred1l, pred1r) * pred1l.size(0)
+        pred1_roll = torch.roll(pred1, 1, dims=1)
+        loss = F.mse_loss(pred1, pred1_roll) * self.num_bands
         return loss
 
     def get_intt_pred(self, t_, pred):
