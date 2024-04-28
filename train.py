@@ -24,6 +24,8 @@ if __name__ == "__main__":
 
     # Create the logging directory
     os.makedirs(cli.trainer.logger.save_dir, exist_ok=True)
+    wandb_dir = os.path.join(cli.trainer.logger.save_dir, 'wandb')
+    os.makedirs(wandb_dir, exist_ok=True)
     
     # Access the checkpoint path from the parsed arguments
     ckpt_path = cli.config['ckpt_path'] if 'ckpt_path' in cli.config else None

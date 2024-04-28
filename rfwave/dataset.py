@@ -226,6 +226,7 @@ class ArkDatasetSegment(torch.utils.data.Dataset):
         if sr != self.sampling_rate:
             y = torchaudio.functional.resample(y, orig_freq=sr, new_freq=self.sampling_rate)
         if y.size(-1) < self.num_samples:
+            start = 0
             pad_length = self.num_samples - y.size(-1)
             padding_tensor = y.repeat(1, 1 + pad_length // y.size(-1))
             y = torch.cat((y, padding_tensor[:, :pad_length]), dim=1)
@@ -233,6 +234,7 @@ class ArkDatasetSegment(torch.utils.data.Dataset):
             start = np.random.randint(low=0, high=y.size(-1) - self.num_samples + 1)
             y = y[:, start: start + self.num_samples]
         else:
+            start = 0
             # During validation, take always the first segment for determinism
             y = y[:, : self.num_samples]
         gain = np.random.uniform(-1, -6) if self.train else -3
