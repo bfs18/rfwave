@@ -292,7 +292,7 @@ def cdist(x, y):
     y2 = y.pow(2).sum(dim=-1)
     xy = torch.einsum('b k i d , b k j d -> b k i j', x, y)
     dist = x2.unsqueeze(-1) + y2.unsqueeze(-2) - 2 * xy
-    return dist.clamp(1e-8).to(dt)
+    return dist.clamp(0.).to(dt)
 
 
 class CrossAttentionWithPrior(nn.Module):
@@ -343,12 +343,12 @@ class CrossAttentionWithPrior(nn.Module):
         k = apply_rotary_emb(k, k_freqs_cis)
 
         # (bs, n_local_heads, q_seqlen, head_dim)
-        q = q.transpose(1, 2)
-        k = k.transpose(1, 2)
+        q = q.transpose(1, 2).float()
+        k = k.transpose(1, 2).float()
         v = v.transpose(1, 2)
 
         if self.type == 'gaussian':
-            attn = -cdist(q, k) / self.head_dim
+            attn = -cdist(q * self.scale, k * self.scale)
             # q = q.transpose(-1, -2)
             # k = k.transpose(-1, -2)
             # attn = (q.unsqueeze(-1) - k.unsqueeze(-2))**2
@@ -368,7 +368,7 @@ class CrossAttentionWithPrior(nn.Module):
             attn = attn / (attn.sum(dim=-1, keepdim=True) + 1e-8)
         attn_before_drop = attn
         attn = self.attn_drop(attn)
-        x = attn @ v
+        x = (attn @ v).type_as(v)
 
         x = x.transpose(1, 2).contiguous().reshape(bsz, q_seqlen, ch)
         x = self.proj(x)

@@ -73,7 +73,7 @@ def duration_from_attention(attn, in_lens, out_lens):
 
 
 def compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_prob=0.5):
-    attn = attn.reshape(-1, *attn.shape[-2:])
+    attn = attn.float().reshape(-1, *attn.shape[-2:])
     bsz = attn.shape[0]
     rpt = bsz // num_tokens.size(0)
     num_tokens = num_tokens.repeat_interleave(rpt, 0)
@@ -86,7 +86,7 @@ def compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_prob=0.5):
     attn = F.pad(attn, (1, 0, 0, 0, 0, 0), value=blank_prob)  # prob for blank.
     attn = attn / (attn.sum(dim=-1, keepdim=True) + 1e-8)
     # float to compute loss.
-    log_prob = torch.log(attn.clamp_min(1e-8)).float()
+    log_prob = torch.log(attn.clamp_min(1e-8))
     loss = F.ctc_loss(log_prob.transpose(1, 0), targets=target, zero_infinity=True,
                       input_lengths=length, target_lengths=num_tokens, blank=0)
     return loss
@@ -173,7 +173,7 @@ class StandaloneAlignment(torch.nn.Module):
             # attn = -attn.mean(-3, keepdim=True)
             queries_enc = queries_enc.transpose(-2, -1).unsqueeze(1)
             keys_enc = keys_enc.transpose(-2, -1).unsqueeze(1)
-            attn = -cdist(queries_enc, keys_enc) / keys_enc.size(-1)
+            attn = -cdist(queries_enc * self.scale, keys_enc * self.scale)
             pass
         elif self.type == 'dot_product':
             queries_enc = queries_enc * self.scale
