@@ -290,6 +290,7 @@ class TTSDatasetSegment(Dataset):
         self.phoneset = ["_PAD_"] + phoneset
         self.phone2id = dict([(p, i) for i, p in enumerate(self.phoneset)])
         self._cache = dict() if getattr(cfg, 'cache', False) else None
+        self.gain = -3.
 
     def __len__(self):
         return len(self.filelist)
@@ -308,6 +309,7 @@ class TTSDatasetSegment(Dataset):
             if sr != self.sampling_rate:
                 y = torchaudio.functional.resample(y, orig_freq=sr, new_freq=self.sampling_rate)
             up_durations = upsample_durations(durations, y.size(1), self.hop_length, self.padding)
+            y, _ = torchaudio.sox_effects.apply_effects_tensor(y, self.sampling_rate, [["norm", f"{self.gain:.2f}"]])
             if self._cache is not None:
                 self._cache[k] = (y, token_ids, up_durations)
         else:
@@ -354,8 +356,8 @@ class TTSDatasetSegment(Dataset):
         else:
             durations[0] = end_frame - start_frame
 
-        gain = np.random.uniform(-1, -6) if self.train else -3
-        y, _ = torchaudio.sox_effects.apply_effects_tensor(y, self.sampling_rate, [["norm", f"{gain:.2f}"]])
+        # gain = np.random.uniform(-1, -6) if self.train else -3
+        # y, _ = torchaudio.sox_effects.apply_effects_tensor(y, self.sampling_rate, [["norm", f"{gain:.2f}"]])
         assert torch.sum(durations) == num_frames, (
             f"{k}, sum durations {torch.sum(durations)}, num frames: {num_frames}, "
             f"start_phone_idx: {start_phone_idx}, start_frame: {start_frame}, durations: {durations}")
@@ -387,6 +389,7 @@ class TTSDataset(DynamicBucketingDataset):
         self.phoneset = ["_PAD_"] + phoneset
         self.phone2id = dict([(p, i) for i, p in enumerate(self.phoneset)])
         self._cache = dict() if getattr(cfg, 'cache', False) else None
+        self.gain = -3.
 
     def __len__(self):
         return len(self.batches)
@@ -405,6 +408,7 @@ class TTSDataset(DynamicBucketingDataset):
             if sr != self.sampling_rate:
                 y = torchaudio.functional.resample(y, orig_freq=sr, new_freq=self.sampling_rate)
             up_durations = upsample_durations(durations, y.size(1), self.hop_length, self.padding)
+            y, _ = torchaudio.sox_effects.apply_effects_tensor(y, self.sampling_rate, [["norm", f"{self.gain:.2f}"]])
             if self._cache is not None:
                 self._cache[k] = (y, token_ids, up_durations)
         else:
@@ -418,8 +422,8 @@ class TTSDataset(DynamicBucketingDataset):
         start_frame = 0
         start_phone_idx = 0
 
-        gain = np.random.uniform(-1, -6) if self.train else -3
-        y, _ = torchaudio.sox_effects.apply_effects_tensor(y, self.sampling_rate, [["norm", f"{gain:.2f}"]])
+        # gain = np.random.uniform(-1, -6) if self.train else -3
+        # y, _ = torchaudio.sox_effects.apply_effects_tensor(y, self.sampling_rate, [["norm", f"{gain:.2f}"]])
         assert torch.sum(durations) == num_frames, (
             f"{k}, sum durations {torch.sum(durations)}, num frames: {num_frames}, "
             f"start_phone_idx: {start_phone_idx}, start_frame: {start_frame}, durations: {durations}")
@@ -446,6 +450,7 @@ class TTSCtxDatasetSegment(Dataset):
         self.min_context = cfg.min_context
         self.max_context = cfg.max_context
         np.random.seed(1234)
+        self.gain = -3.
 
     def __len__(self):
         return len(self.filelist)
@@ -478,6 +483,7 @@ class TTSCtxDatasetSegment(Dataset):
             if sr != self.sampling_rate:
                 y = torchaudio.functional.resample(y, orig_freq=sr, new_freq=self.sampling_rate)
             up_durations = upsample_durations(durations, y.size(1), self.hop_length, self.padding)
+            y, _ = torchaudio.sox_effects.apply_effects_tensor(y, self.sampling_rate, [["norm", f"{self.gain:.2f}"]])
             if self._cache is not None:
                 self._cache[k] = (y, token_ids, up_durations)
         else:
@@ -587,11 +593,11 @@ class TTSCtxDatasetSegment(Dataset):
         ctx_token_ids, ctx_durations, *_ = self.get_token_ids_durations(
             cs_durations, token_ids, up_durations, ctx_start_frame, ctx_start_frame + ctx_n_frame)
 
-        gain = np.random.uniform(-1, -6) if self.train else -3
-        y_seg, _ = torchaudio.sox_effects.apply_effects_tensor(
-            y_seg, self.sampling_rate, [["norm", f"{gain:.2f}"]])
-        y_ctx, _ = torchaudio.sox_effects.apply_effects_tensor(
-            y_ctx, self.sampling_rate, [["norm", f"{gain:.2f}"]])
+        # gain = np.random.uniform(-1, -6) if self.train else -3
+        # y_seg, _ = torchaudio.sox_effects.apply_effects_tensor(
+        #     y_seg, self.sampling_rate, [["norm", f"{gain:.2f}"]])
+        # y_ctx, _ = torchaudio.sox_effects.apply_effects_tensor(
+        #     y_ctx, self.sampling_rate, [["norm", f"{gain:.2f}"]])
         assert torch.sum(seg_durations) == num_frames, (
             f"{k}, sum durations {torch.sum(seg_durations)}, num frames: {num_frames}, "
             f"start_phone_idx: {start_phone_idx}, start_frame: {start_frame}, durations: {seg_durations}")
@@ -629,6 +635,7 @@ class TTSCtxDataset(DynamicBucketingDataset):
         self.min_context = cfg.min_context
         self.max_context = cfg.max_context
         np.random.seed(1234)
+        self.gain = -3.
 
     def __len__(self):
         return len(self.filelist)
@@ -661,6 +668,7 @@ class TTSCtxDataset(DynamicBucketingDataset):
             if sr != self.sampling_rate:
                 y = torchaudio.functional.resample(y, orig_freq=sr, new_freq=self.sampling_rate)
             up_durations = upsample_durations(durations, y.size(1), self.hop_length, self.padding)
+            y, _ = torchaudio.sox_effects.apply_effects_tensor(y, self.sampling_rate, [["norm", f"{self.gain:.2f}"]])
             if self._cache is not None:
                 self._cache[k] = (y, token_ids, up_durations)
         else:
@@ -690,11 +698,11 @@ class TTSCtxDataset(DynamicBucketingDataset):
         ctx_token_ids, ctx_durations, *_ = self.get_token_ids_durations(
             cs_durations, token_ids, up_durations, ctx_start_frame, ctx_start_frame + ctx_n_frame)
 
-        gain = np.random.uniform(-1, -6) if self.train else -3
-        y, _ = torchaudio.sox_effects.apply_effects_tensor(
-            y, self.sampling_rate, [["norm", f"{gain:.2f}"]])
-        y_ctx, _ = torchaudio.sox_effects.apply_effects_tensor(
-            y_ctx, self.sampling_rate, [["norm", f"{gain:.2f}"]])
+        # gain = np.random.uniform(-1, -6) if self.train else -3
+        # y, _ = torchaudio.sox_effects.apply_effects_tensor(
+        #     y, self.sampling_rate, [["norm", f"{gain:.2f}"]])
+        # y_ctx, _ = torchaudio.sox_effects.apply_effects_tensor(
+        #     y_ctx, self.sampling_rate, [["norm", f"{gain:.2f}"]])
         return y[0], (token_ids, up_durations, 0, 0, num_frames,
                       y_ctx[0], ctx_start_frame, ctx_n_frame, ctx_token_ids, ctx_durations)
 
@@ -726,6 +734,7 @@ class E2ETTSCtxDataset(DynamicBucketingDataset):
         self._cache = dict() if getattr(cfg, 'cache', False) else None
         self.min_context = cfg.min_context
         self.max_context = cfg.max_context
+        self.gain = -3.
 
     def __len__(self):
         return len(self.filelist)
@@ -741,6 +750,7 @@ class E2ETTSCtxDataset(DynamicBucketingDataset):
                 y = y.mean(dim=0, keepdim=True)
             if sr != self.sampling_rate:
                 y = torchaudio.functional.resample(y, orig_freq=sr, new_freq=self.sampling_rate)
+            y, _ = torchaudio.sox_effects.apply_effects_tensor(y, self.sampling_rate, [["norm", f"{self.gain:.2f}"]])
             if self._cache is not None:
                 self._cache[k] = (y, token_ids)
         else:
