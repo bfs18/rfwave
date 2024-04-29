@@ -389,16 +389,19 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             align_token_freq_cis = self.get_pos_embed(zero_start, num_tokens.max())
             ctx, attn = self.align_block(ctx, x_token, None, align_token_freq_cis, token_mask,
                                          mod_c=te, attn_prior=attn_prior)
+            align_ctx = ctx  # compute aux loss for the outer rad alignment block
             # postprocess input, inject text and ref
             ctx = self.cross_attn2(ctx, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
         elif self.standalone_align and not self.standalone_distill:
             assert not (standalone_attn is None and duration is None)
             ctx = self.sa_align_block(z_t1, x_token, standalone_attn, duration, mod_c=te)
+            align_ctx = ctx  # compute aux loss for the outer standalone alignment block
             ctx = self.cross_attn(ctx, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
             attn = standalone_attn
         else:
             ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
+            align_ctx = ctx  # not really
             attn = None
         ctx = ctx.transpose(1, 2)
 
-        return self.module(z_t, t, ctx, bandwidth_id, start=start), attn, ctx
+        return self.module(z_t, t, ctx, bandwidth_id, start=start), attn, align_ctx.transpose(1, 2)

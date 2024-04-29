@@ -860,7 +860,8 @@ class VocosExp(pl.LightningModule):
             z_t, t, target, text_ext, bandwidth_id=bandwidth_id, mask=ctx_mask,
             standalone_attn=sa_attn, **kwargs)
         aux = loss_dict['ctx'] if loss_dict['ctx'] is not None else text
-        cond_mel_loss = self.compute_aux_loss(aux, audio_input, ctx_mask) if self.aux_loss else 0.
+        cond_mel_loss = (self.compute_aux_loss(aux, audio_input, ctx_mask) *
+                         (1. if self.aux_loss and loss_dict['attn_loss'] > 0. else 0.))
         loss = loss + sa_loss + dur_loss + cond_mel_loss * 0.1
         self.manual_backward(loss)
         opt_gen.step()

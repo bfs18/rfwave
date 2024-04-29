@@ -72,7 +72,11 @@ def duration_from_attention(attn, in_lens, out_lens):
     return attn_hard_reduced.detach()
 
 
-def compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_prob=0.5):
+def compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_prob=0.67):
+    # blake_prob = 0.67, then in normalized prob, blank_prob = 0.67 / (1 + 0.67) = 0.4
+    # at the transition between two tokens, suppose the probabilities of two tokens are both 0.5 in the original
+    # attention weights, then the probabilities of them become 0.3 in the normalized attention weights
+    # in which blank is padded. Then blank is emitted as such situation.
     attn = attn.float().reshape(-1, *attn.shape[-2:])
     bsz = attn.shape[0]
     rpt = bsz // num_tokens.size(0)
