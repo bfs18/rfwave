@@ -196,7 +196,7 @@ class VocosDataset(DynamicBucketingDataset):
 
 
 def load_ark_scp(scp_fp):
-    ark_dict = kaldiio.load_scp(scp_fp, max_cache_fd=32)
+    ark_dict = kaldiio.load_scp(scp_fp, max_cache_fd=64)
     return ark_dict
 
 

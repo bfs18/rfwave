@@ -7,6 +7,7 @@ from torch import nn
 from espnet2.tts.feats_extract.log_mel_fbank import LogMelFbank
 
 from rfwave.modules import safe_log, safe_log10
+from torch.cuda.amp import autocast
 
 
 class FeatureExtractor(nn.Module):
@@ -118,14 +119,21 @@ class EncodecFeatures(FeatureExtractor):
 
     def forward(self, audio: torch.Tensor, **kwargs):
         encodec_bandwidth_id = kwargs['encodec_bandwidth_id']
-        self.encodec.eval()  # Force eval mode as Pytorch Lightning automatically sets child modules to training mode
-        self.encodec.set_target_bandwidth(self.bandwidths[encodec_bandwidth_id])
-        codes = self.get_encodec_codes(audio)
-        # Instead of summing in the loop, it stores subsequent VQ dictionaries in a single `self.codebook_weights`
-        # with offsets given by the number of bins, and finally summed in a vectorized operation.
-        offsets = torch.arange(
-            0, self.encodec.quantizer.bins * len(codes), self.encodec.quantizer.bins, device=audio.device
-        )
-        embeddings_idxs = codes + offsets.view(-1, 1, 1)
-        features = torch.nn.functional.embedding(embeddings_idxs, self.codebook_weights).sum(dim=0)
+        # Convert audio to full precision
+        if audio.dtype != torch.float32:
+            audio = audio.float()
+        
+        with autocast(enabled=False):
+            self.encodec.eval()  # Force eval mode as Pytorch Lightning automatically sets child modules to training mode
+            self.encodec.set_target_bandwidth(self.bandwidths[encodec_bandwidth_id])
+            # print('audio.dtype in feature extractor:', audio.dtype)
+            
+            codes = self.get_encodec_codes(audio)
+            # Instead of summing in the loop, it stores subsequent VQ dictionaries in a single `self.codebook_weights`
+            # with offsets given by the number of bins, and finally summed in a vectorized operation.
+            offsets = torch.arange(
+                0, self.encodec.quantizer.bins * len(codes), self.encodec.quantizer.bins, device=audio.device
+            )
+            embeddings_idxs = codes + offsets.view(-1, 1, 1)
+            features = torch.nn.functional.embedding(embeddings_idxs, self.codebook_weights).sum(dim=0)
         return features.transpose(1, 2)

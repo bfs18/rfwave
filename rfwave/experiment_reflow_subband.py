@@ -478,7 +478,7 @@ class VocosExp(pl.LightningModule):
         guidance_scale: float = 1.,
         p_uncond: float = 0.2,
         num_warmup_steps: int = 0,
-        torch_compile=False
+        torch_compile: bool =False
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head"])
@@ -544,7 +544,7 @@ class VocosExp(pl.LightningModule):
         mask = sequence_mask(num_frames + 1)[:, :-1]  # 1 padding frame got trained for layer norm
         mask = mask.repeat_interleave(z_t.size(0) // mask.size(0), 0)
         loss, loss_dict = self.reflow.compute_loss(
-            z_t, t, target, features_ext, bandwidth_id=bandwidth_id, encodec_bandwidth_id=bi, mask=mask, **kwargs)
+            z_t, t, target, features_ext, bandwidth_id=bandwidth_id, mask=mask, **kwargs)
         self.manual_backward(loss)
         opt_gen.step()
         sch_gen.step()
@@ -650,6 +650,7 @@ class VocosEncodecExp(VocosExp):
         guidance_scale: float = 1.,
         p_uncond: float = 0.2,
         num_warmup_steps: int = 0,
+        torch_compile: bool =False
     ):
         super().__init__(
             feature_extractor=feature_extractor,
@@ -664,6 +665,7 @@ class VocosEncodecExp(VocosExp):
             guidance_scale=guidance_scale,
             p_uncond=p_uncond,
             num_warmup_steps=num_warmup_steps,
+            torch_compile=torch_compile
         )
 
     def training_step(self, *args):
