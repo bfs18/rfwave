@@ -72,7 +72,7 @@ def duration_from_attention(attn, in_lens, out_lens):
     return attn_hard_reduced.detach()
 
 
-def compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_prob=0.67):
+def compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_prob=0.67, ref_length=60.):
     # blake_prob = 0.67, then in normalized prob, blank_prob = 0.67 / (1 + 0.67) = 0.4
     # at the transition between two tokens, suppose the probabilities of two tokens are both 0.5 in the original
     # attention weights, then the probabilities of them become 0.3 in the normalized attention weights
@@ -92,7 +92,10 @@ def compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_prob=0.67):
     # float to compute loss.
     log_prob = torch.log(attn.clamp_min(1e-8))
     loss = F.ctc_loss(log_prob.transpose(1, 0), targets=target, zero_infinity=True,
-                      input_lengths=length, target_lengths=num_tokens, blank=0)
+                      input_lengths=length, target_lengths=num_tokens, blank=0, reduction='none')
+    # when reduction='mean', loss is divided by num_tokens,
+    # multiply ref_length / num_tokens to weight more on shorter token sequence.
+    loss = (loss * ref_length / num_tokens.float() ** 2).mean()
     return loss
 
 

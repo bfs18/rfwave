@@ -591,7 +591,8 @@ class RectifiedFlow(nn.Module):
 
     def compute_loss(self, z_t, t, target, text, bandwidth_id, mask, **kwargs):
         if self.cfg and np.random.uniform() < self.p_uncond:
-            text = torch.ones_like(text) * text.mean(dim=(0, 2), keepdim=True)
+            # not grad back to the alignment module.
+            text = torch.ones_like(text) * text.detach().mean(dim=(0, 2), keepdim=True)
             cfg_iter = True
         else:
             cfg_iter = False
@@ -860,6 +861,7 @@ class VocosExp(pl.LightningModule):
             z_t, t, target, text_ext, bandwidth_id=bandwidth_id, mask=ctx_mask,
             standalone_attn=sa_attn, **kwargs)
         aux = loss_dict['ctx'] if loss_dict['ctx'] is not None else text
+        # TODO: attn_loss = 0. is cfg iter, but this is not correct when gt duration is used.
         cond_mel_loss = (self.compute_aux_loss(aux, audio_input, ctx_mask) *
                          (1. if self.aux_loss and loss_dict['attn_loss'] > 0. else 0.))
         loss = loss + sa_loss + dur_loss + cond_mel_loss * 0.1
