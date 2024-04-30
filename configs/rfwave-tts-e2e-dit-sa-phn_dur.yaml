@@ -70,7 +70,7 @@ model:
         num_heads: 6
         rad_align: False
         standalone_align: True
-        standalone_distill: True
+        standalone_distill: False
         align_attention_type: dot_product
         num_align_proj_layers: 2
         align_q_pos: True
@@ -107,8 +107,8 @@ trainer:
     class_path: pytorch_lightning.loggers.WandbLogger
     init_args:
       project: rfwave-tts
-      save_dir: logs-rfwave-tts-e2e-dit-sa
-      name: rfwave-tts-e2e-dit-sa
+      save_dir: logs-rfwave-tts-e2e-dit-sa-phn_dur
+      name: rfwave-tts-e2e-dit-sa-phn_dur
   callbacks:
     - class_path: pytorch_lightning.callbacks.LearningRateMonitor
     - class_path: pytorch_lightning.callbacks.ModelSummary

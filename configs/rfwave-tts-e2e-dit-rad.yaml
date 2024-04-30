@@ -97,8 +97,8 @@ trainer:
     class_path: pytorch_lightning.loggers.WandbLogger
     init_args:
       project: rfwave-tts
-      save_dir: logs-rfwave-tts-e2e-dit
-      name: rfwave-tts-e2e-dit
+      save_dir: logs-rfwave-tts-e2e-dit-rad
+      name: rfwave-tts-e2e-dit-rad
   callbacks:
     - class_path: pytorch_lightning.callbacks.LearningRateMonitor
     - class_path: pytorch_lightning.callbacks.ModelSummary
