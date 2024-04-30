@@ -7,12 +7,14 @@ import torchaudio
 import rfwave
 import numpy as np
 import warnings
+import matplotlib.image
 
 from pathlib import Path
 from argparse import ArgumentParser
 from rfwave.dataset import upsample_durations
 
 from inference_voc import load_config, create_instance, load_model
+from rfwave.helpers import plot_attention_to_numpy
 
 
 def dur(model_dir, text_lines, phone2id, scale, num_samples=1):
@@ -82,7 +84,7 @@ def tts(model_dir, phone_info, save_dir, ref_audio, ref_align, sr):
         cond = exp.input_adaptor(*phone_info)
         start = torch.tensor([0])
         length = torch.tensor([phone_info[1].sum()])
-        mel, wave = exp.reflow.sample_ode(cond, N=10, start=start, out_length=length)
+        mel, wave, _ = exp.reflow.sample_ode(cond, N=10, start=start, out_length=length)
         mel = mel[-1].detach().cpu()
         wave = wave[-1].detach().cpu()
         torch.save(mel, Path(save_dir) / f'{k}.th')
@@ -109,11 +111,15 @@ def tts_e2e(model_dir, text_lines, save_dir, ref_audio, sr, num_samples=1):
         text = exp.input_adaptor(*phone_info)
         dur_info = exp.attn_or_dur(None, text, **pi_kwargs)
         pi_kwargs.update(**dur_info)
-        mel, wave = exp.reflow.sample_ode(text, N=100, **pi_kwargs)
+        mel, wave, attn = exp.reflow.sample_ode(text, N=100, keep_traj=True, **pi_kwargs)
         mel = mel[-1].detach().cpu().numpy()[0]
         wave = wave[-1].detach().cpu().numpy()[0]
         torch.save(mel, Path(save_dir) / f'{k}.th')
         soundfile.write(Path(save_dir) / f'{k}-syn.wav', wave, samplerate=sr, subtype='PCM_16')
+        for i, attn_i in enumerate(attn):
+            attn_i = attn_i[0, 0].detach().cpu().numpy()
+            align_np = plot_attention_to_numpy(attn_i)
+            matplotlib.image.imsave(Path(save_dir) / f'{k}-{i}.png', align_np)
 
 
 if __name__ == '__main__':

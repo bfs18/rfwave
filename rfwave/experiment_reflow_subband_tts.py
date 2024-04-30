@@ -333,6 +333,7 @@ class RectifiedFlow(nn.Module):
             N = self.N
         traj_1 = []  # to store the trajectory
         traj_2 = []  # to store the trajectory
+        attns = []
         if self.prev_cond or not self.parallel_uncond:
             assert band is not None
             assert bandwidth_id is not None
@@ -387,7 +388,8 @@ class RectifiedFlow(nn.Module):
                 z_1, z_2 = self.split(z.detach())
                 traj_1.append(z_1)
                 traj_2.append(z_2)
-        return traj_1, traj_2
+                attns.append(opt_attn)
+        return traj_1, traj_2, attns
 
     def combine_subbands(self, traj):
         assert len(traj) == self.num_bands
@@ -416,12 +418,13 @@ class RectifiedFlow(nn.Module):
         assert 'out_length' in kwargs, "out_length (#output frames) must be kwargs in sample ode"
         traj_1 = []
         traj_2 = []
+        attns = []
         if self.prev_cond or not self.parallel_uncond:
             band = text.new_zeros(
                 (text.shape[0], 2 * (self.num_bins + self.overlap), text.shape[2]), device=text.device)
             for i in range(self.num_bands):
                 bandwidth_id = torch.ones([text.shape[0]], dtype=torch.long, device=text.device) * i
-                traj_i_1, traj_i_2 = self.sample_ode_subband(
+                traj_i_1, traj_i_2, attn_i = self.sample_ode_subband(
                     text, band, bandwidth_id, N=N, keep_traj=keep_traj, **kwargs)
                 band = traj_i_1[-1]
                 if self.prev_cond:
@@ -430,15 +433,16 @@ class RectifiedFlow(nn.Module):
                     band = self.mask_cond(band)
                 traj_2.append(traj_i_2)
                 traj_1 = traj_i_1  # traj_i_2 is the same for different bands.
+                attns = attn_i
             traj_2 = self.combine_subbands(traj_2)
         else:
-            traj_1, traj_2 = self.sample_ode_subband(
+            traj_1, traj_2, attns = self.sample_ode_subband(
                 text, None, None, N=N, keep_traj=keep_traj, **kwargs)
             rbs = traj_1[0].size(0) // self.num_bands
             traj_1 = [tt.reshape(rbs, self.num_bands, *tt.shape[1:])[:, 0] for tt in traj_1]
             traj_2 = [self.place_joint_subband(tt.reshape(rbs, -1, tt.size(2)))
                       for tt in traj_2]
-        return [self.get_tandem(tt) for tt in traj_1], [self.get_wave(tt) for tt in traj_2]
+        return [self.get_tandem(tt) for tt in traj_1], [self.get_wave(tt) for tt in traj_2], attns
 
     def stft(self, wave):
         S = self.head.get_spec(wave.float()) / np.sqrt(self.head.n_fft).astype(np.float32)
