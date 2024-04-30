@@ -14,7 +14,7 @@ data:
       phoneset: synta_phoneset.th
       min_context: 200
       segment: False
-      max_duration: 110.
+      max_duration: 70.
       quadratic_duration: 15.
 
     val_params:
@@ -28,7 +28,7 @@ data:
       phoneset: synta_phoneset.th
       min_context: 200
       segment: False
-      max_duration: 110.
+      max_duration: 80.
       quadratic_duration: 15.
 
 model:
@@ -44,6 +44,7 @@ model:
     initial_learning_rate: 1e-4
     num_warmup_steps: 20_000 # Optimizers warmup steps
     torch_compile: True
+    aux_loss: True
 
     feature_extractor:
       class_path: rfwave.feature_extractors.MelSpectrogramFeatures
@@ -64,10 +65,15 @@ model:
         intermediate_dim: 1152
         num_layers1: 4
         num_layers2: 8
-        num_ctx_layers: 4
+        num_ctx_layers: 2
         num_bands: 8
         num_heads: 6
         rad_align: True
+        standalone_align: False
+        standalone_distill: False
+        align_attention_type: dot_product
+        num_align_proj_layers: 2
+        align_q_pos: True
 
     head:
       class_path: rfwave.heads.RFSTFTHead
@@ -91,8 +97,8 @@ trainer:
     class_path: pytorch_lightning.loggers.WandbLogger
     init_args:
       project: rfwave-tts
-      save_dir: logs-rfwave-tts-ctx
-      name: rfwave-tts-ctx
+      save_dir: logs-rfwave-tts-e2e-dit
+      name: rfwave-tts-e2e-dit
   callbacks:
     - class_path: pytorch_lightning.callbacks.LearningRateMonitor
     - class_path: pytorch_lightning.callbacks.ModelSummary

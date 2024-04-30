@@ -68,11 +68,12 @@ model:
         num_ctx_layers: 2
         num_bands: 8
         num_heads: 6
-        rad_align: True
-        standalone_align: False
-        standalone_distill: False
+        rad_align: False
+        standalone_align: True
+        standalone_distill: True
         align_attention_type: dot_product
         num_align_proj_layers: 2
+        align_q_pos: True
 
     head:
       class_path: rfwave.heads.RFSTFTHead
@@ -97,6 +98,7 @@ model:
         n_text_channels: 512
         n_channels: 512
         num_layers: 3
+        q_pos: True
         type: dot_product
 
 trainer:

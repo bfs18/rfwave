@@ -114,13 +114,14 @@ def compute_attention_distill_loss(pred_attn, target_attn):
 
 class StandaloneAlignment(torch.nn.Module):
     def __init__(self, n_mel_channels, n_text_channels, n_channels,
-                 num_layers=3, temperature=1.0, type='guassian', prior_strength=1.):
+                 num_layers=3, temperature=1.0, q_pos=False, type='guassian'):
         assert type in ['gaussian', 'dot_product']
         super(StandaloneAlignment, self).__init__()
         self.temperature = temperature
         self.scale = n_channels ** -0.5
         self.type = type
-        self.prior_strength = prior_strength
+        self.prior_strength = 0.1
+        self.q_pos = q_pos
 
         self.key_in = nn.Sequential(nn.Linear(n_text_channels, n_channels), nn.LayerNorm(n_channels))
         self.key_proj = nn.Sequential(*[ConvNeXtV2Block(n_channels, n_channels * 3) for _ in range(num_layers)])
@@ -160,12 +161,18 @@ class StandaloneAlignment(torch.nn.Module):
         """
         start = _get_start(keys, None)
         keys_length = _get_len(keys, None)  # length is None
+        queries_length = _get_len(queries, None)
 
         keys = self.key_in(keys.transpose(-2, -1))
         queries = self.query_in(queries.transpose(-2, -1))
-        key_freq_cis = self.get_pos_embed(start, keys_length.max())
+        # key_freq_cis = self.get_pos_embed(start, keys_length.max())
+        key_freq_cis = self.get_pos_embed(start, keys_length.max(), scale=token_exp_scale)
+        query_freq_cis = self.get_pos_embed(start, queries_length.max())
         # rotary is only apply to keys to work as absolute positional embedding.
-        keys = apply_rotary_emb(keys, key_freq_cis)
+        keys = apply_rotary_emb(keys, key_freq_cis * np.sqrt(self.prior_strength))
+        if self.q_pos and ((self.training and np.random.uniform() < 0.5) or not self.training):
+            # use query positional embedding with probability 0.5 to avoid CTC loss learns diagonal alignment
+            queries = apply_rotary_emb(queries, query_freq_cis * np.sqrt(self.prior_strength))
 
         keys_enc = self.key_proj(keys.transpose(-2, -1))  # B x n_attn_dims x T2
         # Beware can only do this since query_dim = attn_dim = n_mel_channels

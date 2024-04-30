@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 
 from torch import nn
 from torch.nn import functional as F
@@ -306,6 +307,7 @@ class CrossAttentionWithPrior(nn.Module):
         proj_drop: float = 0.,
         norm_layer: nn.Module = nn.LayerNorm,
         num_proj_layers: int = 2,
+        q_pos: bool = False,
         type: str = 'gaussian'
     ) -> None:
         assert type in ['gaussian', 'dot_product']
@@ -330,6 +332,7 @@ class CrossAttentionWithPrior(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
         self.prior_strength = 0.1
         self.type = type
+        self.q_pos = q_pos
 
     def forward(
         self,
@@ -346,8 +349,10 @@ class CrossAttentionWithPrior(nn.Module):
         kv = self.kv(kv_x).reshape(bsz, kv_seqlen, 2, self.num_heads, self.head_dim).permute(2, 0, 1, 3, 4)
         k, v = kv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
-        q = apply_rotary_emb(q, q_freqs_cis)
-        k = apply_rotary_emb(k, k_freqs_cis)
+        if self.q_pos and ((self.training and np.random.uniform() < 0.5) or not self.training):
+            # use query positional embedding with probability 0.5 to avoid CTC loss learns diagonal alignment
+            q = apply_rotary_emb(q, q_freqs_cis * np.sqrt(self.prior_strength))
+        k = apply_rotary_emb(k, k_freqs_cis * np.sqrt(self.prior_strength))
 
         # (bs, n_local_heads, q_seqlen, head_dim)
         q = q.transpose(1, 2).float()
