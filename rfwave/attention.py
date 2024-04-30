@@ -300,17 +300,18 @@ class CrossAttentionWithPrior(nn.Module):
     def __init__(
         self,
         dim: int,
-        num_heads: int = 8,
+        num_heads: int = 1,
         qkv_bias: bool = False,
         qk_norm: bool = False,
         attn_drop: float = 0.,
         proj_drop: float = 0.,
         norm_layer: nn.Module = nn.LayerNorm,
         num_proj_layers: int = 2,
-        q_pos: bool = False,
+        diag_bias: bool = False,
         type: str = 'gaussian'
     ) -> None:
         assert type in ['gaussian', 'dot_product']
+        assert num_heads == 1
         super().__init__()
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
         self.num_heads = num_heads
@@ -332,7 +333,7 @@ class CrossAttentionWithPrior(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
         self.prior_strength = 0.1
         self.type = type
-        self.q_pos = q_pos
+        self.diag_bias = diag_bias
 
     def forward(
         self,
@@ -349,10 +350,6 @@ class CrossAttentionWithPrior(nn.Module):
         kv = self.kv(kv_x).reshape(bsz, kv_seqlen, 2, self.num_heads, self.head_dim).permute(2, 0, 1, 3, 4)
         k, v = kv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
-        if self.q_pos and ((self.training and np.random.uniform() < 0.5) or not self.training):
-            # use query positional embedding with probability 0.5 to avoid CTC loss learns diagonal alignment
-            q = apply_rotary_emb(q, q_freqs_cis * np.sqrt(self.prior_strength))
-        k = apply_rotary_emb(k, k_freqs_cis * np.sqrt(self.prior_strength))
 
         # (bs, n_local_heads, q_seqlen, head_dim)
         q = q.transpose(1, 2).float()
@@ -363,20 +360,24 @@ class CrossAttentionWithPrior(nn.Module):
         if self.query_proj is not None and self.key_proj is not None:
             q = q.reshape(-1, q_seqlen, self.head_dim).transpose(1, 2)
             k = k.reshape(-1, kv_seqlen, self.head_dim).transpose(1, 2)
-            q = self.query_proj(q).transpose(1, 2).reshape(bsz, self.num_heads, q_seqlen, self.head_dim)
-            k = self.key_proj(k).transpose(1, 2).reshape(bsz, self.num_heads, kv_seqlen, self.head_dim)
+            q = self.query_proj(q).transpose(1, 2)
+            k = self.key_proj(k).transpose(1, 2)
 
+        q = q.reshape(bsz, self.num_heads, q_seqlen, self.head_dim)
+        k = k.reshape(bsz, self.num_heads, kv_seqlen, self.head_dim)
         if self.type == 'gaussian':
             attn = -cdist(q * self.scale, k * self.scale)
-            # q = q.transpose(-1, -2)
-            # k = k.transpose(-1, -2)
-            # attn = (q.unsqueeze(-1) - k.unsqueeze(-2))**2
-            # attn = -attn.mean(-3, keepdim=False)
         elif self.type == 'dot_product':
             q = q * self.scale
             attn = q @ k.transpose(-2, -1)
         else:
             raise ValueError(f'Unknown attention type {self.type}')
+
+        if self.diag_bias:
+            diag_bias = ((q_freqs_cis @ k_freqs_cis.transpose(1, 2)).unsqueeze(1) *
+                         self.scale * self.prior_strength)
+            attn = attn + diag_bias
+
         if mask is not None:
             attn = attn + mask
         attn = attn.float().softmax(dim=-1).type_as(attn)

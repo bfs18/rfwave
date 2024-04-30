@@ -114,14 +114,14 @@ def compute_attention_distill_loss(pred_attn, target_attn):
 
 class StandaloneAlignment(torch.nn.Module):
     def __init__(self, n_mel_channels, n_text_channels, n_channels,
-                 num_layers=3, temperature=1.0, q_pos=False, type='guassian'):
+                 num_layers=3, temperature=1.0, diag_bias=False, type='guassian'):
         assert type in ['gaussian', 'dot_product']
         super(StandaloneAlignment, self).__init__()
         self.temperature = temperature
         self.scale = n_channels ** -0.5
         self.type = type
         self.prior_strength = 0.1
-        self.q_pos = q_pos
+        self.diag_bias = diag_bias
 
         self.key_in = nn.Sequential(nn.Linear(n_text_channels, n_channels), nn.LayerNorm(n_channels))
         self.key_proj = nn.Sequential(*[ConvNeXtV2Block(n_channels, n_channels * 3) for _ in range(num_layers)])
@@ -159,42 +159,35 @@ class StandaloneAlignment(torch.nn.Module):
             attn (torch.tensor): B x 1 x T1 x T2 attention mask.
                                  Final dim T2 should sum to 1
         """
-        start = _get_start(keys, None)
-        keys_length = _get_len(keys, None)  # length is None
-        queries_length = _get_len(queries, None)
-
         keys = self.key_in(keys.transpose(-2, -1))
         queries = self.query_in(queries.transpose(-2, -1))
-        # key_freq_cis = self.get_pos_embed(start, keys_length.max())
-        key_freq_cis = self.get_pos_embed(start, keys_length.max(), scale=token_exp_scale)
-        query_freq_cis = self.get_pos_embed(start, queries_length.max())
-        # rotary is only apply to keys to work as absolute positional embedding.
-        keys = apply_rotary_emb(keys, key_freq_cis * np.sqrt(self.prior_strength))
-        if self.q_pos and ((self.training and np.random.uniform() < 0.5) or not self.training):
-            # use query positional embedding with probability 0.5 to avoid CTC loss learns diagonal alignment
-            queries = apply_rotary_emb(queries, query_freq_cis * np.sqrt(self.prior_strength))
 
-        keys_enc = self.key_proj(keys.transpose(-2, -1))  # B x n_attn_dims x T2
+        keys_enc = self.key_proj(keys.transpose(-2, -1)).transpose(-2, -1)  # B x T2 x n_attn_dims
         # Beware can only do this since query_dim = attn_dim = n_mel_channels
-        queries_enc = self.query_proj(queries.transpose(-2, -1))
+        queries_enc = self.query_proj(queries.transpose(-2, -1)).transpose(-2, -1)
 
         if self.type == 'gaussian':
             # Gaussian Isotopic Attention
-            # B x n_attn_dims x T1 x T2
-            # attn = (queries_enc[:, :, :, None] - keys_enc[:, :, None])**2
-            # compute log-likelihood from gaussian
-            # attn = (queries_enc.unsqueeze(-1) - keys_enc.unsqueeze(-2))**2
-            # attn = -attn.mean(-3, keepdim=True)
-            queries_enc = queries_enc.transpose(-2, -1).unsqueeze(1)
-            keys_enc = keys_enc.transpose(-2, -1).unsqueeze(1)
+            queries_enc = queries_enc.unsqueeze(1)
+            keys_enc = keys_enc.unsqueeze(1)
             attn = -cdist(queries_enc * self.scale, keys_enc * self.scale)
-            pass
         elif self.type == 'dot_product':
             queries_enc = queries_enc * self.scale
-            attn = queries_enc.transpose(-2, -1) @ keys_enc
+            attn = queries_enc @ keys_enc.transpose(-2, -1)
             attn = attn.unsqueeze(1)  # make attention shape consistent.
         else:
             raise ValueError(f'Unknown attention type {self.type}')
+
+        if self.diag_bias:
+            start = _get_start(keys, None)
+            keys_length = _get_len(keys, None)  # length is None
+            queries_length = _get_len(queries, None)
+
+            key_freq_cis = self.get_pos_embed(start, keys_length.max(), scale=token_exp_scale)
+            query_freq_cis = self.get_pos_embed(start, queries_length.max())
+            diag_bias = ((query_freq_cis @ key_freq_cis.transpose(-2, -1)).unsqueeze(1) *
+                         self.scale * self.prior_strength)
+            attn = attn + diag_bias
 
         if mask is not None:
             attn = attn + mask

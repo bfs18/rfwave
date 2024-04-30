@@ -292,7 +292,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         standalone_distill: Optional[bool] = None,
         align_attention_type: Optional[str] = None,
         num_align_proj_layers: Optional[int] = None,
-        align_q_pos: Optional[bool] = None,
+        align_diag_bias: Optional[bool] = None,
     ):
         super().__init__()
         self.input_channels = input_channels
@@ -311,13 +311,13 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         self.z_t1_proj = nn.Conv1d(output_channels1, dim, 1)
         if self.rad_align or (self.standalone_align and self.standalone_distill):
             assert align_attention_type is not None
-            assert align_q_pos is not None
+            assert align_diag_bias is not None
             assert num_align_proj_layers is not None and num_align_proj_layers >= 0
             assert num_ctx_layers % 2 == 0 and num_ctx_layers // 2 >= 1
             self.cross_attn1 = ContextBlock(params, input_channels, num_ctx_layers // 2, modulate=True)
             self.cross_attn2 = ContextBlock(params, input_channels, num_ctx_layers // 2, modulate=True)
             self.align_block = AlignmentBlock(dim, input_channels, num_proj_layers=num_align_proj_layers,
-                                              q_pos=align_q_pos, attention_type=align_attention_type)
+                                              diag_bias=align_diag_bias, attention_type=align_attention_type)
         elif self.standalone_align and not self.standalone_distill:
             self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
             self.sa_align_block = EmptyAlignmentBlock(dim, input_channels)
@@ -390,10 +390,6 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             ctx = self.cross_attn1(z_t1, x_ref, z_freq_cis, ref_freq_cis, z_mask, ref_mask, mod_c=te)
             # inject text information and get align attn
             attn_prior = gaussian_prior(num_tokens, token_exp_scale)
-            # rotary is only apply to keys to work as absolute positional embedding.
-            # align_token_freq_cis = self.get_pos_embed(zero_start, num_tokens.max())
-            # ctx, attn = self.align_block(ctx, x_token, None, align_token_freq_cis, token_mask,
-            #                              mod_c=te, attn_prior=attn_prior)
             ctx, attn = self.align_block(ctx, x_token, z_freq_cis, token_freq_cis, token_mask,
                                          mod_c=te, attn_prior=attn_prior)
             align_ctx = ctx  # compute aux loss for the outer rad alignment block

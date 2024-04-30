@@ -202,7 +202,7 @@ class CrossAttTransformerBlock(nn.Module):
 
 
 class AlignmentBlock(nn.Module):
-    def __init__(self, dim, ctx_dim, num_proj_layers, q_pos, attention_type='gaussian'):
+    def __init__(self, dim, ctx_dim, num_proj_layers, diag_bias, attention_type='gaussian'):
         super().__init__()
         args = ModelArgs(dim, n_heads=1, multiple_of=128)
         self.dim = dim
@@ -210,7 +210,7 @@ class AlignmentBlock(nn.Module):
         self.align_attn = CrossAttentionWithPrior(
             dim=args.dim, num_heads=args.n_heads, qkv_bias=False, qk_norm=args.qk_norm,
             attn_drop=args.dropout, proj_drop=args.dropout, norm_layer=RMSNorm,
-            num_proj_layers=num_proj_layers, q_pos=q_pos, type=attention_type)
+            num_proj_layers=num_proj_layers, diag_bias=diag_bias, type=attention_type)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(), nn.Linear(self.dim, 3 * self.dim, bias=True))
         self.cross_attention_norm = nn.LayerNorm(args.dim, elementwise_affine=False, eps=args.norm_eps)
@@ -584,6 +584,7 @@ class E2ECtxCharInputAdaptor(InputAdaptor):
         self.ctx_proj = nn.Conv1d(ctx_dim, embedding_dim, kernel_size=1)
         self.tok_blocks = nn.Sequential(*[ConvNeXtV2Block(embedding_dim, embedding_dim*3) for _ in range(num_layers)])
         self.ctx_blocks = nn.Sequential(*[ConvNeXtV2Block(embedding_dim, embedding_dim*3) for _ in range(num_layers)])
+        self.register_buffer("freqs_cis", precompute_freqs_cis(embedding_dim, 1024), persistent=False)
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -592,9 +593,13 @@ class E2ECtxCharInputAdaptor(InputAdaptor):
             nn.init.constant_(m.bias, 0)
 
     def forward(self, tokens, ctx):
-        te = self.tok_embeddings(tokens).transpose(1, 2)
+        te = self.tok_embeddings(tokens)
+        s = torch.zeros([tokens.size(0)], dtype=torch.long, device=tokens.device)
+        pi = get_pos_embed_indices(s, tokens.size(1), max_pos=self.freqs_cis.size(0))
+        pe = self.freqs_cis[pi]
+        te = apply_rotary_emb(te, pe)
         ce = self.ctx_proj(ctx)
-        te = self.tok_blocks(te)
+        te = self.tok_blocks(te.transpose(1, 2))
         ce = self.ctx_blocks(ce)
         return torch.cat([te, ce], dim=2)
 
