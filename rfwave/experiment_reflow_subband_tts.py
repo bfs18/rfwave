@@ -878,7 +878,7 @@ class VocosExp(pl.LightningModule):
             with torch.no_grad():
                 kwargs['out_length'] = z_t.size(2)
                 kwargs['standalone_attn'] = sa_attn
-                mel_hat_traj, audio_hat_traj = self.reflow.sample_ode(text, N=100, **kwargs)
+                mel_hat_traj, audio_hat_traj, _ = self.reflow.sample_ode(text, N=100, **kwargs)
             audio_hat = audio_hat_traj[-1]
             mel_hat = mel_hat_traj[-1]
             mask = sequence_mask(ctx_kwargs['length']) if 'length' in ctx_kwargs else None
@@ -941,7 +941,7 @@ class VocosExp(pl.LightningModule):
             # out_length, token_exp_scale will be replaced.
             aod_kwargs = self.attn_or_dur(mel, text, **pi_kwargs)
             kwargs.update(**aod_kwargs)
-            mel_hat_traj, audio_hat_traj = self.reflow.sample_ode(text, N=100, **kwargs)
+            mel_hat_traj, audio_hat_traj, _ = self.reflow.sample_ode(text, N=100, **kwargs)
         audio_hat = audio_hat_traj[-1]
         mel_hat = mel_hat_traj[-1]
         # NOTE: interpolate to calculate loss. not correct. MCD is too time-consuming
