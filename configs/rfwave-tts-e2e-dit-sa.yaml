@@ -44,7 +44,7 @@ model:
     initial_learning_rate: 1e-4
     num_warmup_steps: 20_000 # Optimizers warmup steps
     torch_compile: True
-    aux_loss: False
+    aux_loss: True
 
     feature_extractor:
       class_path: rfwave.feature_extractors.MelSpectrogramFeatures
@@ -68,10 +68,11 @@ model:
         num_ctx_layers: 2
         num_bands: 8
         num_heads: 6
-        rad_align: False
-        standalone_align: True
-        standalone_distill: True
+        rad_align: True
+        standalone_align: False
+        standalone_distill: False
         align_attention_type: dot_product
+        num_align_proj_layers: 2
 
     head:
       class_path: rfwave.heads.RFSTFTHead
