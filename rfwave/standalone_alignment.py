@@ -159,6 +159,10 @@ class StandaloneAlignment(torch.nn.Module):
             attn (torch.tensor): B x 1 x T1 x T2 attention mask.
                                  Final dim T2 should sum to 1
         """
+        start = _get_start(keys, None)
+        keys_length = _get_len(keys, None)  # length is None
+        queries_length = _get_len(queries, None)
+
         keys = self.key_in(keys.transpose(-2, -1))
         queries = self.query_in(queries.transpose(-2, -1))
 
@@ -179,10 +183,6 @@ class StandaloneAlignment(torch.nn.Module):
             raise ValueError(f'Unknown attention type {self.type}')
 
         if self.diag_bias:
-            start = _get_start(keys, None)
-            keys_length = _get_len(keys, None)  # length is None
-            queries_length = _get_len(queries, None)
-
             key_freq_cis = self.get_pos_embed(start, keys_length.max(), scale=token_exp_scale)
             query_freq_cis = self.get_pos_embed(start, queries_length.max())
             diag_bias = ((query_freq_cis @ key_freq_cis.transpose(-2, -1)).unsqueeze(1) *
