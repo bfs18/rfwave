@@ -120,23 +120,20 @@ class PQMFProcessor(SampleProcessor):
 class STFTProcessor(SampleProcessor):
     def __init__(self, n_fft):
         super().__init__()
-        self.register_buffer('mean_ema', torch.zeros([n_fft // 2 + 1]))
-        self.register_buffer('var_ema', torch.ones([n_fft // 2 + 2]))
+        self.register_buffer('var_ema', torch.ones([n_fft // 2 + 1]))
 
     def project_sample(self, x: torch.Tensor):
         if self.training:
             r, i = x.float().chunk(2, dim=1)
             mag = (r ** 2 + i ** 2) ** 0.5
-            mean = torch.mean(mag, dim=(0, 2))
             var = torch.var(mag, dim=(0, 2))
-            self.mean_ema.lerp_(mean.detach(), 0.01)
             self.var_ema.lerp_(var.detach(), 0.01)
-        m = torch.tile(self.mean_ema, [2])
         v = torch.tile(self.var_ema, [2])
-        return (x - m[None, :, None]) / torch.sqrt(v[None, :, None] + 1e-6)
+        return x / torch.sqrt(v[None, :, None] + 1e-6)
 
     def return_sample(self, x: torch.Tensor):
-        x = x * torch.sqrt(self.var_ema[None, :, None] + 1e-6) + self.mean_ema[None, :, None]
+        v = torch.tile(self.var_ema, [2])
+        x = x * v
         return x
 
 
