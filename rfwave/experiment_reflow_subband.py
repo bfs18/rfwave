@@ -15,7 +15,7 @@ from rfwave.helpers import plot_spectrogram_to_numpy, save_figure_to_numpy
 from rfwave.loss import MelSpecReconstructionLoss
 from rfwave.models import Backbone
 from rfwave.modules import safe_log10
-from rfwave.multi_band_processor import PQMFProcessor, STFTProcessor
+from rfwave.multi_band_processor import PQMFProcessor, STFTProcessor, MeanVarProcessor
 from rfwave.rvm import RelativeVolumeMel
 from rfwave.lr_schedule import get_cosine_schedule_with_warmup
 from rfwave.input import InputAdaptor, InputAdaptorProject
@@ -74,7 +74,7 @@ class RectifiedFlow(nn.Module):
         t_sampling = 'uniform'
         self.t_dist = LogitNormal(mu=0., sigma=1.) if t_sampling == 'logit_normal' else None
         if self.stft_norm:
-            self.stft_processor = STFTProcessor(self.head.n_fft)
+            self.stft_processor = MeanVarProcessor(self.head.n_fft + 2)
         if self.equalizer:
             self.eq_processor = PQMFProcessor(subbands=8, taps=124, cutoff_ratio=0.071)
         if self.feature_loss:

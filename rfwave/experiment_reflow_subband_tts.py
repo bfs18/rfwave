@@ -101,7 +101,7 @@ class RectifiedFlow(nn.Module):
         t_sampling = 'uniform'
         self.t_dist = LogitNormal(mu=0., sigma=1.) if t_sampling == 'logit_normal' else None
         if self.stft_norm:
-            self.stft_processor = STFTProcessor(self.head.n_fft)
+            self.stft_processor = MeanVarProcessor(self.head.n_fft + 2)
         if self.equalizer:
             self.eq_processor = PQMFProcessor(subbands=8, taps=124, cutoff_ratio=0.071)
         if self.feature_loss:
