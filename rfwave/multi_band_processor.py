@@ -148,8 +148,11 @@ class MeanVarProcessor(SampleProcessor):
 
     def project_sample(self, x: torch.Tensor):
         if self.training:
-            mean = torch.mean(x.float(), dim=(0, 2))
-            var = torch.var(x.float(), dim=(0, 2))
+            # support for exp scale.
+            dim = list(range(x.ndim))
+            dim.remove(1)
+            mean = torch.mean(x.float(), dim=dim)
+            var = torch.var(x.float(), dim=dim)
             self.mean_ema.lerp_(mean.detach(), 0.01)
             self.var_ema.lerp_(var.detach(), 0.01)
         return (x - self.mean_ema[None, :, None]) / torch.sqrt(self.var_ema[None, :, None] + 1e-6)
