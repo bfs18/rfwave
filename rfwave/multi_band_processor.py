@@ -133,7 +133,7 @@ class STFTProcessor(SampleProcessor):
 
     def return_sample(self, x: torch.Tensor):
         v = torch.tile(self.var_ema, [2])
-        x = x * v
+        x = x * v[None, :, None]
         return x
 
 
