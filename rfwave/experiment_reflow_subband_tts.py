@@ -16,7 +16,7 @@ from rfwave.helpers import plot_spectrogram_to_numpy, plot_attention_to_numpy
 from rfwave.loss import MelSpecReconstructionLoss
 from rfwave.models import Backbone
 from rfwave.modules import safe_log, safe_log10, pseudo_huber_loss
-from rfwave.multi_band_processor import MultiBandProcessor, PQMFProcessor, STFTProcessor
+from rfwave.multi_band_processor import PQMFProcessor, STFTProcessor, MeanVarProcessor
 from rfwave.rvm import RelativeVolumeMel
 from rfwave.lr_schedule import get_cosine_schedule_with_warmup
 from rfwave.input import (InputAdaptor, InputAdaptorProject, CtxCharInputAdaptor, Ctx2CharInputAdaptor,
@@ -101,13 +101,13 @@ class RectifiedFlow(nn.Module):
         t_sampling = 'uniform'
         self.t_dist = LogitNormal(mu=0., sigma=1.) if t_sampling == 'logit_normal' else None
         if self.stft_norm:
-            self.stft_processor = STFTProcessor(self.head.n_fft + 2)
+            self.stft_processor = STFTProcessor(self.head.n_fft)
         if self.equalizer:
             self.eq_processor = PQMFProcessor(subbands=8, taps=124, cutoff_ratio=0.071)
         if self.feature_loss:
             self.register_buffer(
                 "feature_weight", get_feature_weight2(self.head.n_fft, self.head.hop_length))
-        self.tandem_processor = STFTProcessor(self.output_channels1)
+        self.tandem_processor = MeanVarProcessor(self.output_channels1)
 
     def get_subband(self, S, i):
         # if i.numel() > 1:

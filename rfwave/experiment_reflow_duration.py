@@ -9,7 +9,7 @@ import wandb
 import torchaudio
 
 from torch import nn
-from rfwave.multi_band_processor import STFTProcessor
+from rfwave.multi_band_processor import MeanVarProcessor
 from rfwave.input import InputAdaptor
 from rfwave.models import Backbone
 from rfwave.lr_schedule import get_cosine_schedule_with_warmup
@@ -28,7 +28,7 @@ class RectifiedFlow(nn.Module):
         self.cfg = guidance_scale > 1.
         self.p_uncond = p_uncond
         self.guidance_scale = guidance_scale
-        self.dur_processor = STFTProcessor(1)
+        self.dur_processor = MeanVarProcessor(1)
         self.validation_step_outputs = []
         self.automatic_optimization = False
         # t_sampling = 'logit_normal' if isinstance(backbone, DiTRFBackbone) else 'uniform'
