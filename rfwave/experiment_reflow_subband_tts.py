@@ -505,25 +505,20 @@ class RectifiedFlow(nn.Module):
         return loss.mean() if mask_factor is None else (mask_factor * loss).mean()
 
     def compute_rf_loss2(self, pred, target, bandwidth_id, mask_factor=None):
+        if self.time_balance_loss:
+            pred, target = self.time_balance_for_loss(pred, target)
         if self.wave:
-            if self.time_balance_loss:
-                pred, target = self.time_balance_for_loss(pred, target)
             diff = pred - target
             diff = self._place_diff(diff, bandwidth_id)
             loss = self.istft(diff).pow(2.).mean(dim=(1,))
         else:
             if self.feature_loss:
-                if self.time_balance_loss:
-                    pred, target = self.time_balance_for_loss(pred, target)
-
                 diff = (pred - target) * np.sqrt(self.head.n_fft).astype(np.float32)
                 diff = self._place_diff(diff, bandwidth_id)
                 diff = torch.einsum("bct,dc->bdt", diff, self.feature_weight)
                 feature_loss = torch.mean(diff ** 2, dim=(1, 2)) * self.num_bands
                 loss = feature_loss
             else:
-                if self.time_balance_loss:
-                    pred, target = self.time_balance_for_loss(pred, target)
                 loss = F.mse_loss(pred, target, reduction='none').mean(dim=(1, 2))
         if mask_factor is not None:
             rpt = mask_factor.size(0) // loss.size(0)

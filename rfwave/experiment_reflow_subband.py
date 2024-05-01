@@ -421,9 +421,10 @@ class RectifiedFlow(nn.Module):
         return (loss_i + loss_r) / self.num_bands
 
     def compute_rf_loss(self, pred, target, bandwidth_id):
+        if self.time_balance_loss:
+            pred, target = self.time_balance_for_loss(pred, target)
+
         if self.wave:
-            if self.time_balance_loss:
-                pred, target = self.time_balance_for_loss(pred, target)
             diff = pred - target
             diff = self._place_diff(diff, bandwidth_id)
             loss = self.istft(diff).pow(2.).mean()
@@ -432,17 +433,12 @@ class RectifiedFlow(nn.Module):
                 # if self.stft_norm:
                 #     pred = self.stft_processor.return_sample(pred)
                 #     target = self.stft_processor.return_sample(target)
-                if self.time_balance_loss:
-                    pred, target = self.time_balance_for_loss(pred, target)
-
                 diff = (pred - target) * np.sqrt(self.head.n_fft).astype(np.float32)
                 diff = self._place_diff(diff, bandwidth_id)
                 diff = torch.einsum("bct,dc->bdt", diff, self.feature_weight)
                 feature_loss = torch.mean(diff ** 2) * self.num_bands
                 loss = feature_loss
             else:
-                if self.time_balance_loss:
-                    pred, target = self.time_balance_for_loss(pred, target)
                 loss = F.mse_loss(pred, target)
         return loss
 
