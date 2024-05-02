@@ -61,7 +61,8 @@ def masked_mse_loss(pred, target, mask=None):
 
 class RectifiedFlow(nn.Module):
     def __init__(self, backbon: Backbone, head: FourierHead,
-                 num_steps=10, feature_loss=False, wave=False, num_bands=8, intt=0., p_uncond=0., guidance_scale=1.):
+                 num_steps=10, feature_loss=False, wave=False, num_bands=8,
+                 intt=0., p_uncond=0., guidance_scale=1.):
         super().__init__()
         self.backbone = backbon
         self.head = head
@@ -92,6 +93,7 @@ class RectifiedFlow(nn.Module):
         self.output_channels1 = self.backbone.output_channels1
         self.output_channels2 = self.backbone.output_channels2
         self.intt = intt  # resemble cascade system
+        self.intt_cascade = False
         out_ch = (self.backbone.output_channels if hasattr(self.backbone, 'output_channels')
                   else self.backbone.output_channels2)
         assert out_ch == self.head.n_fft // self.num_bands + 2 * self.overlap
@@ -310,19 +312,24 @@ class RectifiedFlow(nn.Module):
         pred = self.backbone(z_t, t, text, bandwidth_id, **backbone_kwargs)
         return pred if isinstance(pred, tuple) else (pred, None, None)
 
-    def get_intt_dt(self, i, N):
-        if i / N < self.intt:
-            dt = 1. / N / self.intt
-        else:
-            dt = 1. / N / (1 - self.intt)
-        return dt
-
     def make_pred1_consistent(self, pred1):
         pred1 = pred1.reshape(pred1.size(0) // self.num_bands, self.num_bands, *pred1.shape[1:])
         # pred1 = pred1.mean(dim=1, keepdim=True)  # same mel for different bands, average
         pred1 = pred1[:, 0: 1]  # same mel for different bands, the first band
         pred1 = torch.repeat_interleave(pred1, self.num_bands, dim=1).reshape(-1, *pred1.shape[2:])
         return pred1
+
+    def get_t_dt(self, N):
+        if self.intt == 0:
+            ts = np.linspace(0., 1., N + 1)
+            dt = ts[1:] - ts[:-1]
+        else:
+            ts1 = np.linspace(0., 1, int(N * self.intt), endpoint=False)
+            ts2 = np.linspace(0, 1., int(N * (1 - self.intt)) + 1)
+            ts12 = np.concatenate([ts1, 1 + ts2])
+            ts = np.linspace(0., 1., N + 1)
+            dt = ts12[1:] - ts12[:-1]
+        return np.stack([ts[:-1], dt], axis=0)
 
     @torch.no_grad()
     def sample_ode_subband(self, text, band, bandwidth_id, N=None, keep_traj=False, **kwargs):
@@ -350,20 +357,17 @@ class RectifiedFlow(nn.Module):
         z = z0.detach()
         fs = (z.size(0) // self.num_bands, self.output_channels2 * self.num_bands, z.size(2))
         ss = (z.size(0), self.output_channels2, z.size(2))
-        for i in range(N):
-            t = torch.ones(z.size(0)) * i / N
-            if self.intt > 0.:
-                dt = self.get_intt_dt(i, N)
-            else:
-                dt = 1. / N
+        t_dt = self.get_t_dt(N)
+        for i, (t, dt) in enumerate(t_dt):
+            t_ = torch.ones(z.size(0)) * t
             if self.cfg:
                 text_ = torch.cat([text, torch.ones_like(text) * text.mean(dim=(0, 2), keepdim=True)], dim=0)
-                (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t, bandwidth_id)]
+                (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t_, bandwidth_id)]
                 pred, opt_attn, _ = self.get_pred(z_, t_.to(text.device), text_, bandwidth_id_, **kwargs)
                 pred, uncond_pred = torch.chunk(pred, 2, dim=0)
                 pred = uncond_pred + self.guidance_scale * (pred - uncond_pred)
             else:
-                pred, opt_attn, _ = self.get_pred(z, t.to(text.device), text, bandwidth_id, **kwargs)
+                pred, opt_attn, _ = self.get_pred(z, t_.to(text.device), text, bandwidth_id, **kwargs)
             if self.wave:
                 pred1, pred2 = self.split(pred)
                 if self.prev_cond or not self.parallel_uncond:
@@ -378,7 +382,7 @@ class RectifiedFlow(nn.Module):
                 pred1, pred2 = self.split(pred)
             pred1 = self.make_pred1_consistent(pred1)
             if self.intt > 0.:
-                if i / N < self.intt:
+                if t < self.intt:
                     pred2 = torch.zeros_like(pred2)
                 else:
                     pred1 = torch.zeros_like(pred1)
