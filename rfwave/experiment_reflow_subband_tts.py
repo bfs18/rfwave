@@ -362,7 +362,7 @@ class RectifiedFlow(nn.Module):
             dt = ts[1:] - ts[:-1]
         else:
             raise ValueError(f'Unsupported intt mode {self.intt_mode}')
-        return np.stack([ts[:-1], dt], axis=0)
+        return np.stack([ts[:-1], dt], axis=1)
 
     def intt_postprocess(self, pred1, pred2, t):
         if self.intt > 0.:
