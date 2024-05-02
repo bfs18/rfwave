@@ -241,6 +241,10 @@ class RectifiedFlow(nn.Module):
         return self.tandem_processor.return_sample(mel)
 
     def get_intt_zt(self, t_, z0, z1):
+        if self.intt == 0.:
+            zt = t_ * z1 + (1. - t_) * z0
+            return zt
+
         z0_1, z0_2 = self.split(z0)
         z1_1, z1_2 = self.split(z1)
         if self.intt_mode == 'cascade':
@@ -268,6 +272,10 @@ class RectifiedFlow(nn.Module):
         return zt
 
     def get_intt_target(self, t_, z0, z1):
+        if self.intt == 0.:
+            target = z1 - z0
+            return target
+
         z0_1, z0_2 = self.split(z0)
         z1_1, z1_2 = self.split(z1)
         target_1 = z1_1 - z0_1
@@ -320,12 +328,8 @@ class RectifiedFlow(nn.Module):
             bandwidth_id = torch.tile(torch.arange(self.num_bands, device=mel.device), (mel.size(0),))
             text = torch.repeat_interleave(text, self.num_bands, 0)
         t_ = t.view(-1, 1, 1)
-        if self.intt > 0.:
-            zt = self.get_intt_zt(t_, z0, z1)
-            target = self.get_intt_target(t_, z0, z1)
-        else:
-            zt = t_ * z1 + (1. - t_) * z0
-            target = z1 - z0
+        zt = self.get_intt_zt(t_, z0, z1)
+        target = self.get_intt_target(t_, z0, z1)
         return text, bandwidth_id, (zt, t, target)
 
     def get_pred(self, z_t, t, text, bandwidth_id, **kwargs):
@@ -371,13 +375,13 @@ class RectifiedFlow(nn.Module):
                     pred2 = torch.zeros_like(pred2)
                 else:
                     pred1 = torch.zeros_like(pred1)
-        elif self.intt_mode == 'pipeline':
-            if t < self.intt:
-                pred2 = torch.zeros_like(pred2)
-            elif t > 1.:
-                pred1 = torch.zeros_like(pred1)
-        else:
-            raise ValueError(f'Unsupported intt mode {self.intt_mode}')
+            elif self.intt_mode == 'pipeline':
+                if t < self.intt:
+                    pred2 = torch.zeros_like(pred2)
+                elif t > 1.:
+                    pred1 = torch.zeros_like(pred1)
+            else:
+                raise ValueError(f'Unsupported intt mode {self.intt_mode}')
         return pred1, pred2
 
     @torch.no_grad()
@@ -619,11 +623,21 @@ class RectifiedFlow(nn.Module):
 
     def get_intt_pred(self, t_, pred):
         pred1, pred2 = self.split(pred)
-        m = t_ < self.intt
+        if self.intt == 0.:
+            return pred1, pred2
         zero1 = torch.zeros_like(pred1)
         zero2 = torch.zeros_like(pred2)
-        pred1 = torch.where(m, pred1, zero1)
-        pred2 = torch.where(m, zero2, pred2)
+        if self.intt_mode == 'cascade':
+            m = t_ < self.intt
+            pred1 = torch.where(m, pred1, zero1)
+            pred2 = torch.where(m, zero2, pred2)
+        elif self.intt_mode == 'pipeline':
+            m1 = t_ < 1.
+            m2 = t_ < self.intt
+            pred1 = torch.where(m1, pred1, zero1)
+            pred2 = torch.where(m2, zero2, pred2)
+        else:
+            raise ValueError(f'Unsupported intt mode {self.intt_mode}')
         return pred1, pred2
 
     def compute_alignment_loss(self, opt_attn, **kwargs):
@@ -656,10 +670,7 @@ class RectifiedFlow(nn.Module):
         opt_attn = opt_attn.float() if opt_attn is not None else None
         t_ = t.view(-1, 1, 1)
         z_t1, z_t2 = self.split(z_t)
-        if self.intt > 0.:
-            pred1, pred2 = self.get_intt_pred(t_, pred)
-        else:
-            pred1, pred2 = self.split(pred)
+        pred1, pred2 = self.get_intt_pred(t_, pred)
         target1, target2 = self.split(target)
         stft_loss = self.compute_stft_loss(z_t2, t, target2, pred2, bandwidth_id) if self.stft_loss else 0.
         phase_loss = self.compute_phase_loss(z_t2, t, target2, pred2, bandwidth_id) if self.phase_loss else 0.
