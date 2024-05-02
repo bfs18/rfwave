@@ -62,7 +62,8 @@ def masked_mse_loss(pred, target, mask=None):
 class RectifiedFlow(nn.Module):
     def __init__(self, backbon: Backbone, head: FourierHead,
                  num_steps=10, feature_loss=False, wave=False, num_bands=8,
-                 intt=0., p_uncond=0., guidance_scale=1.):
+                 intt=0., intt_mode=None, p_uncond=0., guidance_scale=1.):
+        assert intt == 0. or (intt > 0. and intt_mode in ['pipeline', 'cascade'])
         super().__init__()
         self.backbone = backbon
         self.head = head
@@ -92,8 +93,8 @@ class RectifiedFlow(nn.Module):
         self.guidance_scale = guidance_scale
         self.output_channels1 = self.backbone.output_channels1
         self.output_channels2 = self.backbone.output_channels2
-        self.intt = intt  # resemble cascade system
-        self.intt_cascade = False
+        self.intt = intt
+        self.intt_mode = intt_mode
         out_ch = (self.backbone.output_channels if hasattr(self.backbone, 'output_channels')
                   else self.backbone.output_channels2)
         assert out_ch == self.head.n_fft // self.num_bands + 2 * self.overlap
@@ -242,39 +243,65 @@ class RectifiedFlow(nn.Module):
     def get_intt_zt(self, t_, z0, z1):
         z0_1, z0_2 = self.split(z0)
         z1_1, z1_2 = self.split(z1)
-        m = t_ < self.intt
-        intt1 = t_ / self.intt
-        intt2 = (t_ - self.intt) / (1 - self.intt)
-        # z_t = t_ * z1 + (1. - t_) * z0
-        zt_1 = intt1 * z1_1 + (1 - intt1) * z0_1
-        zt_2 = intt2 * z1_2 + (1 - intt2) * z0_2
-        zt_1 = torch.where(m, zt_1, z1_1)
-        zt_2 = torch.where(m, z0_2, zt_2)
-        zt = torch.cat([zt_1, zt_2], dim=1)
+        if self.intt_mode == 'cascade':
+            m = t_ < self.intt
+            intt1 = t_ / self.intt
+            intt2 = (t_ - self.intt) / (1 - self.intt)
+            # z_t = t_ * z1 + (1. - t_) * z0
+            zt_1 = intt1 * z1_1 + (1 - intt1) * z0_1
+            zt_2 = intt2 * z1_2 + (1 - intt2) * z0_2
+            zt_1 = torch.where(m, zt_1, z1_1)
+            zt_2 = torch.where(m, z0_2, zt_2)
+            zt = torch.cat([zt_1, zt_2], dim=1)
+        elif self.intt_mode == 'pipeline':
+            m1 = t_ < 1.
+            m2 = t_ < self.intt
+            intt1 = t_
+            intt2 = t_ - self.intt
+            zt_1 = intt1 * z1_1 + (1 - intt1) * z0_1
+            zt_2 = intt2 * z1_2 + (1 - intt2) * z0_2
+            zt_1 = torch.where(m1, zt_1, z1_1)
+            zt_2 = torch.where(m2, z0_2, zt_2)
+            zt = torch.cat([zt_1, zt_2], dim=1)
+        else:
+            raise ValueError(f'Unsupported intt mode {self.intt_mode}')
         return zt
 
     def get_intt_target(self, t_, z0, z1):
         z0_1, z0_2 = self.split(z0)
         z1_1, z1_2 = self.split(z1)
-        m = t_ < self.intt
-        # target = z1 - z0
         target_1 = z1_1 - z0_1
         target_2 = z1_2 - z0_2
         zero_1 = torch.zeros_like(target_1)
         zero_2 = torch.zeros_like(target_2)
-        target_1 = torch.where(m, target_1, zero_1)
-        target_2 = torch.where(m, zero_2, target_2)
-        target = torch.cat([target_1, target_2], dim=1)
+        if self.intt_mode == 'cascade':
+            m = t_ < self.intt
+            # target = z1 - z0
+            target_1 = torch.where(m, target_1, zero_1)
+            target_2 = torch.where(m, zero_2, target_2)
+            target = torch.cat([target_1, target_2], dim=1)
+        elif self.intt_mode == 'pipeline':
+            m1 = t_ < 1.
+            m2 = t_ < self.intt
+            target_1 = torch.where(m1, target_1, zero_1)
+            target_2 = torch.where(m2, zero_2, target_2)
+            target = torch.cat([target_1, target_2], dim=1)
+        else:
+            raise ValueError(f'Unsupported intt mode {self.intt_mode}')
         return target
 
     def sample_t(self, shape, device):
         if self.t_dist is not None:
             if self.intt == 0:
                 return self.t_dist.sample(shape).to(device)
-            else:
+            elif self.intt_mode == 'cascade':
                 return torch.where(
                     torch.rand(shape) < self.intt, self.t_dist.sample(shape) * self.intt,
                     self.intt + self.t_dist.sample(shape) * (1 - self.intt)).to(device)
+            elif self.intt_mode == 'pipeline':
+                self.t_dist.sample(shape).to(device) * (1 + self.intt)
+            else:
+                raise ValueError(f'Unsupported intt mode {self.intt_mode}')
         else:
             return torch.rand(shape, device=device)
 
@@ -323,13 +350,35 @@ class RectifiedFlow(nn.Module):
         if self.intt == 0:
             ts = np.linspace(0., 1., N + 1)
             dt = ts[1:] - ts[:-1]
-        else:
+        elif self.intt_mode == 'cascade':
             ts1 = np.linspace(0., 1, int(N * self.intt), endpoint=False)
             ts2 = np.linspace(0, 1., int(N * (1 - self.intt)) + 1)
             ts12 = np.concatenate([ts1, 1 + ts2])
             ts = np.linspace(0., 1., N + 1)
             dt = ts12[1:] - ts12[:-1]
+        elif self.intt_mode == 'pipeline':
+            inc = int(self.intt / (1 / N))
+            ts = np.linspace(0, 1. + self.intt, N + inc + 1)
+            dt = ts[1:] - ts[:-1]
+        else:
+            raise ValueError(f'Unsupported intt mode {self.intt_mode}')
         return np.stack([ts[:-1], dt], axis=0)
+
+    def intt_postprocess(self, pred1, pred2, t):
+        if self.intt > 0.:
+            if self.intt_mode == 'cascade':
+                if t < self.intt:
+                    pred2 = torch.zeros_like(pred2)
+                else:
+                    pred1 = torch.zeros_like(pred1)
+        elif self.intt_mode == 'pipeline':
+            if t < self.intt:
+                pred2 = torch.zeros_like(pred2)
+            elif t > 1.:
+                pred1 = torch.zeros_like(pred1)
+        else:
+            raise ValueError(f'Unsupported intt mode {self.intt_mode}')
+        return pred1, pred2
 
     @torch.no_grad()
     def sample_ode_subband(self, text, band, bandwidth_id, N=None, keep_traj=False, **kwargs):
@@ -381,11 +430,7 @@ class RectifiedFlow(nn.Module):
             else:
                 pred1, pred2 = self.split(pred)
             pred1 = self.make_pred1_consistent(pred1)
-            if self.intt > 0.:
-                if t < self.intt:
-                    pred2 = torch.zeros_like(pred2)
-                else:
-                    pred1 = torch.zeros_like(pred1)
+            pred1, pred2 = self.intt_postprocess(pred1, pred2, t)
             pred = torch.cat([pred1, pred2], dim=1)
             z = z.detach() + pred * dt
             if i == N - 1 or keep_traj:
@@ -645,6 +690,7 @@ class VocosExp(pl.LightningModule):
         wave: bool = False,
         num_bands: int = 8,
         intt: float = 0.,
+        intt_mode: str = None,
         guidance_scale: float = 1.,
         p_uncond: float = 0.2,
         num_warmup_steps: int = 0,
@@ -682,8 +728,8 @@ class VocosExp(pl.LightningModule):
 
         self.input_adaptor = input_adaptor
         self.reflow = RectifiedFlow(
-            backbone, head, feature_loss=feature_loss, wave=wave, num_bands=num_bands, intt=intt,
-            guidance_scale=guidance_scale, p_uncond=p_uncond)
+            backbone, head, feature_loss=feature_loss, wave=wave, num_bands=num_bands,
+            intt=intt, intt_mode=intt_mode, guidance_scale=guidance_scale, p_uncond=p_uncond)
         self.standalone_align = standalone_align
 
         if standalone_align is not None or backbone.rad_align:
