@@ -258,10 +258,10 @@ class RectifiedFlow(nn.Module):
             zt_2 = torch.where(m, z0_2, zt_2)
             zt = torch.cat([zt_1, zt_2], dim=1)
         elif self.intt_mode == 'pipeline':
-            m1 = t_ < 1.
+            m1 = t_ < 1. - self.intt
             m2 = t_ < self.intt
-            intt1 = t_
-            intt2 = t_ - self.intt
+            intt1 = t_ / (1 - self.intt)
+            intt2 = (t_ - self.intt) / (1 - self.intt)
             zt_1 = intt1 * z1_1 + (1 - intt1) * z0_1
             zt_2 = intt2 * z1_2 + (1 - intt2) * z0_2
             zt_1 = torch.where(m1, zt_1, z1_1)
@@ -289,7 +289,7 @@ class RectifiedFlow(nn.Module):
             target_2 = torch.where(m, zero_2, target_2)
             target = torch.cat([target_1, target_2], dim=1)
         elif self.intt_mode == 'pipeline':
-            m1 = t_ < 1.
+            m1 = t_ < 1. - self.intt
             m2 = t_ < self.intt
             target_1 = torch.where(m1, target_1, zero_1)
             target_2 = torch.where(m2, zero_2, target_2)
@@ -307,7 +307,7 @@ class RectifiedFlow(nn.Module):
                     torch.rand(shape) < self.intt, self.t_dist.sample(shape) * self.intt,
                     self.intt + self.t_dist.sample(shape) * (1 - self.intt)).to(device)
             elif self.intt_mode == 'pipeline':
-                self.t_dist.sample(shape).to(device) * (1 + self.intt)
+                return self.t_dist.sample(shape).to(device)
             else:
                 raise ValueError(f'Unsupported intt mode {self.intt_mode}')
         else:
@@ -361,9 +361,8 @@ class RectifiedFlow(nn.Module):
             ts = np.linspace(0., 1., N + 1)
             dt = ts12[1:] - ts12[:-1]
         elif self.intt_mode == 'pipeline':
-            inc = int(self.intt / (1 / N))
-            ts = np.linspace(0, 1. + self.intt, N + inc + 1)
-            dt = ts[1:] - ts[:-1]
+            ts = np.linspace(0, 1., N + 1)
+            dt = (ts[1:] - ts[:-1]) / (1 - self.intt)
         else:
             raise ValueError(f'Unsupported intt mode {self.intt_mode}')
         return np.stack([ts[:-1], dt], axis=1)
@@ -378,7 +377,7 @@ class RectifiedFlow(nn.Module):
             elif self.intt_mode == 'pipeline':
                 if t < self.intt:
                     pred2 = torch.zeros_like(pred2)
-                elif t > 1.:
+                elif t > 1. - self.intt:
                     pred1 = torch.zeros_like(pred1)
             else:
                 raise ValueError(f'Unsupported intt mode {self.intt_mode}')
@@ -632,7 +631,7 @@ class RectifiedFlow(nn.Module):
             pred1 = torch.where(m, pred1, zero1)
             pred2 = torch.where(m, zero2, pred2)
         elif self.intt_mode == 'pipeline':
-            m1 = t_ < 1.
+            m1 = t_ < 1. - self.intt
             m2 = t_ < self.intt
             pred1 = torch.where(m1, pred1, zero1)
             pred2 = torch.where(m2, zero2, pred2)
