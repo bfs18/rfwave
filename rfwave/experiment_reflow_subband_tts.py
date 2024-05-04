@@ -743,6 +743,8 @@ class VocosExp(pl.LightningModule):
             intt=intt, intt_mode=intt_mode, guidance_scale=guidance_scale, p_uncond=p_uncond)
         self.standalone_align = standalone_align
 
+        self.train_dur = False
+        self.standalone_dur = None
         if standalone_align is not None or backbone.rad_align:
             assert isinstance(getattr(backbone, "_orig_mod", backbone), DiTRFE2ETTSMultiTaskBackbone)
             assert not (backbone.rad_align and (backbone.standalone_align or standalone_align is not None)), (
@@ -754,6 +756,7 @@ class VocosExp(pl.LightningModule):
                 output_exp_scale=self.dur_output_exp_scale)
             self.dur_processor = DurationProcessor()
             self.standalone_dur_start_step = 10000
+            self.train_dur = True
 
         assert input_adaptor is not None
         self.tandem_type = 'mel'
@@ -916,7 +919,7 @@ class VocosExp(pl.LightningModule):
         text = self.input_adaptor(*phone_info)
         sa_attn, sa_loss = (self.compute_sa_align(mel, text, **pi_kwargs)
                             if self.standalone_align else (None, 0.))
-        dur_loss = self.compute_dur_loss(text, standalone_attn=sa_attn, **pi_kwargs)
+        dur_loss = self.compute_dur_loss(text, standalone_attn=sa_attn, **pi_kwargs) if self.train_dur else 0.
         text_ext, bandwidth_id, (z_t, t, target) = self.reflow.get_train_tuple(text, tandem_feat, audio_input)
         kwargs.update(**pi_kwargs)
         ctx_mask = sequence_mask_with_ctx(**ctx_kwargs)

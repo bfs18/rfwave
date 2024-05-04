@@ -25,6 +25,7 @@ data:
       task: tts
       hop_length: 256
       padding: "center"
+      phoneset: synta_phoneset.th
       min_context: 0
       segment: False
       max_duration: 110.
