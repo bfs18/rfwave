@@ -724,8 +724,8 @@ class VocosExp(pl.LightningModule):
             evaluate_periodicty (bool, optional): If True, periodicity scores are computed for each validation run.
         """
         super().__init__()
-        assert intt == 0. or (0. < intt < 1. and intt_mode == 'pipeline' or
-                              0. < intt < 0.5 and intt_mode == 'cascade')
+        assert intt == 0. or (0. < intt < 1. and intt_mode == 'cascade' or
+                              0. < intt < 0.5 and intt_mode == 'pipeline')
         if intt > 0.:
             print(f"using intt {intt:.2f}, intt_mode {intt_mode}")
         self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head", "input_adaptor",
