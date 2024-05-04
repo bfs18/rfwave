@@ -162,9 +162,14 @@ class StandaloneAlignment(torch.nn.Module):
         start = _get_start(keys, None)
         keys_length = _get_len(keys, None)  # length is None
         queries_length = _get_len(queries, None)
+        key_freq_cis = self.get_pos_embed(start, keys_length.max(), scale=token_exp_scale)
+        query_freq_cis = self.get_pos_embed(start, queries_length.max())
 
         keys = self.key_in(keys.transpose(-2, -1))
         queries = self.query_in(queries.transpose(-2, -1))
+        # if self.diag_bias and (not self.training or self.training and np.random.uniform() > 0.5):
+        #     queries = apply_rotary_emb(queries, query_freq_cis * np.sqrt(self.prior_strength))
+        #     keys = apply_rotary_emb(keys, key_freq_cis * np.sqrt(self.prior_strength))
 
         keys_enc = self.key_proj(keys.transpose(-2, -1)).transpose(-2, -1)  # B x T2 x n_attn_dims
         # Beware can only do this since query_dim = attn_dim = n_mel_channels
@@ -183,10 +188,9 @@ class StandaloneAlignment(torch.nn.Module):
             raise ValueError(f'Unknown attention type {self.type}')
 
         if self.diag_bias:
-            key_freq_cis = self.get_pos_embed(start, keys_length.max(), scale=token_exp_scale)
-            query_freq_cis = self.get_pos_embed(start, queries_length.max())
             diag_bias = ((query_freq_cis @ key_freq_cis.transpose(-2, -1)).unsqueeze(1) *
                          self.scale * self.prior_strength)
+            diag_bias = torch.where(diag_bias > diag_bias[:, :, :1, :1] * 0.6, diag_bias, 0.)
             attn = attn + diag_bias
 
         if mask is not None:
