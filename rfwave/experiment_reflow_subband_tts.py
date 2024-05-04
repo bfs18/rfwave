@@ -63,7 +63,6 @@ class RectifiedFlow(nn.Module):
     def __init__(self, backbon: Backbone, head: FourierHead,
                  num_steps=10, feature_loss=False, wave=False, num_bands=8,
                  intt=0., intt_mode=None, p_uncond=0., guidance_scale=1.):
-        assert intt == 0. or (intt > 0. and intt_mode in ['pipeline', 'cascade'])
         super().__init__()
         self.backbone = backbon
         self.head = head
@@ -95,6 +94,7 @@ class RectifiedFlow(nn.Module):
         self.output_channels2 = self.backbone.output_channels2
         self.intt = intt
         self.intt_mode = intt_mode
+        self.cfg_iter = False
         out_ch = (self.backbone.output_channels if hasattr(self.backbone, 'output_channels')
                   else self.backbone.output_channels2)
         assert out_ch == self.head.n_fft // self.num_bands + 2 * self.overlap
@@ -654,9 +654,9 @@ class RectifiedFlow(nn.Module):
         if self.cfg and np.random.uniform() < self.p_uncond:
             # not grad back to the alignment module.
             text = torch.ones_like(text) * text.detach().mean(dim=(0, 2), keepdim=True)
-            cfg_iter = True
+            self.cfg_iter = True
         else:
-            cfg_iter = False
+            self.cfg_iter = False
 
         pred, opt_attn, ctx = self.get_pred(z_t, t, text, bandwidth_id, **kwargs)
         if mask is not None:
@@ -677,7 +677,7 @@ class RectifiedFlow(nn.Module):
         loss2 = self.compute_rf_loss2(pred2, target2, bandwidth_id, mask_factor)
         overlap_loss = self.compute_overlap_loss(pred2) if self.overlap_loss else 0.
         pred1_consistent_loss = self.compute_pred1_consistent_loss(pred1) if self.pred1_consistent_loss else 0.
-        attn_loss = self.compute_alignment_loss(opt_attn, **kwargs) * (0. if cfg_iter else 1.)
+        attn_loss = self.compute_alignment_loss(opt_attn, **kwargs) * (0. if self.cfg_iter else 1.)
         loss_dict = {"loss1": loss1, "loss2": loss2, "stft_loss": stft_loss, "phase_loss": phase_loss,
                      "overlap_loss": overlap_loss, "pred1_consistent_loss": pred1_consistent_loss,
                      "attn_loss": attn_loss, "attn": opt_attn, 'ctx': ctx}
@@ -724,9 +724,10 @@ class VocosExp(pl.LightningModule):
             evaluate_periodicty (bool, optional): If True, periodicity scores are computed for each validation run.
         """
         super().__init__()
-        assert 0. <= intt < 1.
+        assert intt == 0. or (0. < intt < 1. and intt_mode == 'pipeline' or
+                              0. < intt < 0.5 and intt_mode == 'cascade')
         if intt > 0.:
-            print(f"using intt {intt:.2f}")
+            print(f"using intt {intt:.2f}, intt_mode {intt_mode}")
         self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head", "input_adaptor",
                                           "input_adaptor_proj", "standalone_align"])
         self.feature_extractor = feature_extractor
@@ -898,6 +899,10 @@ class VocosExp(pl.LightningModule):
         self.skip_nan(optimizer)
         self.clip_gradients(optimizer, gradient_clip_val=1., gradient_clip_algorithm="norm")
 
+    @property
+    def cfg_iter(self):
+        return self.reflow.cfg_iter
+
     def training_step(self, batch, batch_idx, **kwargs):
         audio_input, phone_info = batch
         phone_info, pi_kwargs, ctx_kwargs = self.process_context(phone_info)
@@ -921,9 +926,9 @@ class VocosExp(pl.LightningModule):
             standalone_attn=sa_attn, **kwargs)
         aux = loss_dict['ctx'] if loss_dict['ctx'] is not None else text
         # TODO: attn_loss = 0. is cfg iter, but this is not correct when gt duration is used.
-        cond_mel_loss = (self.compute_aux_loss(aux, audio_input, ctx_mask) *
-                         (1. if self.aux_loss and loss_dict['attn_loss'] > 0. else 0.))
-        loss = loss + sa_loss + dur_loss + cond_mel_loss * 0.1
+        cond_mel_loss = self.compute_aux_loss(aux, audio_input, ctx_mask) * (1. if self.aux_loss else 0.)
+        cfg_or_not = 0. if self.cfg_iter else 1.
+        loss = loss + (sa_loss + dur_loss + cond_mel_loss) * cfg_or_not
         self.manual_backward(loss)
         opt_gen.step()
         sch_gen.step()
