@@ -253,6 +253,8 @@ class DiTRFTTSMultiTaskBackbone(Backbone):
         self.output_channels2 = output_channels2
         self.num_bands = num_bands
         self.rad_align = False
+        self.standalone_align = False
+        self.standalone_distill = False
 
         self.module = DiTRFBackbone(
             input_channels=input_channels,
