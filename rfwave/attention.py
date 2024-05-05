@@ -350,9 +350,8 @@ class CrossAttentionWithPrior(nn.Module):
         kv = self.kv(kv_x).reshape(bsz, kv_seqlen, 2, self.num_heads, self.head_dim).permute(2, 0, 1, 3, 4)
         k, v = kv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
-        # if self.diag_bias and (not self.training or self.training and np.random.uniform() > 0.5):
-        #     q = apply_rotary_emb(q, q_freqs_cis * np.sqrt(self.prior_strength))
-        #     k = apply_rotary_emb(k, k_freqs_cis * np.sqrt(self.prior_strength))
+        # positional embedding only applied to key to avoid trivial alignment
+        k = apply_rotary_emb(k, k_freqs_cis)
 
         # (bs, n_local_heads, q_seqlen, head_dim)
         q = q.transpose(1, 2).float()

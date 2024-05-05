@@ -167,10 +167,8 @@ class StandaloneAlignment(torch.nn.Module):
 
         keys = self.key_in(keys.transpose(-2, -1))
         queries = self.query_in(queries.transpose(-2, -1))
-        # if self.diag_bias and (not self.training or self.training and np.random.uniform() > 0.5):
-        #     queries = apply_rotary_emb(queries, query_freq_cis * np.sqrt(self.prior_strength))
-        #     keys = apply_rotary_emb(keys, key_freq_cis * np.sqrt(self.prior_strength))
-
+        # positional embedding only applied to key to avoid trivial alignment
+        keys = apply_rotary_emb(keys, key_freq_cis)
         keys_enc = self.key_proj(keys.transpose(-2, -1)).transpose(-2, -1)  # B x T2 x n_attn_dims
         # Beware can only do this since query_dim = attn_dim = n_mel_channels
         queries_enc = self.query_proj(queries.transpose(-2, -1)).transpose(-2, -1)
