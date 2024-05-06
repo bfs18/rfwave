@@ -1,16 +1,16 @@
 --extra-index-url  https://download.pytorch.org/whl/cu121
-torch==2.2.0
-torchaudio==2.2.0
+torch==2.3.0
+torchaudio==2.3.0
 tensorboard==2.9.1
 torchdiffeq==0.2.3
-wandb==0.15.8
+wandb==0.16.6
 kaldiio==2.18.0
 lightning==2.2.1
 jsonargparse[signatures]>=4.26.1
 huggingface_hub==0.20.1
 julius==0.2.7
 encodec==0.1.1
-xformers==0.0.24
+xformers==0.0.26.post1
 transformers==4.31.0
 espnet==202402
 matplotlib
