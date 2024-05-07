@@ -73,7 +73,7 @@ model:
         standalone_align: False
         standalone_distill: False
         align_attention_type: dot_product
-        num_align_proj_layers: 2
+        num_align_proj_layers: 0
         align_diag_bias: True
 
     head:

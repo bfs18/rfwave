@@ -185,6 +185,7 @@ class StandaloneAlignment(torch.nn.Module):
         else:
             raise ValueError(f'Unknown attention type {self.type}')
 
+        attn = attn / self.temperature
         if self.diag_bias:
             diag_bias = ((query_freq_cis @ key_freq_cis.transpose(-2, -1)).unsqueeze(1) *
                          self.scale * self.prior_strength)
@@ -193,7 +194,7 @@ class StandaloneAlignment(torch.nn.Module):
 
         if mask is not None:
             attn = attn + mask
-        attn = torch.softmax(attn.float() / self.temperature, dim=-1).type_as(attn)  # softmax along T2
+        attn = torch.softmax(attn.float(), dim=-1).type_as(attn)  # softmax along T2
         if attn_prior is not None:
             attn = torch.exp(torch.log(attn.clamp_min(1e-8)) +
                              torch.log(attn_prior.unsqueeze(1).clamp_min(1e-8)))

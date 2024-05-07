@@ -334,6 +334,7 @@ class CrossAttentionWithPrior(nn.Module):
         self.prior_strength = 0.1
         self.type = type
         self.diag_bias = diag_bias
+        self.temperature = 1.
 
     def forward(
         self,
@@ -375,6 +376,7 @@ class CrossAttentionWithPrior(nn.Module):
         else:
             raise ValueError(f'Unknown attention type {self.type}')
 
+        attn = attn / self.temperature
         if self.diag_bias:
             diag_bias = ((q_freqs_cis @ k_freqs_cis.transpose(1, 2)).unsqueeze(1) *
                          self.scale * self.prior_strength)
