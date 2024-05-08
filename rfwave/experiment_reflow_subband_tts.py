@@ -773,6 +773,7 @@ class VocosExp(pl.LightningModule):
         self.validation_step_outputs = []
         self.automatic_optimization = False
         assert num_bands == backbone.num_bands
+        self.num_skipped_nan = 0
 
     def configure_optimizers(self):
         gen_params = [
@@ -803,6 +804,7 @@ class VocosExp(pl.LightningModule):
                 if not valid_gradients:
                     break
         if not valid_gradients:
+            self.num_skipped_nan += 1
             print("detected inf or nan values in gradients. not updating model parameters")
             optimizer.zero_grad()
 
@@ -1062,6 +1064,9 @@ class VocosExp(pl.LightningModule):
 
     # def on_train_epoch_start(self, *args):
     #     torch.cuda.empty_cache()
+    def on_train_epoch_end(self) -> None:
+        print(f"Epoch {self.current_epoch} skipped {self.num_skipped_nan} NAN steps")
+        self.num_skipped_nan = 0
 
     def on_train_start(self, *args):
         if self.global_rank == 0:
