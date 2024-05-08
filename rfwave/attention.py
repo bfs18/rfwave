@@ -359,12 +359,13 @@ class CrossAttentionWithPrior(nn.Module):
         k = k.transpose(1, 2).float()
         v = v.transpose(1, 2)
 
+        q = q.reshape(-1, q_seqlen, self.head_dim)
+        k = k.reshape(-1, kv_seqlen, self.head_dim)
+
         # apply proj layers.
         if self.query_proj is not None and self.key_proj is not None:
-            q = q.reshape(-1, q_seqlen, self.head_dim).transpose(1, 2)
-            k = k.reshape(-1, kv_seqlen, self.head_dim).transpose(1, 2)
-            q = self.query_proj(q).transpose(1, 2)
-            k = self.key_proj(k).transpose(1, 2)
+            q = self.query_proj(q.transpose(1, 2)).transpose(1, 2)
+            k = self.key_proj(k.transpose(1, 2)).transpose(1, 2)
 
         q = q.reshape(bsz, self.num_heads, q_seqlen, self.head_dim)
         k = k.reshape(bsz, self.num_heads, kv_seqlen, self.head_dim)
