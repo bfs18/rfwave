@@ -395,15 +395,17 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             attn_prior = gaussian_prior(num_tokens, token_exp_scale)
             ctx, attn = self.align_block(ctx, x_token, z_freq_cis, token_freq_cis, token_mask,
                                          mod_c=te, attn_prior=attn_prior)
-            align_ctx = ctx  # compute aux loss for the outer rad alignment block
+            # align_ctx = ctx  # compute aux loss for the outer rad alignment block
+            align_ctx = attn.squeeze(1)  @ x_token.detach().transpose(1, 2)
             # postprocess input, inject text and ref
             ctx = self.cross_attn2(ctx, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
         elif self.standalone_align and not self.standalone_distill:
             assert not (standalone_attn is None and duration is None)
             ctx = self.sa_align_block(z_t1, x_token, standalone_attn, duration, mod_c=te)
-            align_ctx = ctx  # compute aux loss for the outer standalone alignment block
+            # align_ctx = ctx  # compute aux loss for the outer standalone alignment block
             ctx = self.cross_attn(ctx, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
             attn = standalone_attn
+            align_ctx = attn.squeeze(1)  @ x_token.detach().transpose(1, 2)
         else:
             ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
             align_ctx = ctx  # not really

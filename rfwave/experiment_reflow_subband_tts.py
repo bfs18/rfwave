@@ -761,8 +761,9 @@ class VocosExp(pl.LightningModule):
         assert input_adaptor is not None
         self.tandem_type = 'mel'
         self.aux_loss = aux_loss  # aux_loss improve attention learning for E2E
-        aux_input_dim = (backbone.dim if isinstance(backbone, DiTRFE2ETTSMultiTaskBackbone)
-                         else self.input_adaptor.dim)
+        # aux_input_dim = (backbone.dim if isinstance(backbone, DiTRFE2ETTSMultiTaskBackbone)
+        #                  else self.input_adaptor.dim)
+        aux_input_dim = self.input_adaptor.dim
         self.input_adaptor_proj = (InputAdaptorProject(aux_input_dim, feature_extractor.dim)
                                    if self.aux_loss else None)
 
