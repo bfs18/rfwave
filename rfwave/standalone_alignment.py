@@ -120,7 +120,7 @@ class StandaloneAlignment(torch.nn.Module):
         self.temperature = temperature
         self.scale = n_channels ** -0.5
         self.type = type
-        self.prior_strength = 0.1
+        self.prior_strength = 1.
         self.diag_bias = diag_bias
 
         self.key_in = nn.Sequential(nn.Linear(n_text_channels, n_channels), nn.LayerNorm(n_channels))
@@ -185,12 +185,14 @@ class StandaloneAlignment(torch.nn.Module):
         else:
             raise ValueError(f'Unknown attention type {self.type}')
 
-        attn = attn / self.temperature
         if self.diag_bias:
             diag_bias = ((query_freq_cis @ key_freq_cis.transpose(-2, -1)).unsqueeze(1) *
                          self.scale * self.prior_strength)
             diag_bias = torch.where(diag_bias > diag_bias[:, :, :1, :1] * 0.6, diag_bias, 0.)
             attn = attn + diag_bias
+
+        # temperature = np.random.uniform(self.temperature, 10.) if self.training else self.temperature
+        attn = attn / self.temperature
 
         if mask is not None:
             attn = attn + mask

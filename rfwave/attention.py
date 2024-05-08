@@ -331,7 +331,7 @@ class CrossAttentionWithPrior(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
-        self.prior_strength = 0.1
+        self.prior_strength = 1
         self.type = type
         self.diag_bias = diag_bias
         self.temperature = 1.
@@ -376,12 +376,14 @@ class CrossAttentionWithPrior(nn.Module):
         else:
             raise ValueError(f'Unknown attention type {self.type}')
 
-        attn = attn / self.temperature
         if self.diag_bias:
             diag_bias = ((q_freqs_cis @ k_freqs_cis.transpose(1, 2)).unsqueeze(1) *
                          self.scale * self.prior_strength)
             diag_bias = torch.where(diag_bias > diag_bias[:, :, :1, :1] * 0.6, diag_bias, 0.)
             attn = attn + diag_bias
+
+        # temperature = np.random.uniform(self.temperature, 10.) if self.training else self.temperature
+        attn = attn / self.temperature
 
         if mask is not None:
             attn = attn + mask
