@@ -331,7 +331,7 @@ class CrossAttentionWithPrior(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
-        self.prior_strength = 1
+        self.prior_strength = 0.1
         self.type = type
         self.diag_bias = diag_bias
         self.temperature = 1.

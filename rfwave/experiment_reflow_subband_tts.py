@@ -805,7 +805,7 @@ class VocosExp(pl.LightningModule):
                     break
         if not valid_gradients:
             self.num_skipped_nan += 1
-            print("detected inf or nan values in gradients. not updating model parameters")
+            # print("detected inf or nan values in gradients. not updating model parameters")
             optimizer.zero_grad()
 
     def get_log_spec(self, audio):
@@ -1065,7 +1065,8 @@ class VocosExp(pl.LightningModule):
     # def on_train_epoch_start(self, *args):
     #     torch.cuda.empty_cache()
     def on_train_epoch_end(self) -> None:
-        print(f"Epoch {self.current_epoch} skipped {self.num_skipped_nan} NAN steps")
+        if self.num_skipped_nan > 0:
+            print(f"Epoch {self.current_epoch} skipped {self.num_skipped_nan} NAN steps")
         self.num_skipped_nan = 0
 
     def on_train_start(self, *args):

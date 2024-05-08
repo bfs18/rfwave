@@ -120,7 +120,7 @@ class StandaloneAlignment(torch.nn.Module):
         self.temperature = temperature
         self.scale = n_channels ** -0.5
         self.type = type
-        self.prior_strength = 1.
+        self.prior_strength = 0.1
         self.diag_bias = diag_bias
 
         self.key_in = nn.Sequential(nn.Linear(n_text_channels, n_channels), nn.LayerNorm(n_channels))
