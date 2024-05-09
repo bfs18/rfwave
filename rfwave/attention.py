@@ -307,7 +307,6 @@ class CrossAttentionWithPrior(nn.Module):
         proj_drop: float = 0.,
         norm_layer: nn.Module = nn.LayerNorm,
         num_proj_layers: int = 2,
-        diag_bias: bool = False,
         type: str = 'gaussian'
     ) -> None:
         assert type in ['gaussian', 'dot_product']
@@ -319,21 +318,21 @@ class CrossAttentionWithPrior(nn.Module):
         self.scale = self.head_dim ** -0.5
 
         self.q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.kv = nn.Linear(dim, 2 * dim, bias=qkv_bias)
+        self.k = nn.Linear(dim, dim, bias=qkv_bias)
+        self.v = nn.Linear(dim, dim, bias=qkv_bias)
         self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
         self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
         # add conv layers as standalone attention.
         if num_proj_layers is not None and num_proj_layers > 0:
-            self.key_proj = nn.Sequential(*[ConvNeXtV2Block(dim, dim * 3) for _ in range(num_proj_layers)])
-            self.query_proj = nn.Sequential(*[ConvNeXtV2Block(dim, dim * 3) for _ in range(num_proj_layers)])
+            self.k_proj = nn.Sequential(*[ConvNeXtV2Block(dim, dim * 3) for _ in range(num_proj_layers)])
+            self.q_proj = nn.Sequential(*[ConvNeXtV2Block(dim, dim * 3) for _ in range(num_proj_layers)])
         else:
-            self.key_proj, self.query_proj = None, None
+            self.k_proj, self.q_proj = None, None
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
         self.prior_strength = 0.1
         self.type = type
-        self.diag_bias = diag_bias
         self.temperature = 1.
 
     def forward(
@@ -347,44 +346,45 @@ class CrossAttentionWithPrior(nn.Module):
         bsz, q_seqlen, ch = q_x.shape
         _, kv_seqlen, _ = kv_x.shape
 
+        # apply proj layers.
+        if self.q_proj is not None and self.k_proj is not None:
+            q_x = self.q_proj(q_x.transpose(1, 2)).transpose(1, 2)
+            k_x = self.k_proj(kv_x.transpose(1, 2)).transpose(1, 2)
+        else:
+            k_x = kv_x
+
         q = self.q(q_x).reshape(bsz, q_seqlen, self.num_heads, self.head_dim)
-        kv = self.kv(kv_x).reshape(bsz, kv_seqlen, 2, self.num_heads, self.head_dim).permute(2, 0, 1, 3, 4)
-        k, v = kv.unbind(0)
+        k = self.k(k_x).reshape(bsz, kv_seqlen, self.num_heads, self.head_dim)
+        v = self.v(kv_x).reshape(bsz, kv_seqlen, self.num_heads, self.head_dim)
         q, k = self.q_norm(q), self.k_norm(k)
-        # positional embedding only applied to key to avoid trivial alignment
-        k = apply_rotary_emb(k, k_freqs_cis)
+
+        q_ = apply_rotary_emb(q, q_freqs_cis)
+        k_ = apply_rotary_emb(k, k_freqs_cis)
 
         # (bs, n_local_heads, q_seqlen, head_dim)
         q = q.transpose(1, 2).float()
         k = k.transpose(1, 2).float()
+        q_ = q_.transpose(1, 2).float()
+        k_ = k_.transpose(1, 2).float()
         v = v.transpose(1, 2)
 
-        q = q.reshape(-1, q_seqlen, self.head_dim)
-        k = k.reshape(-1, kv_seqlen, self.head_dim)
-
-        # apply proj layers.
-        if self.query_proj is not None and self.key_proj is not None:
-            q = self.query_proj(q.transpose(1, 2)).transpose(1, 2)
-            k = self.key_proj(k.transpose(1, 2)).transpose(1, 2)
-
-        q = q.reshape(bsz, self.num_heads, q_seqlen, self.head_dim)
-        k = k.reshape(bsz, self.num_heads, kv_seqlen, self.head_dim)
         if self.type == 'gaussian':
             attn = -cdist(q * self.scale, k * self.scale)
+            attn_ = -cdist(q_ * self.scale, k_ * self.scale)
         elif self.type == 'dot_product':
-            q = q * self.scale
-            attn = q @ k.transpose(-2, -1)
+            attn = q @ k.transpose(-2, -1) * self.scale
+            attn_ = q_ @ k_.transpose(-2, -1) * self.scale
         else:
             raise ValueError(f'Unknown attention type {self.type}')
 
-        if self.diag_bias:
-            diag_bias = ((q_freqs_cis @ k_freqs_cis.transpose(1, 2)).unsqueeze(1) *
-                         self.scale * self.prior_strength)
-            diag_bias = torch.where(diag_bias > diag_bias[:, :, :1, :1] * 0.6, diag_bias, 0.)
-            attn = attn + diag_bias
+        # if self.diag_bias:
+        #     diag_bias = ((q_freqs_cis @ k_freqs_cis.transpose(1, 2)).unsqueeze(1) *
+        #                  self.scale * self.prior_strength)
+        #     diag_bias = torch.where(diag_bias > diag_bias[:, :, :1, :1] * 0.6, diag_bias, 0.)
+        #     attn = attn + diag_bias
 
         # temperature = np.random.uniform(self.temperature, 10.) if self.training else self.temperature
-        attn = attn / self.temperature
+        attn = (attn * (1 - self.prior_strength) + attn_ * self.prior_strength) / self.temperature
 
         if mask is not None:
             attn = attn + mask

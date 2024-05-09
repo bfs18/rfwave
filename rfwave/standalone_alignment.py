@@ -10,7 +10,7 @@ from numba import jit
 from rfwave.models import ConvNeXtV2Block
 from rfwave.dataset import get_exp_length
 from rfwave.attention import (
-precompute_freqs_cis, get_pos_embed_indices, _get_start, _get_len, apply_rotary_emb, cdist)
+precompute_freqs_cis, get_pos_embed_indices, _get_start, _get_len, apply_rotary_emb, cdist, RMSNorm)
 
 
 def save_plot(fname, attn_map):
@@ -114,20 +114,21 @@ def compute_attention_distill_loss(pred_attn, target_attn):
 
 class StandaloneAlignment(torch.nn.Module):
     def __init__(self, n_mel_channels, n_text_channels, n_channels,
-                 num_layers=3, temperature=1.0, diag_bias=False, type='guassian'):
+                 num_layers=3, temperature=1.0, type='guassian'):
         assert type in ['gaussian', 'dot_product']
         super(StandaloneAlignment, self).__init__()
         self.temperature = temperature
         self.scale = n_channels ** -0.5
         self.type = type
         self.prior_strength = 0.1
-        self.diag_bias = diag_bias
 
         self.key_in = nn.Sequential(nn.Linear(n_text_channels, n_channels), nn.LayerNorm(n_channels))
         self.key_proj = nn.Sequential(*[ConvNeXtV2Block(n_channels, n_channels * 3) for _ in range(num_layers)])
+        self.key_out = nn.Sequential(nn.Linear(n_channels, n_channels), RMSNorm(n_channels))
 
         self.query_in = nn.Sequential(nn.Linear(n_mel_channels, n_channels), nn.LayerNorm(n_channels))
         self.query_proj = nn.Sequential(*[ConvNeXtV2Block(n_channels, n_channels * 3) for _ in range(num_layers)])
+        self.query_out = nn.Sequential(nn.Linear(n_channels, n_channels), RMSNorm(n_channels))
 
         self.register_buffer("freqs_cis", precompute_freqs_cis(n_channels, 1024), persistent=False)
         self.apply(self._init_weights)
@@ -167,32 +168,34 @@ class StandaloneAlignment(torch.nn.Module):
 
         keys = self.key_in(keys.transpose(-2, -1))
         queries = self.query_in(queries.transpose(-2, -1))
-        # positional embedding only applied to key to avoid trivial alignment
-        keys = apply_rotary_emb(keys, key_freq_cis)
         keys_enc = self.key_proj(keys.transpose(-2, -1)).transpose(-2, -1)  # B x T2 x n_attn_dims
         # Beware can only do this since query_dim = attn_dim = n_mel_channels
         queries_enc = self.query_proj(queries.transpose(-2, -1)).transpose(-2, -1)
+        keys_enc = self.key_out(keys_enc)
+        queries_enc = self.query_out(queries_enc)
+
+        # positional embedding only applied to key to avoid trivial alignment
+        keys_enc_ = apply_rotary_emb(keys_enc, key_freq_cis)
+        queries_enc_ = apply_rotary_emb(queries_enc, query_freq_cis)
 
         if self.type == 'gaussian':
             # Gaussian Isotopic Attention
-            queries_enc = queries_enc.unsqueeze(1)
-            keys_enc = keys_enc.unsqueeze(1)
-            attn = -cdist(queries_enc * self.scale, keys_enc * self.scale)
+            attn = -cdist(queries_enc.unsqueeze(1) * self.scale, keys_enc.unsqueeze(1) * self.scale)
+            attn_ = -cdist(queries_enc_.unsqueeze(1) * self.scale, keys_enc_.unsqueeze(1) * self.scale)
         elif self.type == 'dot_product':
-            queries_enc = queries_enc * self.scale
-            attn = queries_enc @ keys_enc.transpose(-2, -1)
-            attn = attn.unsqueeze(1)  # make attention shape consistent.
+            attn = (queries_enc @ keys_enc.transpose(-2, -1) * self.scale).unsqueeze(1)
+            attn_ = (queries_enc_ @ keys_enc_.transpose(-2, -1) * self.scale).unsqueeze(1)
         else:
             raise ValueError(f'Unknown attention type {self.type}')
 
-        if self.diag_bias:
-            diag_bias = ((query_freq_cis @ key_freq_cis.transpose(-2, -1)).unsqueeze(1) *
-                         self.scale * self.prior_strength)
-            diag_bias = torch.where(diag_bias > diag_bias[:, :, :1, :1] * 0.6, diag_bias, 0.)
-            attn = attn + diag_bias
+        # if self.diag_bias:
+        #     diag_bias = ((query_freq_cis @ key_freq_cis.transpose(-2, -1)).unsqueeze(1) *
+        #                  self.scale * self.prior_strength)
+        #     diag_bias = torch.where(diag_bias > diag_bias[:, :, :1, :1] * 0.6, diag_bias, 0.)
+        #     attn = attn + diag_bias
 
         # temperature = np.random.uniform(self.temperature, 10.) if self.training else self.temperature
-        attn = attn / self.temperature
+        attn = (attn * (1 - self.prior_strength) + attn_ * self.prior_strength) / self.temperature
 
         if mask is not None:
             attn = attn + mask
