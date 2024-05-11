@@ -297,14 +297,14 @@ class RectifiedFlow(nn.Module):
         return [self.get_wave(tt) for tt in traj]
 
     def stft(self, wave):
-        S = self.head.get_spec(wave) / np.sqrt(self.head.n_fft).astype(np.float32)
-        return torch.cat([S.real, S.imag], dim=1)
+        S = self.head.get_spec(wave.float()) / np.sqrt(self.head.n_fft).astype(np.float32)
+        return torch.cat([S.real, S.imag], dim=1).type_as(wave)
 
     def istft(self, S):
-       S = S * np.sqrt(self.head.n_fft).astype(np.float32)
-       r, i = torch.chunk(S, 2, dim=1)
-       c = r + 1j * i
-       return self.head.get_wave(c)
+        S = S * np.sqrt(self.head.n_fft).astype(np.float32)
+        r, i = torch.chunk(S.float(), 2, dim=1)
+        c = r + 1j * i
+        return self.head.get_wave(c).type_as(S)
 
     def time_balance_for_loss(self, pred, target):
         v = target.var(dim=1, keepdim=True)

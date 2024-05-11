@@ -8,9 +8,14 @@ import rfwave
 import re
 import kaldiio
 import torchaudio
+import torch.cuda.amp as amp
 
 from pathlib import Path
 from argparse import ArgumentParser
+
+
+ENABLE_FP16 = True
+COMPILE = True
 
 
 def load_config(config_yaml):
@@ -34,7 +39,7 @@ def load_model(model_dir, device, last=False):
             raise ValueError(f"No checkpoint found in {model_dir}")
         elif len(ckpt_fp) > 1:
             warnings.warn(f"More than 1 checkpoints found in {model_dir}")
-            ckpt_fp = sorted([fp for fp in ckpt_fp], key=lambda x: ckpt_fp.stat().st_ctime)[-1:]
+            ckpt_fp = sorted([fp for fp in ckpt_fp], key=lambda x: x.stat().st_ctime)[-1:]
         ckpt_fp = ckpt_fp[0]
         print(f'using last ckpt form {str(ckpt_fp)}')
     else:
@@ -47,6 +52,8 @@ def load_model(model_dir, device, last=False):
 
     model_dict = torch.load(ckpt_fp, map_location='cpu')
     exp.load_state_dict(model_dict['state_dict'])
+    if COMPILE:
+        exp.reflow = torch.compile(exp.reflow)
     exp.eval()
     exp.to(device)
     return exp
@@ -93,8 +100,9 @@ def voc(model_dir, wav_dir, save_dir):
 
         y = y.to(exp.device)
         save_fp = Path(save_dir) / fn
-        recon, cost, rvm_loss = copy_synthesis(exp, y, N=10)
-        soundfile.write(save_fp, recon, fs, 'PCM_16')
+        with amp.autocast(enabled=ENABLE_FP16, dtype=torch.float16):
+            recon, cost, rvm_loss = copy_synthesis(exp, y, N=10)
+        soundfile.write(save_fp, recon.astype(float), fs, 'PCM_16')
         dur = len(recon) / fs
         tot_cost += cost
         tot_dur += dur
@@ -111,4 +119,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
     Path(args.save_dir).mkdir(exist_ok=True)
     cost, dur = voc(args.model_dir, args.wav_dir, args.save_dir)
-    print(f"Total cost: {cost:.2f}s, Total duration: {dur:.2f}s, ratio: {cost / dur:.2f}")
+    print(f"Total cost: {cost:.2f}s, Total duration: {dur:.2f}s, ratio: {dur / cost:.2f}")
