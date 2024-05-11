@@ -607,7 +607,10 @@ class E2ECtxCharInputAdaptor(InputAdaptor):
 class InputAdaptorProject(nn.Module):
     def __init__(self, input_channels, output_channels):
         super().__init__()
-        self.linear = nn.Linear(input_channels, output_channels)
+        self.linear = nn.Sequential(
+            nn.Linear(input_channels, input_channels), nn.SiLU(), nn.LayerNorm(input_channels),
+            nn.Linear(input_channels, input_channels), nn.SiLU(), nn.LayerNorm(input_channels),
+            nn.Linear(input_channels, output_channels))
 
     def forward(self, x):
         out = self.linear(x.transpose(1, 2)).transpose(1, 2)
