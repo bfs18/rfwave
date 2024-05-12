@@ -14,7 +14,7 @@ from pathlib import Path
 from argparse import ArgumentParser
 
 
-ENABLE_FP16 = True
+ENABLE_FP16 = False
 COMPILE = True
 
 
@@ -50,10 +50,10 @@ def load_model(model_dir, device, last=False):
     config = load_config(config_yaml)
     exp = create_instance(config['model'])
 
+    if COMPILE:
+        exp.reflow.backbone = torch.compile(exp.reflow.backbone)
     model_dict = torch.load(ckpt_fp, map_location='cpu')
     exp.load_state_dict(model_dict['state_dict'])
-    if COMPILE:
-        exp.reflow = torch.compile(exp.reflow)
     exp.eval()
     exp.to(device)
     return exp
@@ -70,9 +70,34 @@ def copy_synthesis(exp, y, N=1000):
     return recon, cost, rvm_loss
 
 
+def copy_synthesis_encodec(exp, y, N=1000):
+    num_encodec_bandwidths = len(exp.feature_extractor.bandwidths)
+    recons = {}
+    costs = {}
+    rmv_losses = {}
+    for encodec_bandwidth_id in range(num_encodec_bandwidths):
+        # encodec_bandwidth_id is set in feature_extractor.forward
+        features = exp.feature_extractor(y, encodec_bandwidth_id=encodec_bandwidth_id)
+        encodec_audio = exp.feature_extractor.encodec(y[None, :])
+        encodec_audio = encodec_audio.detach().cpu().numpy()[0, 0]
+        start = time.time()
+        encodec_bandwidth_id = torch.tensor([encodec_bandwidth_id], dtype=torch.long, device=y.device)
+        sample = exp.reflow.sample_ode(features, encodec_bandwidth_id=encodec_bandwidth_id, N=N)[-1]
+        cost = time.time() - start
+        l = min(sample.size(-1), y.size(-1))
+        rvm_loss = exp.rvm(sample[..., :l], y[..., :l])
+        recon = sample.detach().cpu().numpy()[0]
+        recons[f'bw_{encodec_bandwidth_id.item()}'] = recon
+        recons[f'enc_bw_{encodec_bandwidth_id.item()}'] = encodec_audio
+        costs[f'bw_{encodec_bandwidth_id.item()}'] = cost
+        rmv_losses[f'bw_{encodec_bandwidth_id.item()}'] = rvm_loss
+    return recons, costs, rmv_losses
+
+
 def voc(model_dir, wav_dir, save_dir):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     exp = load_model(model_dir, device=device, last=True)
+    is_encodec = isinstance(exp.feature_extractor, rfwave.feature_extractors.EncodecFeatures)
 
     tot_cost = 0.
     tot_dur = 0.
@@ -99,13 +124,26 @@ def voc(model_dir, wav_dir, save_dir):
             y = y[:1]
 
         y = y.to(exp.device)
-        save_fp = Path(save_dir) / fn
-        with amp.autocast(enabled=ENABLE_FP16, dtype=torch.float16):
-            recon, cost, rvm_loss = copy_synthesis(exp, y, N=10)
-        soundfile.write(save_fp, recon.astype(float), fs, 'PCM_16')
-        dur = len(recon) / fs
-        tot_cost += cost
-        tot_dur += dur
+        if is_encodec:
+            fn = fn.rstrip('.wav')
+            with amp.autocast(enabled=ENABLE_FP16, dtype=torch.float16):
+                recon, cost, rvm_loss = copy_synthesis_encodec(exp, y, N=10)
+            for k, v in recon.items():
+                fn_ = f'{fn}-{k}.wav'
+                save_fp = Path(save_dir) / fn_
+                soundfile.write(save_fp, v.astype(float), fs, 'PCM_16')
+            for k in cost.keys():
+                dur = len(recon[k]) / fs
+                tot_dur += dur
+                tot_cost += cost[k]
+        else:
+            save_fp = Path(save_dir) / fn
+            with amp.autocast(enabled=ENABLE_FP16, dtype=torch.float16):
+                recon, cost, rvm_loss = copy_synthesis(exp, y, N=10)
+            soundfile.write(save_fp, recon.astype(float), fs, 'PCM_16')
+            dur = len(recon) / fs
+            tot_cost += cost
+            tot_dur += dur
 
     return tot_cost, tot_dur
 
