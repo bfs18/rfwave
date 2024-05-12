@@ -175,27 +175,19 @@ class StandaloneAlignment(torch.nn.Module):
         queries_enc = self.query_out(queries_enc)
 
         # positional embedding only applied to key to avoid trivial alignment
-        keys_enc_ = apply_rotary_emb(keys_enc, key_freq_cis)
-        queries_enc_ = apply_rotary_emb(queries_enc, query_freq_cis)
+        keys_enc = keys_enc + key_freq_cis * np.sqrt(self.prior_strength)
+        queries_enc = queries_enc + query_freq_cis * np.sqrt(self.prior_strength)
 
         if self.type == 'gaussian':
             # Gaussian Isotopic Attention
             attn = -cdist(queries_enc.unsqueeze(1) * self.scale, keys_enc.unsqueeze(1) * self.scale)
-            attn_ = -cdist(queries_enc_.unsqueeze(1) * self.scale, keys_enc_.unsqueeze(1) * self.scale)
         elif self.type == 'dot_product':
             attn = (queries_enc @ keys_enc.transpose(-2, -1) * self.scale).unsqueeze(1)
-            attn_ = (queries_enc_ @ keys_enc_.transpose(-2, -1) * self.scale).unsqueeze(1)
         else:
             raise ValueError(f'Unknown attention type {self.type}')
 
-        # if self.diag_bias:
-        #     diag_bias = ((query_freq_cis @ key_freq_cis.transpose(-2, -1)).unsqueeze(1) *
-        #                  self.scale * self.prior_strength)
-        #     diag_bias = torch.where(diag_bias > diag_bias[:, :, :1, :1] * 0.6, diag_bias, 0.)
-        #     attn = attn + diag_bias
-
-        # temperature = np.random.uniform(self.temperature, 10.) if self.training else self.temperature
-        attn = (attn * (1 - self.prior_strength) + attn_ * self.prior_strength) / self.temperature
+        temperature = np.random.uniform(self.temperature, 10.) if self.training else self.temperature
+        attn = attn / temperature
 
         if mask is not None:
             attn = attn + mask
