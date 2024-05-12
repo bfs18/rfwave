@@ -53,7 +53,7 @@ if __name__ == '__main__':
     utmos_model = UTMOSScore(device=device)
     visqol_api = create_visqol_api(args.mode)
 
-    wav_fps = Path(args.syn_wav_dir).glob('*.wav')
+    wav_fps = Path(args.syn_wav_dir).rglob('*.wav')
     cnt = 0
     tot_utmos = 0.
     tot_gt_utmos = 0.
@@ -63,7 +63,7 @@ if __name__ == '__main__':
     tot_f1 = 0.
     tot_rmv_loss = defaultdict(lambda: 0.)
     for wav_fp in wav_fps:
-        gt_fp = Path(args.gt_wav_dir) / wav_fp.name
+        gt_fp = Path(args.gt_wav_dir) / wav_fp.relative_to(args.syn_wav_dir)
         syn_y, sr = librosa.load(wav_fp, sr=None)
         gt_y, sr = librosa.load(gt_fp, sr=None)
         min_l = np.minimum(syn_y.shape[0], gt_y.shape[0])
@@ -79,7 +79,7 @@ if __name__ == '__main__':
         syn_utmos_score = utmos_model.score(syn_y_16_khz).mean()
         gt_utmos_score = utmos_model.score(gt_y_16_khz).mean()
         pesq_score = pesq(16000, gt_y.cpu().numpy(), syn_y.cpu().numpy(), 'wb', on_error=1)
-        print(rmv_loss, syn_utmos_score, gt_utmos_score, pesq_score)
+        # print(rmv_loss, syn_utmos_score, gt_utmos_score, pesq_score)
         for k, v in rmv_loss.items():
             tot_rmv_loss[k] += v.item()
 
