@@ -296,7 +296,6 @@ def cdist(x, y):
     return dist.clamp(0.).to(dt)
 
 
-
 class CrossAttentionWithPrior(nn.Module):
     def __init__(
         self,
@@ -361,7 +360,8 @@ class CrossAttentionWithPrior(nn.Module):
         v = self.v(kv_x).reshape(bsz, kv_seqlen, self.num_heads, self.head_dim)
         q, k = self.q_norm(q), self.k_norm(k)
 
-        k = apply_rotary_emb(k, k_freqs_cis)
+        # k = apply_rotary_emb(k, k_freqs_cis)
+        k = k + k_freqs_cis.unsqueeze(2)
 
         # (bs, n_local_heads, q_seqlen, head_dim)
         q = q.transpose(1, 2).float()
@@ -371,8 +371,7 @@ class CrossAttentionWithPrior(nn.Module):
         if self.type == 'gaussian':
             attn = -cdist(q * self.scale, k * self.scale)
         elif self.type == 'dot_product':
-            q = q * self.scale
-            attn = q @ k.transpose(-2, -1)
+            attn = q @ k.transpose(-2, -1) * self.scale
         else:
             raise ValueError(f'Unknown attention type {self.type}')
 
