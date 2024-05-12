@@ -123,22 +123,26 @@ def voc(model_dir, wav_dir, save_dir):
         if y.size(0) > 1:
             y = y[:1]
 
+        rel_dir = wav_fp.relative_to(wav_dir).parent
+        save_dir_ = Path(save_dir) / rel_dir
+        save_dir_.mkdir(exist_ok=True, parents=True)
+
         y = y.to(exp.device)
         if is_encodec:
             fn = fn.rstrip('.wav')
-            with amp.autocast(enabled=ENABLE_FP16, dtype=torch.float16):
+            with amp.autocast(enabled=ENABLE_FP16, dtype=torch.float16) and torch.no_grad():
                 recon, cost, rvm_loss = copy_synthesis_encodec(exp, y, N=10)
             for k, v in recon.items():
                 fn_ = f'{fn}-{k}.wav'
-                save_fp = Path(save_dir) / fn_
+                save_fp = Path(save_dir_) / fn_
                 soundfile.write(save_fp, v.astype(float), fs, 'PCM_16')
             for k in cost.keys():
                 dur = len(recon[k]) / fs
                 tot_dur += dur
                 tot_cost += cost[k]
         else:
-            save_fp = Path(save_dir) / fn
-            with amp.autocast(enabled=ENABLE_FP16, dtype=torch.float16):
+            save_fp = Path(save_dir_) / fn
+            with amp.autocast(enabled=ENABLE_FP16, dtype=torch.float16) and torch.no_grad():
                 recon, cost, rvm_loss = copy_synthesis(exp, y, N=10)
             soundfile.write(save_fp, recon.astype(float), fs, 'PCM_16')
             dur = len(recon) / fs
