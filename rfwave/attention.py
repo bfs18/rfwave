@@ -358,33 +358,24 @@ class CrossAttentionWithPrior(nn.Module):
         v = self.v(kv_x).reshape(bsz, kv_seqlen, self.num_heads, self.head_dim)
         q, k = self.q_norm(q), self.k_norm(k)
 
-        q_ = apply_rotary_emb(q, q_freqs_cis)
-        k_ = apply_rotary_emb(k, k_freqs_cis)
+        # use as absolute positional embedding.
+        q = q + q_freqs_cis.unsqueeze(2) * np.sqrt(self.prior_strength)
+        k = k + k_freqs_cis.unsqueeze(2) * np.sqrt(self.prior_strength)
 
         # (bs, n_local_heads, q_seqlen, head_dim)
         q = q.transpose(1, 2).float()
         k = k.transpose(1, 2).float()
-        q_ = q_.transpose(1, 2).float()
-        k_ = k_.transpose(1, 2).float()
         v = v.transpose(1, 2)
 
         if self.type == 'gaussian':
             attn = -cdist(q * self.scale, k * self.scale)
-            attn_ = -cdist(q_ * self.scale, k_ * self.scale)
         elif self.type == 'dot_product':
             attn = q @ k.transpose(-2, -1) * self.scale
-            attn_ = q_ @ k_.transpose(-2, -1) * self.scale
         else:
             raise ValueError(f'Unknown attention type {self.type}')
 
-        # if self.diag_bias:
-        #     diag_bias = ((q_freqs_cis @ k_freqs_cis.transpose(1, 2)).unsqueeze(1) *
-        #                  self.scale * self.prior_strength)
-        #     diag_bias = torch.where(diag_bias > diag_bias[:, :, :1, :1] * 0.6, diag_bias, 0.)
-        #     attn = attn + diag_bias
-
-        # temperature = np.random.uniform(self.temperature, 10.) if self.training else self.temperature
-        attn = (attn * (1 - self.prior_strength) + attn_ * self.prior_strength) / self.temperature
+        temperature = np.random.uniform(self.temperature, 10.) if self.training else self.temperature
+        attn = attn / temperature
 
         if mask is not None:
             attn = attn + mask

@@ -597,7 +597,9 @@ class E2ECtxCharInputAdaptor(InputAdaptor):
         s = torch.zeros([tokens.size(0)], dtype=torch.long, device=tokens.device)
         pi = get_pos_embed_indices(s, tokens.size(1), max_pos=self.freqs_cis.size(0))
         pe = self.freqs_cis[pi]
-        te = apply_rotary_emb(te, pe)
+        # te = apply_rotary_emb(te, pe)
+        # use as absolute positional embedding.
+        te = te + pe
         ce = self.ctx_proj(ctx)
         te = self.tok_blocks(te.transpose(1, 2))
         ce = self.ctx_blocks(ce)
