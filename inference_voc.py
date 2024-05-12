@@ -16,7 +16,7 @@ from argparse import ArgumentParser
 
 ENABLE_FP16 = False
 COMPILE = True
-
+torch.set_float32_matmul_precision('high')
 
 def load_config(config_yaml):
     with open(config_yaml, 'r') as stream:
