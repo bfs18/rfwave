@@ -52,5 +52,5 @@ if __name__ == '__main__':
         tot_pesq += pesq_score
         cnt += 1
     for k, v in tot_rmv_loss.items():
-        print(f'{k}: {v/cnt}', end=', ')
-    print(f'UTMOS: {tot_utmos/cnt}, PESQ: {tot_pesq/cnt}, GT_UTMOS: {tot_gt_utmos/cnt}')
+        print(f'{k}: {v/cnt:.2f}', end=', ')
+    print(f'UTMOS: {tot_utmos/cnt:.2f}, PESQ: {tot_pesq/cnt:.2f}, GT_UTMOS: {tot_gt_utmos/cnt:.2f}')
