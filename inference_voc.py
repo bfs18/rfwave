@@ -12,6 +12,7 @@ import torch.cuda.amp as amp
 
 from pathlib import Path
 from argparse import ArgumentParser
+from tqdm import tqdm
 
 
 ENABLE_FP16 = False
@@ -109,7 +110,7 @@ def voc(model_dir, wav_dir, save_dir):
     else:
         raise ValueError(f"wav_dir should be a dir or a scp file, got {wav_dir}")
 
-    for wav_fp in wav_fps:
+    for wav_fp in tqdm(list(wav_fps)):
         if isinstance(wav_fp, Path):
             y, fs = torchaudio.load(wav_fp)
             fn = wav_fp.name

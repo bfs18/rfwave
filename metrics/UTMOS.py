@@ -24,7 +24,7 @@ class UTMOSScore:
         filepath = os.path.join(os.path.dirname(__file__), ckpt_path)
         if not os.path.exists(filepath):
             download_file(UTMOS_CKPT_URL, filepath)
-        self.model = BaselineLightningModule.load_from_checkpoint(filepath).eval().to(device)
+        self.model = BaselineLightningModule.load_from_checkpoint(filepath, map_location='cpu').eval().to(device)
 
     def score(self, wavs: torch.tensor) -> torch.tensor:
         """

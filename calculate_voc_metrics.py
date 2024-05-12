@@ -15,6 +15,7 @@ from visqol import visqol_lib_py
 from visqol.pb2 import visqol_config_pb2
 from visqol.pb2 import similarity_result_pb2
 from metrics.periodicity import calculate_periodicity_metrics
+from tqdm import tqdm
 
 
 def create_visqol_api(mode):
@@ -62,7 +63,7 @@ if __name__ == '__main__':
     tot_periodicity = 0.
     tot_f1 = 0.
     tot_rmv_loss = defaultdict(lambda: 0.)
-    for wav_fp in wav_fps:
+    for wav_fp in tqdm(list(wav_fps)):
         gt_fp = Path(args.gt_wav_dir) / wav_fp.relative_to(args.syn_wav_dir)
         syn_y, sr = librosa.load(wav_fp, sr=None)
         gt_y, sr = librosa.load(gt_fp, sr=None)
