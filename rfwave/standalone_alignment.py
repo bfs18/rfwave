@@ -176,7 +176,8 @@ class StandaloneAlignment(torch.nn.Module):
         queries_enc = self.query_out(queries_enc)
 
         # positional embedding only applied to key to avoid trivial alignment
-        keys_enc = apply_rotary_emb(keys_enc, key_freq_cis)
+        # keys_enc = apply_rotary_emb(keys_enc, key_freq_cis)
+        keys_enc = keys_enc + key_freq_cis
 
         if self.type == 'gaussian':
             # Gaussian Isotopic Attention
