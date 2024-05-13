@@ -28,7 +28,7 @@ def save_figure_to_numpy(fig: plt.Figure) -> np.ndarray:
     return data
 
 
-def plot_spectrogram_to_numpy(spectrogram: np.ndarray) -> np.ndarray:
+def plot_spectrogram_to_numpy(spectrogram: np.ndarray, title='') -> np.ndarray:
     """
     Plot a spectrogram and convert it to a numpy array.
 
@@ -41,6 +41,8 @@ def plot_spectrogram_to_numpy(spectrogram: np.ndarray) -> np.ndarray:
     spectrogram = spectrogram.astype(np.float32)
     fig, ax = plt.subplots(figsize=(12, 3))
     im = ax.imshow(spectrogram, aspect="auto", origin="lower", interpolation="none")
+    if title:
+        plt.title(title)
     plt.colorbar(im, ax=ax)
     plt.xlabel("Frames")
     plt.ylabel("Channels")
@@ -52,10 +54,12 @@ def plot_spectrogram_to_numpy(spectrogram: np.ndarray) -> np.ndarray:
     return data
 
 
-def plot_attention_to_numpy(attention: np.ndarray) -> np.ndarray:
+def plot_attention_to_numpy(attention: np.ndarray, title='') -> np.ndarray:
     attention = attention.T.astype(np.float32)
     fig, ax = plt.subplots(figsize=(12, 3))
     im = ax.imshow(attention, aspect="auto", origin="lower", interpolation="none")
+    if title:
+        plt.title(title)
     plt.colorbar(im, ax=ax)
     plt.xlabel("Frames")
     plt.ylabel("Chars")
