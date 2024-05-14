@@ -181,12 +181,13 @@ class StandaloneAlignment(torch.nn.Module):
         if self.type == 'gaussian':
             # Gaussian Isotopic Attention
             attn = -cdist(queries_enc.unsqueeze(1) * self.scale, keys_enc.unsqueeze(1) * self.scale)
+            temperature = self.temperature
         elif self.type == 'dot_product':
             attn = (queries_enc @ keys_enc.transpose(-2, -1) * self.scale).unsqueeze(1)
+            temperature = np.random.uniform(self.temperature, 10.) if self.training else self.temperature
         else:
             raise ValueError(f'Unknown attention type {self.type}')
 
-        temperature = np.random.uniform(self.temperature, 10.) if self.training else self.temperature
         attn = attn / temperature
 
         if mask is not None:
