@@ -130,7 +130,7 @@ class StandaloneAlignment(torch.nn.Module):
         self.query_proj = nn.Sequential(*[ConvNeXtV2Block(n_channels, n_channels * 3) for _ in range(num_layers)])
         self.query_out = nn.Sequential(nn.Linear(n_channels, n_channels), RMSNorm(n_channels))
 
-        self.register_buffer("freqs_cis", precompute_freqs_cis(n_channels, 1024), persistent=False)
+        self.register_buffer("freqs_cis", precompute_freqs_cis(n_channels, 8192), persistent=False)
         self.apply(self._init_weights)
 
     @staticmethod
