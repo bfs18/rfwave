@@ -369,14 +369,11 @@ class CrossAttentionWithPrior(nn.Module):
 
         if self.type == 'gaussian':
             attn = -cdist(q * self.scale, k * self.scale)
-            temperature = self.temperature
         elif self.type == 'dot_product':
             attn = q @ k.transpose(-2, -1) * self.scale
-            temperature = np.random.uniform(self.temperature, 10.) if self.training else self.temperature
         else:
             raise ValueError(f'Unknown attention type {self.type}')
-
-        attn = attn / temperature
+        attn = attn / self.temperature
 
         if mask is not None:
             attn = attn + mask
