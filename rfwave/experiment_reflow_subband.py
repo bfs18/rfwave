@@ -370,7 +370,7 @@ class RectifiedFlow(nn.Module):
         target_log_mag = safe_log10(target_mag)
         mag_loss = F.mse_loss(pred_log_mag, target_log_mag)
         converge_loss = torch.mean(torch.norm(pred_mag - target_mag, p="fro", dim=[1, 2]) /
-                                   torch.norm(target_mag, p="fro", dim=[1, 2]))
+                                   (torch.norm(target_mag, p="fro", dim=[1, 2]) + 1e-2))
         return mag_loss + converge_loss
 
     def compute_phase_loss(self, z_t, t, target, pred, bandwidth_id):
