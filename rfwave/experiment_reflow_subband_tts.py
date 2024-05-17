@@ -818,6 +818,8 @@ class VocosExp(pl.LightningModule):
         target = self.feature_extractor(audio_input)
         target = target.repeat_interleave(rpt, 0)
         pred = self.input_adaptor_proj(features)
+        if pred.ndim == 4:
+            target = target.unsqueeze(1)  # for num heads
         loss = masked_mse_loss(pred, target, mask)
         return loss
 

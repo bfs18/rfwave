@@ -202,10 +202,11 @@ class CrossAttTransformerBlock(nn.Module):
 
 
 class AlignmentBlock(nn.Module):
-    def __init__(self, dim, ctx_dim, num_proj_layers, attention_type='gaussian'):
+    def __init__(self, dim, ctx_dim, num_heads, num_proj_layers, attention_type='gaussian'):
         super().__init__()
-        args = ModelArgs(dim, n_heads=1, multiple_of=128)
+        args = ModelArgs(dim, n_heads=num_heads, multiple_of=128)
         self.dim = dim
+        self.head_dim = dim // args.n_heads
         self.ctx_proj = nn.Conv1d(ctx_dim, args.dim, 1) if ctx_dim != args.dim else nn.Identity()
         self.align_attn = CrossAttentionWithPrior(
             dim=args.dim, num_heads=args.n_heads, qkv_bias=False, qk_norm=args.qk_norm,
@@ -229,7 +230,9 @@ class AlignmentBlock(nn.Module):
 
     def forward(self, x, context, x_freqs_cis, c_freqs_cis, c_mask, mod_c, attn_prior):
         context = self.ctx_proj(context).transpose(1, 2)
-        rpt = self.dim // c_freqs_cis.size(2)
+        assert self.head_dim >= c_freqs_cis.size(2) and self.head_dim % c_freqs_cis.size(2) == 0, \
+            f"head_dim {self.head_dim}, pos dim {c_freqs_cis.size(2)}"
+        rpt = self.head_dim // c_freqs_cis.size(2)
         x_freqs_cis = x_freqs_cis.repeat_interleave(rpt, dim=-1) if x_freqs_cis is not None else None
         c_freqs_cis = c_freqs_cis.repeat_interleave(rpt, dim=-1) if c_freqs_cis is not None else None
         shift_crs, scale_crs, gate_crs = self.adaLN_modulation(mod_c).chunk(3, dim=1)
@@ -615,7 +618,7 @@ class InputAdaptorProject(nn.Module):
             nn.Linear(input_channels, output_channels))
 
     def forward(self, x):
-        out = self.linear(x.transpose(1, 2)).transpose(1, 2)
+        out = self.linear(x.transpose(-1, -2)).transpose(-1, -2)
         return out
 
 

@@ -317,7 +317,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             assert num_ctx_layers % 2 == 0 and num_ctx_layers // 2 >= 1
             self.cross_attn1 = ContextBlock(params, input_channels, num_ctx_layers // 2, modulate=True)
             self.cross_attn2 = ContextBlock(params, input_channels, num_ctx_layers // 2, modulate=True)
-            self.align_block = AlignmentBlock(dim, input_channels, num_proj_layers=num_align_proj_layers,
+            self.align_block = AlignmentBlock(dim, input_channels, num_heads, num_proj_layers=num_align_proj_layers,
                                               attention_type=align_attention_type)
         elif self.standalone_align and not self.standalone_distill:
             self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
@@ -394,7 +394,10 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             ctx, attn = self.align_block(ctx, x_token, z_freq_cis, token_freq_cis, token_mask,
                                          mod_c=te, attn_prior=attn_prior)
             # align_ctx = ctx  # compute aux loss for the outer rad alignment block
-            align_ctx = attn.squeeze(1)  @ x_token.detach().transpose(1, 2)
+            # rand_attn to save memory for this.
+            # align_ctx = torch.einsum('b h m n, b d n -> b h m d', attn, x_token.detach())
+            rand_attn = attn[torch.arange(attn.size(0)), torch.randint(0, attn.size(1), size=(attn.size(0),))]
+            align_ctx = rand_attn  @ x_token.detach().transpose(1, 2)
             # postprocess input, inject text and ref
             ctx = self.cross_attn2(ctx, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
         elif self.standalone_align and not self.standalone_distill:
@@ -410,4 +413,4 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             attn = None
         ctx = ctx.transpose(1, 2)
 
-        return self.module(z_t, t, ctx, bandwidth_id, start=start), attn, align_ctx.transpose(1, 2)
+        return self.module(z_t, t, ctx, bandwidth_id, start=start), attn, align_ctx.transpose(-1, -2)

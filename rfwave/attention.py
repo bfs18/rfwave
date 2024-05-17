@@ -310,8 +310,8 @@ class CrossAttentionWithPrior(nn.Module):
         type: str = 'gaussian'
     ) -> None:
         assert type in ['gaussian', 'dot_product']
-        assert num_heads == 1
         super().__init__()
+        print(f"{num_heads} heads for alignment")
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
@@ -331,7 +331,7 @@ class CrossAttentionWithPrior(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
-        self.prior_strength = nn.Parameter(torch.tensor(0.1))
+        self.prior_strength = nn.Parameter(torch.ones([self.num_heads]) * 0.1)
         self.type = type
         self.temperature = 1.
 
@@ -359,8 +359,9 @@ class CrossAttentionWithPrior(nn.Module):
         q, k = self.q_norm(q), self.k_norm(k)
 
         # use as absolute positional embedding.
-        q = q + q_freqs_cis.unsqueeze(2) * self.prior_strength.clamp_min(0.01).sqrt()
-        k = k + k_freqs_cis.unsqueeze(2) * self.prior_strength.clamp_min(0.01).sqrt()
+        ps = self.prior_strength.clamp_min(0.01).sqrt().view(1, 1, self.num_heads, 1)
+        q = q + q_freqs_cis.unsqueeze(2) * ps
+        k = k + k_freqs_cis.unsqueeze(2) * ps
 
         # (bs, n_local_heads, q_seqlen, head_dim)
         q = q.transpose(1, 2).float()
@@ -373,7 +374,8 @@ class CrossAttentionWithPrior(nn.Module):
             attn = q @ k.transpose(-2, -1) * self.scale
         else:
             raise ValueError(f'Unknown attention type {self.type}')
-        attn = attn / self.temperature
+        temperature = torch.linspace(1, 10, self.num_heads, device=attn.device)
+        attn = attn / temperature.view(1, self.num_heads, 1, 1)
 
         if mask is not None:
             attn = attn + mask
