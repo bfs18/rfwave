@@ -95,9 +95,14 @@ def copy_synthesis_encodec(exp, y, N=1000):
     return recons, costs, rmv_losses
 
 
-def voc(model_dir, wav_dir, save_dir):
+def voc(model_dir, wav_dir, save_dir, guidance_scale):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     exp = load_model(model_dir, device=device, last=True)
+    if exp.reflow.guidance_scale == 1. and guidance_scale is not None and guidance_scale > 1.:
+        warnings.warn("The original does not use classifier-free guidance. cfg argument is omitted")
+    if guidance_scale is not None:
+        print(f"Original guidance_scale {exp.reflow.guidance_scale:.2f}, using guidance_scale {guidance_scale:.2f}")
+        exp.reflow.guidance_scale = guidance_scale
     is_encodec = isinstance(exp.feature_extractor, rfwave.feature_extractors.EncodecFeatures)
 
     tot_cost = 0.
@@ -158,8 +163,9 @@ if __name__ == '__main__':
     parser.add_argument('--model_dir', type=str, required=True)
     parser.add_argument('--wav_dir', type=str, required=True)
     parser.add_argument('--save_dir', type=str, required=True)
+    parser.add_argument('--guidance_scale', type=float, default=None)
 
     args = parser.parse_args()
     Path(args.save_dir).mkdir(exist_ok=True)
-    cost, dur = voc(args.model_dir, args.wav_dir, args.save_dir)
+    cost, dur = voc(args.model_dir, args.wav_dir, args.save_dir, args.guidance_scale)
     print(f"Total cost: {cost:.2f}s, Total duration: {dur:.2f}s, ratio: {dur / cost:.2f}")
