@@ -642,7 +642,8 @@ class RectifiedFlow(nn.Module):
     def compute_alignment_loss(self, opt_attn, **kwargs):
         if self.backbone.rad_align:
             assert 'num_tokens' in kwargs and 'token_exp_scale' in kwargs and opt_attn is not None
-            attn_loss = compute_alignment_loss(opt_attn, kwargs['num_tokens'], kwargs['token_exp_scale'])
+            attn_loss = compute_alignment_loss(
+                opt_attn, kwargs['num_tokens'], kwargs['token_exp_scale'], ref_length=None)
         elif self.backbone.standalone_align and self.backbone.standalone_distill:
             assert 'standalone_attn' in kwargs and kwargs['standalone_attn'] is not None
             attn_loss = compute_attention_distill_loss(opt_attn, kwargs['standalone_attn'])

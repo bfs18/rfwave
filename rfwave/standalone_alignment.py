@@ -95,7 +95,10 @@ def compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_prob=0.67, r
                       input_lengths=length, target_lengths=num_tokens, blank=0, reduction='none')
     # when reduction='mean', loss is divided by num_tokens,
     # multiply ref_length / num_tokens to weight more on shorter token sequence.
-    loss = (loss * ref_length / num_tokens.float() ** 2).mean()
+    if ref_length is not None and ref_length > 0.:
+        loss = (loss * ref_length / num_tokens.float() ** 2).mean()
+    else:
+        loss = (loss * num_tokens.float()).mean()
     return loss
 
 
