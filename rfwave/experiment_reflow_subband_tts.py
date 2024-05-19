@@ -414,11 +414,23 @@ class RectifiedFlow(nn.Module):
             r, i = torch.chunk(S, 2, dim=1)
             return torch.sqrt(r ** 2 + i ** 2)
 
-        z0 = z_t - t.view(-1, 1, 1) * target
-        pred_z1 = self._place_diff(z0 + pred, bandwidth_id)
-        target_z1 = self._place_diff(z0 + target, bandwidth_id)
-        pred_mag = _mag(pred_z1)
-        target_mag = _mag(target_z1)
+        t_ = (t.reshape(-1, self.num_bands)[:, 0]).view(-1, 1, 1)
+        if self.wave:
+            z_t = self._place_diff(z_t, bandwidth_id)
+            target = self._place_diff(target, bandwidth_id)
+            pred = self._place_diff(pred, bandwidth_id)
+            pred = self.stft(self.istft(pred))
+            z0 = z_t - t_ * target
+            pred_z1 = z0 + pred
+            target_z1 = z0 + target
+            pred_mag = _mag(pred_z1)
+            target_mag = _mag(target_z1)
+        else:
+            z0 = z_t - t.view(-1, 1, 1) * target
+            pred_z1 = self._place_diff(z0 + pred, bandwidth_id)
+            target_z1 = self._place_diff(z0 + target, bandwidth_id)
+            pred_mag = _mag(pred_z1)
+            target_mag = _mag(target_z1)
         pred_log_mag = safe_log10(pred_mag)
         target_log_mag = safe_log10(target_mag)
         mag_loss = F.mse_loss(pred_log_mag, target_log_mag)
@@ -529,7 +541,7 @@ class RectifiedFlow(nn.Module):
         overlap_loss = self.compute_overlap_loss(pred2) if self.overlap_loss else 0.
         loss_dict = {"loss1": loss1, "loss2": loss2, "stft_loss": stft_loss,
                      "phase_loss": phase_loss, "overlap_loss": overlap_loss}
-        return loss1 * 5. + loss2 + (stft_loss + phase_loss + overlap_loss) * 0.1, loss_dict
+        return loss1 * 5. + loss2 + (stft_loss + phase_loss + overlap_loss) * 0.01, loss_dict
 
 
 class VocosExp(pl.LightningModule):
