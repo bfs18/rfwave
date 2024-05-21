@@ -98,7 +98,7 @@ def compute_alignment_loss(attn, num_tokens, token_exp_scale, blank_prob=0.67, r
     if ref_length is not None and ref_length > 0.:
         loss = (loss * ref_length / num_tokens.float() ** 2).mean()
     else:
-        loss = (loss * num_tokens.float()).mean()
+        loss = (loss / num_tokens.float()).mean()
     return loss
 
 
