@@ -331,7 +331,8 @@ class CrossAttentionWithPrior(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
-        self.prior_strength = nn.Parameter(torch.ones([self.num_heads]) * 0.1)
+        # self.prior_strength = nn.Parameter(torch.ones([self.num_heads]) * 0.1)
+        self.prior_strength = 0.1
         self.type = type
         self.temperature = 1.
 
@@ -359,7 +360,7 @@ class CrossAttentionWithPrior(nn.Module):
         q, k = self.q_norm(q), self.k_norm(k)
 
         # use as absolute positional embedding.
-        ps = self.prior_strength.clamp_min(0.01).sqrt().view(1, 1, self.num_heads, 1)
+        ps = np.sqrt(self.prior_strength)
         q = q + q_freqs_cis.unsqueeze(2) * ps
         k = k + k_freqs_cis.unsqueeze(2) * ps
 
