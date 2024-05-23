@@ -377,8 +377,8 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         ref_mask = score_mask(ctx_length)
         zero_start = _get_start(z_t, None)
         token_freq_cis = self.get_pos_embed(zero_start, num_tokens.max(), scale=token_exp_scale)
-        ref_freq_cis = self.get_pos_embed(zero_start, ctx_length.max())
-        # ref_freq_cis = self.get_non_pos_embed(z_t.size(0), ctx_length.max(), z_t.device)
+        # ref_freq_cis = self.get_pos_embed(zero_start, ctx_length.max())
+        ref_freq_cis = self.get_non_pos_embed(z_t.size(0), ctx_length.max(), z_t.device)
         ctx_mask = torch.cat([token_mask, ref_mask], dim=-1)
         ctx_freq_cis = torch.cat([token_freq_cis, ref_freq_cis], dim=1)
 
@@ -388,7 +388,8 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         z_t1 = z_t1.transpose(1, 2)
         if self.rad_align or (self.standalone_align and self.standalone_distill):
             # preprocess input, only inject ref
-            ctx = self.cross_attn1(z_t1, x_ref, z_freq_cis, ref_freq_cis, z_mask, ref_mask, mod_c=te)
+            # ctx = self.cross_attn1(z_t1, x_ref, z_freq_cis, ref_freq_cis, z_mask, ref_mask, mod_c=te)
+            ctx = self.cross_attn1(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ref_mask, mod_c=te)
             # inject text information and get align attn
             attn_prior = gaussian_prior(num_tokens, token_exp_scale)
             ctx, attn = self.align_block(ctx, x_token, z_freq_cis, token_freq_cis, token_mask,
