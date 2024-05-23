@@ -123,7 +123,7 @@ class StandaloneAlignment(torch.nn.Module):
         self.temperature = temperature
         self.scale = n_channels ** -0.5
         self.type = type
-        self.prior_strength = nn.Parameter(torch.tensor(0.1))
+        self.prior_strength = 0.1
 
         self.key_in = nn.Sequential(nn.Linear(n_text_channels, n_channels), nn.LayerNorm(n_channels))
         self.key_proj = nn.Sequential(*[ConvNeXtV2Block(n_channels, n_channels * 3) for _ in range(num_layers)])
@@ -178,8 +178,8 @@ class StandaloneAlignment(torch.nn.Module):
         queries_enc = self.query_out(queries_enc)
 
         # positional embedding only applied to key to avoid trivial alignment
-        keys_enc = keys_enc + key_freq_cis * self.prior_strength.clamp_min(0.01).sqrt()
-        queries_enc = queries_enc + query_freq_cis * self.prior_strength.clamp_min(0.01).sqrt()
+        keys_enc = keys_enc + key_freq_cis * np.sqrt(self.prior_strength)
+        queries_enc = queries_enc + query_freq_cis * np.sqrt(self.prior_strength)
 
         if self.type == 'gaussian':
             # Gaussian Isotopic Attention
