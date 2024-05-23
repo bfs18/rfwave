@@ -389,7 +389,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         if self.rad_align or (self.standalone_align and self.standalone_distill):
             # preprocess input, only inject ref
             # ctx = self.cross_attn1(z_t1, x_ref, z_freq_cis, ref_freq_cis, z_mask, ref_mask, mod_c=te)
-            ctx = self.cross_attn1(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ref_mask, mod_c=te)
+            ctx = self.cross_attn1(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
             # inject text information and get align attn
             attn_prior = gaussian_prior(num_tokens, token_exp_scale)
             ctx, attn = self.align_block(ctx, x_token, z_freq_cis, token_freq_cis, token_mask,
