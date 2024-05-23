@@ -397,18 +397,18 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             # rand_attn to save memory for this.
             # align_ctx = torch.einsum('b h m n, b d n -> b h m d', attn, x_token.detach())
             rand_attn = attn[torch.arange(attn.size(0)), torch.randint(0, attn.size(1), size=(attn.size(0),))]
-            align_ctx = rand_attn  @ x_token.detach().transpose(1, 2)
+            align_ctx = (rand_attn  @ x_token.detach().transpose(1, 2)).transpose(-1, -2)
         elif self.standalone_align and not self.standalone_distill:
             assert not (standalone_attn is None and duration is None)
             ctx = self.sa_align_block(z_t1, x_token, standalone_attn, duration, mod_c=te)
             # align_ctx = ctx  # compute aux loss for the outer standalone alignment block
             ctx = self.cross_attn(ctx, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
             attn = standalone_attn
-            align_ctx = attn.squeeze(1)  @ x_token.detach().transpose(1, 2)
+            align_ctx = (attn.squeeze(1)  @ x_token.detach().transpose(1, 2)).transpose(-1, -2) if attn is not None else None  # for inference
         else:
             ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
-            align_ctx = ctx  # not really
+            align_ctx = ctx.transpose(-1, -2)  # not really
             attn = None
         ctx = ctx.transpose(1, 2)
 
-        return self.module(z_t, t, ctx, bandwidth_id, start=start), attn, align_ctx.transpose(-1, -2)
+        return self.module(z_t, t, ctx, bandwidth_id, start=start), attn, align_ctx
