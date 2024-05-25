@@ -154,13 +154,13 @@ class MeanVarProcessor(SampleProcessor):
                 var = torch.var(x.float(), dim=[0, 2])
             self.mean_ema.lerp_(mean.detach(), 0.01)
             self.var_ema.lerp_(var.detach(), 0.01)
-        if x.ndim == 2:
+        if x.ndim <= 2:
             return (x - self.mean_ema) / torch.sqrt(self.var_ema + 1e-6)
         else:
             return (x - self.mean_ema[None, :, None]) / torch.sqrt(self.var_ema[None, :, None] + 1e-6)
 
     def return_sample(self, x: torch.Tensor):
-        if x.ndim == 2:
+        if x.ndim <= 2:
             x = x * torch.sqrt(self.var_ema + 1e-6) + self.mean_ema
         else:
             x = x * torch.sqrt(self.var_ema[None, :, None] + 1e-6) + self.mean_ema[None, :, None]
