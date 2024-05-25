@@ -755,7 +755,7 @@ class VocosExp(pl.LightningModule):
             self.standalone_dur = E2EDuration(
                 DurModel(self.input_adaptor.dim, 2),
                 output_exp_scale=self.dur_output_exp_scale)
-            self.dur_processor = DurationProcessor()
+            self.dur_processor = MeanVarProcessor(1)
             self.standalone_dur_start_step = 10000
             self.train_dur = True
 
