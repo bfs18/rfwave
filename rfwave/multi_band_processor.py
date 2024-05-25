@@ -146,7 +146,7 @@ class MeanVarProcessor(SampleProcessor):
     def project_sample(self, x: torch.Tensor):
         if self.training:
             # support for exp scale.
-            if x.ndim == 2:
+            if x.ndim <= 2:
                 mean = torch.mean(x.float())
                 var = torch.var(x.float())
             else:
