@@ -9,7 +9,7 @@ from rfwave.input import ModelArgs, ContextBlock, AlignmentBlock
 from rfwave.attention import (Attention, FeedForward, ConvFeedForward, MLP, precompute_freqs_cis,  RMSNorm,
                               get_pos_embed_indices, modulate, score_mask, _get_len, _get_start)
 from rfwave.dataset import get_exp_length
-from rfwave.standalone_alignment import EmptyAlignmentBlock, gaussian_prior
+from rfwave.standalone_alignment import EmptyAlignmentBlock, gaussian_prior, binarize_attention
 
 
 class DiTBlock(nn.Module):
@@ -400,7 +400,8 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             align_ctx = (rand_attn  @ x_token.detach().transpose(1, 2)).transpose(-1, -2)
         elif self.standalone_align and not self.standalone_distill:
             assert not (standalone_attn is None and duration is None)
-            ctx = self.sa_align_block(z_t1, x_token, standalone_attn, duration, mod_c=te)
+            bin_attn = binarize_attention(standalone_attn, num_tokens, length)
+            ctx = self.sa_align_block(z_t1, x_token, bin_attn, duration, mod_c=te)
             # align_ctx = ctx  # compute aux loss for the outer standalone alignment block
             ctx = self.cross_attn(ctx, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
             attn = standalone_attn
