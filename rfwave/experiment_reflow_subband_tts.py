@@ -937,7 +937,7 @@ class VocosExp(pl.LightningModule):
         # TODO: attn_loss = 0. is cfg iter, but this is not correct when gt duration is used.
         cond_mel_loss = self.compute_aux_loss(aux, audio_input, ctx_mask) if self.aux_loss else 0.
         cfg_or_not = 0. if self.cfg_iter else 1.
-        loss = loss + (sa_loss + dur_loss + cond_mel_loss) * 0.1 * cfg_or_not
+        loss = loss + (sa_loss + dur_loss + cond_mel_loss) * cfg_or_not
         self.manual_backward(loss)
         opt_gen.step()
         sch_gen.step()
