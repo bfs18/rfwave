@@ -316,8 +316,9 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             assert num_align_proj_layers is not None and num_align_proj_layers >= 0
             assert num_ctx_layers % 2 == 0 and num_ctx_layers // 2 >= 1
             self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
-            self.align_block = AlignmentBlock(dim, input_channels, num_heads, num_proj_layers=num_align_proj_layers,
-                                              attention_type=align_attention_type)
+            self.align_block = AlignmentBlock(  # only 1 head for alignment.
+                dim, input_channels, 1, num_proj_layers=num_align_proj_layers,
+                attention_type=align_attention_type)
         elif self.standalone_align and not self.standalone_distill:
             self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
             self.sa_align_block = EmptyAlignmentBlock(dim, input_channels)
@@ -398,6 +399,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             # align_ctx = torch.einsum('b h m n, b d n -> b h m d', attn, x_token.detach())
             rand_attn = attn[torch.arange(attn.size(0)), torch.randint(0, attn.size(1), size=(attn.size(0),))]
             align_ctx = (rand_attn  @ x_token.detach().transpose(1, 2)).transpose(-1, -2)
+            attn = rand_attn.unsqueeze(1)
         elif self.standalone_align and not self.standalone_distill:
             assert not (standalone_attn is None and duration is None)
             attn = standalone_attn
