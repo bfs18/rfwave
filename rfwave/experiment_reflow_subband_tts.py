@@ -935,7 +935,11 @@ class VocosExp(pl.LightningModule):
             standalone_attn=sa_attn, **kwargs)
         aux = loss_dict['ctx'] if loss_dict['ctx'] is not None else text
         # TODO: attn_loss = 0. is cfg iter, but this is not correct when gt duration is used.
-        cond_mel_loss = self.compute_aux_loss(aux, audio_input, ctx_mask) if self.aux_loss else 0.
+        # not mask reference ctx for attn aux loss mask since aux feature is calculated from
+        # attention weights @ text embedding
+        mask = sequence_mask_with_ctx(ctx_kwargs['length'])
+        mask = mask.repeat_interleave(z_t.size(0) // mask.size(0), 0)
+        cond_mel_loss = self.compute_aux_loss(aux, audio_input, mask) if self.aux_loss else 0.
         cfg_or_not = 0. if self.cfg_iter else 1.
         loss = loss + (sa_loss + dur_loss + cond_mel_loss) * 0.1 * cfg_or_not
         self.manual_backward(loss)
