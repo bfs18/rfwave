@@ -387,16 +387,10 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         te = self.time_embed(t)
         z_t1 = z_t1.transpose(1, 2)
         if self.rad_align or (self.standalone_align and self.standalone_distill):
-            # preprocess input, only inject ref
-            # ctx = self.cross_attn1(z_t1, x_ref, z_freq_cis, ref_freq_cis, z_mask, ref_mask, mod_c=te)
             ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
-            # inject text information and get align attn
             attn_prior = gaussian_prior(num_tokens, token_exp_scale)
             ctx, attn = self.align_block(ctx, x_token, z_freq_cis, token_freq_cis, token_mask,
                                          mod_c=te, attn_prior=attn_prior)
-            # align_ctx = ctx  # compute aux loss for the outer rad alignment block
-            # rand_attn to save memory for this.
-            # align_ctx = torch.einsum('b h m n, b d n -> b h m d', attn, x_token.detach())
             rand_attn = attn[torch.arange(attn.size(0)), torch.randint(0, attn.size(1), size=(attn.size(0),))]
             align_ctx = (rand_attn  @ x_token.detach().transpose(1, 2)).transpose(-1, -2)
             attn = rand_attn.unsqueeze(1)
@@ -410,7 +404,6 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             else:
                 bin_attn = align_ctx = None
             ctx = self.sa_align_block(ctx, x_token, bin_attn, duration, mod_c=te)
-            # align_ctx = ctx  # compute aux loss for the outer standalone alignment block
         else:
             ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
             align_ctx = ctx.transpose(-1, -2)  # not really
