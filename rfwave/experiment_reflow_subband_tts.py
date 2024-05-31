@@ -968,7 +968,7 @@ class VocosExp(pl.LightningModule):
             loss_dict['sa_attn_loss'] = sa_loss
             loss_dict['dur_loss'] = dur_loss
             if attn is not None:
-                attn = attn[-1] if isinstance(attn, tuple) else attn
+                attn = attn if isinstance(attn, torch.Tensor) else attn[-1]
                 attn = attn[0, 0].detach().cpu().numpy()
                 title = f'step = {self.global_step},  t = {t[0].item():.5f}, cfg = {self.cfg_iter}'
                 self.logger.experiment.log(
