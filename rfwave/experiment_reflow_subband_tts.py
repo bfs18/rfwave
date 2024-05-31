@@ -639,16 +639,18 @@ class RectifiedFlow(nn.Module):
             raise ValueError(f'Unsupported intt mode {self.intt_mode}')
         return pred1, pred2
 
-    def compute_alignment_loss(self, opt_attn, **kwargs):
-        if self.backbone.rad_align:
-            assert 'num_tokens' in kwargs and 'token_exp_scale' in kwargs and opt_attn is not None
-            attn_loss = compute_alignment_loss(
-                opt_attn, kwargs['num_tokens'], kwargs['token_exp_scale'], ref_length=None)
-        elif self.backbone.standalone_align and self.backbone.standalone_distill:
-            assert 'standalone_attn' in kwargs and kwargs['standalone_attn'] is not None
-            attn_loss = compute_attention_distill_loss(opt_attn, kwargs['standalone_attn'])
-        else:
-            attn_loss = 0.
+    def compute_alignment_loss(self, opt_attns, **kwargs):
+        opt_attns = [opt_attns] if isinstance(opt_attns, torch.Tensor) else opt_attns
+        attn_loss = 0.
+        for opt_attn in opt_attns:
+            opt_attn = opt_attn.float()
+            if self.backbone.rad_align:
+                assert 'num_tokens' in kwargs and 'token_exp_scale' in kwargs and opt_attn is not None
+                attn_loss = attn_loss + compute_alignment_loss(
+                    opt_attn, kwargs['num_tokens'], kwargs['token_exp_scale'], ref_length=None)
+            elif self.backbone.standalone_align and self.backbone.standalone_distill:
+                assert 'standalone_attn' in kwargs and kwargs['standalone_attn'] is not None
+                attn_loss = attn_loss + compute_attention_distill_loss(opt_attn, kwargs['standalone_attn'])
         return attn_loss
 
     def compute_loss(self, z_t, t, target, text, bandwidth_id, mask, **kwargs):
@@ -667,7 +669,6 @@ class RectifiedFlow(nn.Module):
             mask_factor = None
 
         pred, z_t, t, target = [v.float() for v in (pred, z_t, t, target)]
-        opt_attn = opt_attn.float() if opt_attn is not None else None
         t_ = t.view(-1, 1, 1)
         z_t1, z_t2 = self.split(z_t)
         pred1, pred2 = self.get_intt_pred(t_, pred)
@@ -815,13 +816,16 @@ class VocosExp(pl.LightningModule):
         return target
 
     def compute_aux_loss(self, features, audio_input, mask):
-        rpt = features.size(0) // audio_input.size(0)
         target = self.feature_extractor(audio_input)
+        features = [features] if isinstance(features, torch.Tensor) else features
+        rpt = features[0].size(0) // audio_input.size(0)
         target = target.repeat_interleave(rpt, 0)
-        pred = self.input_adaptor_proj(features)
-        if pred.ndim == 4:
-            target = target.unsqueeze(1)  # for num heads
-        loss = masked_mse_loss(pred, target, mask)
+        loss = 0.
+        for feature in features:
+            pred = self.input_adaptor_proj(feature)
+            if pred.ndim == 4:
+                target = target.unsqueeze(1)  # for num heads
+            loss = loss + masked_mse_loss(pred, target, mask)
         return loss
 
     def process_context(self, phone_info):
@@ -964,6 +968,7 @@ class VocosExp(pl.LightningModule):
             loss_dict['sa_attn_loss'] = sa_loss
             loss_dict['dur_loss'] = dur_loss
             if attn is not None:
+                attn = attn[-1] if isinstance(attn, tuple) else attn
                 attn = attn[0, 0].detach().cpu().numpy()
                 title = f'step = {self.global_step},  t = {t[0].item():.5f}, cfg = {self.cfg_iter}'
                 self.logger.experiment.log(

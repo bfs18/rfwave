@@ -305,6 +305,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         self.standalone_align = standalone_align
         self.standalone_distill = standalone_distill
         self.dim = dim
+        self.num_ctx_layers = num_ctx_layers
         assert not (self.rad_align and self.standalone_align)
         # standalone distill must be assigned when using standalone_align
         assert not standalone_align or (standalone_align and self.standalone_distill is not None)
@@ -314,14 +315,16 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         if self.rad_align or (self.standalone_align and self.standalone_distill):
             assert align_attention_type is not None
             assert num_align_proj_layers is not None and num_align_proj_layers >= 0
-            assert num_ctx_layers % 2 == 0 and num_ctx_layers // 2 >= 1
-            self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
-            self.align_block = AlignmentBlock(  # only 1 head for alignment.
+            self.cross_attn = nn.ModuleList([ContextBlock(params, input_channels, 1, modulate=True)
+                                             for _ in range(num_ctx_layers)])
+            self.align_block = nn.ModuleList([AlignmentBlock(  # only 1 head for alignment.
                 dim, input_channels, 1, num_proj_layers=num_align_proj_layers,
-                attention_type=align_attention_type)
+                attention_type=align_attention_type) for _ in range(num_ctx_layers)])
         elif self.standalone_align and not self.standalone_distill:
-            self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
-            self.sa_align_block = EmptyAlignmentBlock(dim, input_channels)
+            self.cross_attn = nn.ModuleList([ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
+                                             for _ in range(num_ctx_layers)])
+            self.sa_align_block = nn.ModuleList([EmptyAlignmentBlock(dim, input_channels)
+                                                 for _ in range(num_ctx_layers)])
         else:
             self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
 
@@ -387,23 +390,32 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         te = self.time_embed(t)
         z_t1 = z_t1.transpose(1, 2)
         if self.rad_align or (self.standalone_align and self.standalone_distill):
-            ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
             attn_prior = gaussian_prior(num_tokens, token_exp_scale)
-            ctx, attn = self.align_block(ctx, x_token, z_freq_cis, token_freq_cis, token_mask,
-                                         mod_c=te, attn_prior=attn_prior)
-            rand_attn = attn[torch.arange(attn.size(0)), torch.randint(0, attn.size(1), size=(attn.size(0),))]
-            align_ctx = (rand_attn  @ x_token.detach().transpose(1, 2)).transpose(-1, -2)
-            attn = rand_attn.unsqueeze(1)
+            ctx = z_t1
+            attn = []
+            align_ctx = []
+            for i in range(self.num_ctx_layers):
+                ctx = self.cross_attn[i](ctx, x_ref, z_freq_cis, ref_freq_cis, z_mask, ref_mask, mod_c=te)
+                ctx, attn_i = self.align_block[i](ctx, x_token, z_freq_cis, token_freq_cis, token_mask,
+                                                mod_c=te, attn_prior=attn_prior)
+                b, h, *_ = attn_i.shape
+                rand_attn_i = attn_i[torch.arange(b), torch.randint(0, h, size=(b,))]
+                align_ctx_i = (rand_attn_i  @ x_token.detach().transpose(1, 2)).transpose(-1, -2)
+                attn_i = rand_attn_i.unsqueeze(1)
+                attn.append(attn_i)
+                align_ctx.append(align_ctx_i)
         elif self.standalone_align and not self.standalone_distill:
             assert not (standalone_attn is None and duration is None)
             attn = standalone_attn
-            ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
             if attn is not None:
                 bin_attn = binarize_attention(attn, num_tokens, length)
-                align_ctx = (attn.squeeze(1)  @ x_token.detach().transpose(1, 2)).transpose(-1, -2)
+                align_ctx = (attn.squeeze(1) @ x_token.detach().transpose(1, 2)).transpose(-1, -2)
             else:
                 bin_attn = align_ctx = None
-            ctx = self.sa_align_block(ctx, x_token, bin_attn, duration, mod_c=te)
+            ctx = z_t1
+            for i in range(self.num_ctx_layers):
+                ctx = self.cross_attn[i](ctx, x_ref, z_freq_cis, ref_freq_cis, z_mask, ref_mask, mod_c=te)
+                ctx = self.sa_align_block[i](ctx, x_token, bin_attn, duration, mod_c=te)
         else:
             ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
             align_ctx = ctx.transpose(-1, -2)  # not really
