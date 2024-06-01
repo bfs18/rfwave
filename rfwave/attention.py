@@ -328,6 +328,7 @@ class CrossAttentionWithPrior(nn.Module):
             self.q_proj = nn.Sequential(*[ConvNeXtV2Block(dim, dim * 3) for _ in range(num_proj_layers)])
         else:
             self.k_proj, self.q_proj = None, None
+        self.score_conv = nn.Conv2d(num_heads, num_heads, kernel_size=(45, 5), padding=(22, 2))
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
@@ -377,6 +378,7 @@ class CrossAttentionWithPrior(nn.Module):
             raise ValueError(f'Unknown attention type {self.type}')
         temperature = torch.linspace(1, 10, self.num_heads, device=attn.device)
         attn = attn / temperature.view(1, self.num_heads, 1, 1)
+        attn = attn + self.score_conv(attn)
 
         if mask is not None:
             attn = attn + mask
