@@ -14,7 +14,9 @@ class ExpScale(nn.Module):
         self.token_dur_model = token_dur_model
         dim = self.token_dur_model.dim
         self.output_proj = nn.Sequential(
-            nn.Linear(dim, dim * 4), nn.SiLU(), nn.Linear(dim * 4, 1))
+            nn.Linear(dim, dim // 4), nn.SiLU(), nn.LayerNorm(dim // 4), nn.Dropout(0.5),
+            nn.Linear(dim // 4, dim // 16), nn.SiLU(), nn.LayerNorm(dim // 16), nn.Dropout(0.5),
+            nn.Linear(dim // 16, 1))
 
     def forward(self, x, num_tokens, ref_length):
         token_out = self.token_dur_model.forward(x, num_tokens, ref_length)
@@ -30,7 +32,10 @@ class PhnDur(nn.Module):
         super().__init__()
         self.token_dur_model = token_dur_model
         dim = self.token_dur_model.dim
-        self.output_proj = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, 1))
+        self.output_proj = nn.Sequential(
+            nn.Linear(dim, dim // 4), nn.SiLU(), nn.LayerNorm(dim // 4), nn.Dropout(0.5),
+            nn.Linear(dim // 4, dim // 16), nn.SiLU(), nn.LayerNorm(dim // 16), nn.Dropout(0.5),
+            nn.Linear(dim // 16, 1))
 
     def forward(self, x, num_tokens, ref_length):
         out = self.token_dur_model.forward(x, num_tokens, ref_length)
