@@ -16,8 +16,9 @@ from tqdm import tqdm
 
 
 ENABLE_FP16 = False
-COMPILE = True
+COMPILE = False
 torch.set_float32_matmul_precision('high')
+
 
 def load_config(config_yaml):
     with open(config_yaml, 'r') as stream:
@@ -51,10 +52,12 @@ def load_model(model_dir, device, last=False):
     config = load_config(config_yaml)
     exp = create_instance(config['model'])
 
-    if COMPILE:
-        exp.reflow.backbone = torch.compile(exp.reflow.backbone)
     model_dict = torch.load(ckpt_fp, map_location='cpu')
     exp.load_state_dict(model_dict['state_dict'])
+
+    if COMPILE:
+        exp.reflow.backbone = torch.compile(exp.reflow.backbone)
+
     exp.eval()
     exp.to(device)
     return exp
@@ -161,12 +164,13 @@ def voc(model_dir, wav_dir, save_dir, guidance_scale):
 
 if __name__ == '__main__':
     parser = ArgumentParser()
-    parser.add_argument('--model_dir', type=str, required=True)
+    parser.add_argument('--model_dir', type=str, default=None)
     parser.add_argument('--wav_dir', type=str, required=True)
     parser.add_argument('--save_dir', type=str, required=True)
     parser.add_argument('--guidance_scale', type=float, default=None)
 
     args = parser.parse_args()
+    assert not (args.model_dir is None and args.pretrained is None)
     Path(args.save_dir).mkdir(exist_ok=True)
     cost, dur = voc(args.model_dir, args.wav_dir, args.save_dir, args.guidance_scale)
     print(f"Total cost: {cost:.2f}s, Total duration: {dur:.2f}s, ratio: {dur / cost:.2f}")

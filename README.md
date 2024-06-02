@@ -1,16 +1,11 @@
 # RFWave: Multi-band Rectified Flow for Audio Waveform Reconstruction.
-[Audio samples](https://bfs18.github.io/rfwave/) | [Paper](https://arxiv.org/abs/2403.05010)
+[Audio samples](https://rfwave-demo.github.io/rfwave/) | [Paper](https://arxiv.org/abs/2403.05010)
 
 ### TL;DR
-RFWave is a diffusion-based vocoder. It can generate high-quality audio waveforms from Mel-spectrograms at a speed that is 90 times quicker than real-time on an Nvidia 4090. 
+RFWave utilizes multi-band Rectified Flow for high-fidelity audio waveform reconstruction from either Mel-spectrograms or discrete tokens, and boasts a generation speed 97 times faster than real-time on a GPU.
 
 ### Abstract
-Recent advancements in generative modeling have led to significant progress in audio waveform reconstruction from diverse representations.
-Although diffusion models have been used for reconstructing audio waveforms, they tend to exhibit latency issues because they operate at the level of individual sample points and require a relatively large number of sampling steps.
-In this study, we introduce RFWave, a novel multi-band Rectified Flow approach that reconstructs high-fidelity audio waveforms from Mel-spectrograms.
-RFWave is distinctive for generating complex spectrograms and operating at the frame level, processing all subbands concurrently to enhance efficiency. 
-Thanks to Rectified Flow, which aims for a flat transport trajectory, RFWave requires only 10 sampling steps.
-Empirical evaluations demonstrate that RFWave achieves exceptional reconstruction quality and superior computational efficiency, capable of generating audio at a speed 90 times faster than real-time.
+Recent advancements in generative modeling have significantly enhanced the reconstruction of audio waveforms from various representations. While diffusion models are adept at this task, they are hindered by latency issues due to their operation at the individual sample point level and the need for numerous sampling steps. In this study, we introduce RFWave, a cutting-edge multi-band Rectified Flow approach designed to reconstruct high-fidelity audio waveforms from Mel-spectrograms or discrete tokens. RFWave uniquely generates complex spectrograms and operates at the frame level, processing all subbands simultaneously to boost efficiency. Leveraging Rectified Flow, which targets a flat transport trajectory, RFWave achieves reconstruction with just 10 sampling steps. Our empirical evaluations show that RFWave not only provides outstanding reconstruction quality but also offers vastly superior computational efficiency, enabling audio generation at speeds up to 97 times faster than real-time on a GPU. An online demonstration is available at: https://rfwave-demo.github.io/rfwave/.
 
 <p align="middle">
     <br>
@@ -42,7 +37,19 @@ Empirical evaluations demonstrate that RFWave achieves exceptional reconstructio
 6. Test the trained model with `inference_tts.py`
 
 ## Pre-trained models
-Coming soon
+
+`python3 inference_voc.py --model_dir MODEL_DIR --wav_dir WAV_DIR --save_dir SAVE_DIR`
+
+[rfwave-libritts-24k](https://drive.google.com/file/d/1IQNXAAVRTtr9P8Gc-CoPeRIJ_l_O4y38/view?usp=sharing)
+
+[rfwave-jamendo-44.1k](https://drive.google.com/file/d/1yM0BWFrXvuwb2SZvyPOBr6Wgto0sjdqh/view?usp=sharing)
+
+[rfwave-encodec-24k](https://drive.google.com/file/d/1gUpkpJPIs-9wKoLIhX8ZHfl5PhMNJdDb/view?usp=sharing)
+
+## Test set
+The test set for reconstructing waveform form EnCodec tokens.
+
+[audio_reconstruct_universal_testset](https://drive.google.com/file/d/1WjRRfD1yJSjEA3xfC8-635ugpLvnRK0f/view?usp=sharing)
 
 ## Thanks
 
