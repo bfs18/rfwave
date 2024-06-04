@@ -296,6 +296,47 @@ def cdist(x, y):
     return dist.clamp(0.).to(dt)
 
 
+class QueryProj(nn.Module):
+    def __init__(self, dim, num_layers):
+        super().__init__()
+        self.convs = nn.ModuleList()
+        self.norms = nn.ModuleList()
+        self.pools = nn.ModuleList()
+        for _ in range(num_layers):
+            self.convs.append(nn.Conv1d(dim, dim, kernel_size=3, padding=1))
+            self.norms.append(nn.LayerNorm(dim))
+            self.pools.append(nn.MaxPool1d(kernel_size=3, stride=2, padding=1))
+        self.num_layers = num_layers
+
+    def forward(self, x):
+        xs = [x]
+        for i in range(self.num_layers):
+            x = F.silu(self.convs[i](x))
+            x = self.norms[i](x.transpose(1, 2)).transpose(1, 2)
+            x = self.pools[i](x)
+            xs.append(x)
+
+        out = xs[0]
+        for i in range(1, self.num_layers):
+            xi = F.interpolate(xs[i], scale_factor=2 ** i, mode='nearest')
+            out = out + xi[..., :out.size(-1)]
+        return out
+
+
+class QueryDownsample(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.conv = nn.Conv1d(dim, dim, kernel_size=3, padding=1)
+        self.norm = nn.LayerNorm(dim)
+        self.pool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
+
+    def forward(self, x):
+        x = F.silu(self.conv(x))
+        x = self.norm(x.transpose(1, 2)).transpose(1, 2)
+        x = self.pool(x)
+        return x
+
+
 class CrossAttentionWithPrior(nn.Module):
     def __init__(
         self,
@@ -323,11 +364,11 @@ class CrossAttentionWithPrior(nn.Module):
         self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
         self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
         # add conv layers as standalone attention.
+        self.q_ds = QueryDownsample(dim)
         if num_proj_layers is not None and num_proj_layers > 0:
-            self.k_proj = nn.Sequential(*[ConvNeXtV2Block(dim, dim * 3) for _ in range(num_proj_layers)])
-            self.q_proj = nn.Sequential(*[ConvNeXtV2Block(dim, dim * 3) for _ in range(num_proj_layers)])
+            self.q_proj = QueryProj(dim, num_proj_layers)
         else:
-            self.k_proj, self.q_proj = None, None
+            self.q_proj = None
         self.score_conv = nn.Conv2d(num_heads, num_heads, kernel_size=(45, 5), padding=(22, 2))
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
@@ -348,20 +389,19 @@ class CrossAttentionWithPrior(nn.Module):
         bsz, q_seqlen, ch = q_x.shape
         _, kv_seqlen, _ = kv_x.shape
 
-        # apply proj layers.
-        if self.q_proj is not None and self.k_proj is not None:
-            q_x = self.q_proj(q_x.transpose(1, 2)).transpose(1, 2)
-            k_x = self.k_proj(kv_x.transpose(1, 2)).transpose(1, 2)
-        else:
-            k_x = kv_x
+        q_x = self.q_ds(q_x.transpose(1, 2))
+        if self.q_proj is not None:
+            q_x = self.q_proj(q_x)
+        q_x = q_x.transpose(1, 2)
 
-        q = self.q(q_x).reshape(bsz, q_seqlen, self.num_heads, self.head_dim)
-        k = self.k(k_x).reshape(bsz, kv_seqlen, self.num_heads, self.head_dim)
+        q = self.q(q_x).reshape(bsz, (q_seqlen + 1) // 2, self.num_heads, self.head_dim)
+        k = self.k(kv_x).reshape(bsz, kv_seqlen, self.num_heads, self.head_dim)
         v = self.v(kv_x).reshape(bsz, kv_seqlen, self.num_heads, self.head_dim)
         q, k = self.q_norm(q), self.k_norm(k)
 
         # use as absolute positional embedding.
         ps = np.sqrt(self.prior_strength)
+        q_freqs_cis = F.pad(q_freqs_cis, (0, 0, 0, 1), mode='replicate')[:, 1::2]
         q = q + q_freqs_cis.unsqueeze(2) * ps
         k = k + k_freqs_cis.unsqueeze(2) * ps
 
@@ -384,10 +424,12 @@ class CrossAttentionWithPrior(nn.Module):
             attn = attn + mask
         attn = attn.float().softmax(dim=-1).type_as(attn)
         if attn_prior is not None:
+            attn_prior = F.pad(attn_prior, (0, 0, 0, 1), mode='replicate')[:, 1::2]
             attn = torch.exp(torch.log(attn.clamp_min(1e-8)) +
                              torch.log(attn_prior.unsqueeze(1).clamp_min(1e-8)))
             # attn = attn + attn_prior.unsqueeze(1) * self.prior_strength
             attn = attn / (attn.sum(dim=-1, keepdim=True) + 1e-8)
+        attn = F.interpolate(attn, size=(attn.size(2) * 2, kv_seqlen), mode='nearest')[:, :, :q_seqlen]
         attn_before_drop = attn
         attn = self.attn_drop(attn)
         x = (attn @ v).type_as(v)
