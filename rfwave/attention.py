@@ -400,7 +400,8 @@ class CrossAttentionWithPrior(nn.Module):
         if self.q_proj is not None:
             q_x = self.q_proj(q_x)
 
-        q = self.q(q_x).reshape(bsz, (q_seqlen + 1) // 2, self.num_heads, self.head_dim)
+        q = self.q(q_x).reshape(bsz, (q_seqlen + 1) // 2 if self.q_ds else q_seqlen,
+                                self.num_heads, self.head_dim)
         k = self.k(kv_x).reshape(bsz, kv_seqlen, self.num_heads, self.head_dim)
         v = self.v(kv_x).reshape(bsz, kv_seqlen, self.num_heads, self.head_dim)
         q, k = self.q_norm(q), self.k_norm(k)
