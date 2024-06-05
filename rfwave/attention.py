@@ -355,7 +355,8 @@ class CrossAttentionWithPrior(nn.Module):
     ) -> None:
         assert type in ['gaussian', 'dot_product']
         super().__init__()
-        print(f"{num_heads} heads for alignment")
+        print(f"{num_heads} heads for alignment, query downsample: {query_downsample}, "
+              f"query projection layers: {num_proj_layers}")
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
