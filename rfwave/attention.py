@@ -318,7 +318,7 @@ class QueryProj(nn.Module):
             xs.append(x)
 
         out = xs[0]
-        for i in range(1, self.num_layers):
+        for i in range(1, len(xs)):
             xi = F.interpolate(xs[i], scale_factor=2 ** i, mode='nearest')
             out = out + xi[..., :out.size(-1)]
         return out.transpose(1, 2)
