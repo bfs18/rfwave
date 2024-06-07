@@ -10,7 +10,8 @@ from numba import jit
 from rfwave.models import ConvNeXtV2Block
 from rfwave.dataset import get_exp_length
 from rfwave.attention import (
-precompute_freqs_cis, get_pos_embed_indices, _get_start, _get_len, apply_rotary_emb, cdist, RMSNorm)
+    precompute_freqs_cis, get_pos_embed_indices, _get_start, _get_len,
+    apply_rotary_emb, cdist, RMSNorm, QueryProj)
 
 
 def save_plot(fname, attn_map):
@@ -128,11 +129,13 @@ class StandaloneAlignment(torch.nn.Module):
         self.prior_strength = 0.1
 
         self.key_in = nn.Sequential(nn.Linear(n_text_channels, n_channels), nn.LayerNorm(n_channels))
-        self.key_proj = nn.Sequential(*[ConvNeXtV2Block(n_channels, n_channels * 3) for _ in range(num_layers)])
+        # self.key_proj = nn.Sequential(*[ConvNeXtV2Block(n_channels, n_channels * 3) for _ in range(num_layers)])
+        self.key_proj = nn.Identity()
         self.key_out = nn.Sequential(nn.Linear(n_channels, n_channels), RMSNorm(n_channels))
 
         self.query_in = nn.Sequential(nn.Linear(n_mel_channels, n_channels), nn.LayerNorm(n_channels))
-        self.query_proj = nn.Sequential(*[ConvNeXtV2Block(n_channels, n_channels * 3) for _ in range(num_layers)])
+        # self.query_proj = nn.Sequential(*[ConvNeXtV2Block(n_channels, n_channels * 3) for _ in range(num_layers)])
+        self.query_proj = QueryProj(n_channels, 3)
         self.query_out = nn.Sequential(nn.Linear(n_channels, n_channels), RMSNorm(n_channels))
 
         self.register_buffer("freqs_cis", precompute_freqs_cis(n_channels, 8192), persistent=False)
@@ -173,9 +176,9 @@ class StandaloneAlignment(torch.nn.Module):
 
         keys = self.key_in(keys.transpose(-2, -1))
         queries = self.query_in(queries.transpose(-2, -1))
-        keys_enc = self.key_proj(keys.transpose(-2, -1)).transpose(-2, -1)  # B x T2 x n_attn_dims
+        keys_enc = self.key_proj(keys)  # B x T2 x n_attn_dims
         # Beware can only do this since query_dim = attn_dim = n_mel_channels
-        queries_enc = self.query_proj(queries.transpose(-2, -1)).transpose(-2, -1)
+        queries_enc = self.query_proj(queries)
         keys_enc = self.key_out(keys_enc)
         queries_enc = self.query_out(queries_enc)
 
