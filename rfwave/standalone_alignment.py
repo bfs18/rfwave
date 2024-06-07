@@ -66,6 +66,8 @@ def binarize_attention(attn, in_lens, out_lens):
                 hard_attn, device=attn.get_device())
             if in_lens[ind] < attn.shape[-1]:
                 attn_out[ind, 0, out_lens[ind]:, in_lens[ind]] = 1
+            elif in_lens[ind] == attn.shape[-1]:
+                attn_out[ind, 0, out_lens[ind]:, -1] = 1
     return attn_out
 
 
