@@ -7,7 +7,7 @@ from torch.nn import functional as F
 from rfwave.models import Backbone, Base2FourierFeatures
 from rfwave.input import ModelArgs, ContextBlock, AlignmentBlock
 from rfwave.attention import (Attention, FeedForward, ConvFeedForward, MLP, precompute_freqs_cis,  RMSNorm,
-                              get_pos_embed_indices, modulate, score_mask, _get_len, _get_start)
+                              get_pos_embed_indices, modulate, score_mask, _get_len, _get_start, sequence_mask)
 from rfwave.dataset import get_exp_length
 from rfwave.standalone_alignment import EmptyAlignmentBlock, gaussian_prior, binarize_attention
 
@@ -274,6 +274,22 @@ class DiTRFTTSMultiTaskBackbone(Backbone):
         return self.module(z_t, t, x, bandwidth_id, start=start, length=length)
 
 
+class RefEmbedding(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.Linear(dim, dim), nn.SiLU(), nn.LayerNorm(dim),
+            nn.Linear(dim, dim), nn.SiLU(), nn.LayerNorm(dim),
+            nn.Linear(dim, dim))
+
+    def forward(self, ref, ref_length):
+        ref_mask = sequence_mask(ref_length)
+        ref_out = ref * ref_mask.unsqueeze(1).float()
+        avg_out = ref_out.sum(-1) / ref_length.unsqueeze(-1).float()
+        out = self.proj(avg_out)
+        return out.unsqueeze(-1)
+
+
 class DiTRFE2ETTSMultiTaskBackbone(Backbone):
     def __init__(
         self,
@@ -324,6 +340,8 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             self.sa_align_block = EmptyAlignmentBlock(dim, input_channels)
         else:
             self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
+        self.ref_embed = RefEmbedding(input_channels)
+        print(f"input channels {input_channels} dim {dim}")
 
         self.module = DiTRFBackbone(
             input_channels=dim,
@@ -384,6 +402,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
 
         x_token, x_ref = torch.split(x, [num_tokens.max(), ctx_length.max()], dim=-1)
 
+        ref_emb = self.ref_embed(x_ref, ctx_length)
         te = self.time_embed(t)
         z_t1 = z_t1.transpose(1, 2)
         if self.rad_align or (self.standalone_align and self.standalone_distill):
@@ -392,7 +411,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             ctx, attn = self.align_block(ctx, x_token, z_freq_cis, token_freq_cis, token_mask,
                                          mod_c=te, attn_prior=attn_prior)
             rand_attn = attn[torch.arange(attn.size(0)), torch.randint(0, attn.size(1), size=(attn.size(0),))]
-            align_ctx = (rand_attn  @ x_token.detach().transpose(1, 2)).transpose(-1, -2)
+            align_ctx = (rand_attn  @ (x_token.detach() + ref_emb).transpose(1, 2)).transpose(-1, -2)
             attn = rand_attn.unsqueeze(1)
         elif self.standalone_align and not self.standalone_distill:
             assert not (standalone_attn is None and duration is None)
@@ -400,13 +419,13 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
             if attn is not None:
                 bin_attn = binarize_attention(attn, num_tokens, length)
-                align_ctx = (attn.squeeze(1)  @ x_token.detach().transpose(1, 2)).transpose(-1, -2)
+                align_ctx = (attn.squeeze(1)  @ (x_token.detach() + ref_emb).transpose(1, 2)).transpose(-1, -2)
             else:
                 bin_attn = align_ctx = None
             ctx = self.sa_align_block(ctx, x_token, bin_attn, duration, mod_c=te)
         else:
             ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
-            align_ctx = ctx.transpose(-1, -2)  # not really
+            align_ctx = ctx.transpose(-1, -2) + ref_emb  # not really
             attn = None
         ctx = ctx.transpose(1, 2)
 
