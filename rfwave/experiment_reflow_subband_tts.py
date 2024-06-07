@@ -645,7 +645,7 @@ class RectifiedFlow(nn.Module):
             assert 'global_step' in kwargs
             attn_loss = compute_alignment_loss(
                 opt_attn, kwargs['num_tokens'], kwargs['token_exp_scale'],
-                ref_length=100 if kwargs['global_step'] < 50000 else None)
+                ref_length=60 if kwargs['global_step'] < 50000 else None)
         elif self.backbone.standalone_align and self.backbone.standalone_distill:
             assert 'standalone_attn' in kwargs and kwargs['standalone_attn'] is not None
             attn_loss = compute_attention_distill_loss(opt_attn, kwargs['standalone_attn'])
