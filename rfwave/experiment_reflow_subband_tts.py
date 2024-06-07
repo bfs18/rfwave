@@ -642,8 +642,10 @@ class RectifiedFlow(nn.Module):
     def compute_alignment_loss(self, opt_attn, **kwargs):
         if self.backbone.rad_align:
             assert 'num_tokens' in kwargs and 'token_exp_scale' in kwargs and opt_attn is not None
+            assert 'global_step' in kwargs
             attn_loss = compute_alignment_loss(
-                opt_attn, kwargs['num_tokens'], kwargs['token_exp_scale'], ref_length=None)
+                opt_attn, kwargs['num_tokens'], kwargs['token_exp_scale'],
+                ref_length=100 if kwargs['global_step'] < 50000 else None)
         elif self.backbone.standalone_align and self.backbone.standalone_distill:
             assert 'standalone_attn' in kwargs and kwargs['standalone_attn'] is not None
             attn_loss = compute_attention_distill_loss(opt_attn, kwargs['standalone_attn'])
@@ -928,6 +930,7 @@ class VocosExp(pl.LightningModule):
         dur_loss = self.compute_dur_loss(text, standalone_attn=sa_attn, **pi_kwargs) if self.train_dur else 0.
         text_ext, bandwidth_id, (z_t, t, target) = self.reflow.get_train_tuple(text, tandem_feat, audio_input)
         kwargs.update(**pi_kwargs)
+        kwargs['global_step'] = self.global_step
         ctx_mask = sequence_mask_with_ctx(**ctx_kwargs)
         ctx_mask = ctx_mask.repeat_interleave(z_t.size(0) // ctx_mask.size(0), 0)
         loss, loss_dict = self.reflow.compute_loss(
