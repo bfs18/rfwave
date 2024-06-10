@@ -325,17 +325,23 @@ class QueryProj(nn.Module):
 
 
 class QueryDownsample(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, dim, num_layers):
         super().__init__()
-        self.conv = nn.Conv1d(dim, dim, kernel_size=3, padding=1)
-        self.norm = nn.LayerNorm(dim)
-        self.pool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
+        self.convs = nn.ModuleList()
+        self.norms = nn.ModuleList()
+        self.pools = nn.ModuleList()
+        for _ in range(num_layers):
+            self.convs.append(nn.Conv1d(dim, dim, kernel_size=3, padding=1))
+            self.norms.append(nn.LayerNorm(dim))
+            self.pools.append(nn.MaxPool1d(kernel_size=3, stride=2, padding=1))
+        self.num_layers = num_layers
 
     def forward(self, x):
         x = x.transpose(1, 2)
-        x = F.silu(self.conv(x))
-        x = self.norm(x.transpose(1, 2)).transpose(1, 2)
-        x = self.pool(x)
+        for i in range(self.num_layers):
+            x = F.silu(self.convs[i](x))
+            x = self.norms[i](x.transpose(1, 2)).transpose(1, 2)
+            x = self.pools[i](x)
         return x.transpose(1, 2)
 
 
@@ -349,13 +355,13 @@ class CrossAttentionWithPrior(nn.Module):
         attn_drop: float = 0.,
         proj_drop: float = 0.,
         norm_layer: nn.Module = nn.LayerNorm,
-        query_downsample: bool = True,
+        num_query_ds_layers: int = 1,
         num_proj_layers: int = 2,
         type: str = 'gaussian'
     ) -> None:
         assert type in ['gaussian', 'dot_product']
         super().__init__()
-        print(f"{num_heads} heads for alignment, query downsample: {query_downsample}, "
+        print(f"{num_heads} heads for alignment, query downsample layers: {num_query_ds_layers}, "
               f"query projection layers: {num_proj_layers}")
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
         self.num_heads = num_heads
@@ -368,9 +374,10 @@ class CrossAttentionWithPrior(nn.Module):
         self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
         self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
         # add conv layers as standalone attention.
-        self.q_ds = query_downsample
-        if self.q_ds:
-            self.q_ds_layer = QueryDownsample(dim)
+        self.q_ds = (2 ** num_query_ds_layers
+                     if num_query_ds_layers is not None and num_query_ds_layers else 1)
+        if num_query_ds_layers is not None and num_query_ds_layers > 0:
+            self.q_ds_layer = QueryDownsample(dim, num_query_ds_layers)
         if num_proj_layers is not None and num_proj_layers > 0:
             self.q_proj = QueryProj(dim, num_proj_layers)
         else:
@@ -395,12 +402,12 @@ class CrossAttentionWithPrior(nn.Module):
         bsz, q_seqlen, ch = q_x.shape
         _, kv_seqlen, _ = kv_x.shape
 
-        if self.q_ds:
+        if self.q_ds > 1:
             q_x = self.q_ds_layer(q_x)
         if self.q_proj is not None:
             q_x = self.q_proj(q_x)
 
-        q = self.q(q_x).reshape(bsz, (q_seqlen + 1) // 2 if self.q_ds else q_seqlen,
+        q = self.q(q_x).reshape(bsz, (q_seqlen + self.q_ds - 1) // self.q_ds if self.q_ds else q_seqlen,
                                 self.num_heads, self.head_dim)
         k = self.k(kv_x).reshape(bsz, kv_seqlen, self.num_heads, self.head_dim)
         v = self.v(kv_x).reshape(bsz, kv_seqlen, self.num_heads, self.head_dim)
@@ -408,8 +415,9 @@ class CrossAttentionWithPrior(nn.Module):
 
         # use as absolute positional embedding.
         ps = np.sqrt(self.prior_strength)
-        if self.q_ds:
-            q_freqs_cis = F.pad(q_freqs_cis, (0, 0, 0, 1), mode='replicate')[:, 1::2]
+        if self.q_ds > 1:
+            q_freqs_cis = F.pad(q_freqs_cis, (0, 0, 0, self.q_ds - 1),
+                                mode='replicate')[:, self.q_ds - 1::self.q_ds]
         q = q + q_freqs_cis.unsqueeze(2) * ps
         k = k + k_freqs_cis.unsqueeze(2) * ps
 
@@ -432,14 +440,16 @@ class CrossAttentionWithPrior(nn.Module):
             attn = attn + mask
         attn = attn.float().softmax(dim=-1).type_as(attn)
         if attn_prior is not None:
-            if self.q_ds:
-                attn_prior = F.pad(attn_prior, (0, 0, 0, 1), mode='replicate')[:, 1::2]
+            if self.q_ds > 1:
+                attn_prior = F.pad(attn_prior, (0, 0, 0, self.q_ds - 1),
+                                   mode='replicate')[:, self.q_ds - 1::self.q_ds]
             attn = torch.exp(torch.log(attn.clamp_min(1e-8)) +
                              torch.log(attn_prior.unsqueeze(1).clamp_min(1e-8)))
             # attn = attn + attn_prior.unsqueeze(1) * self.prior_strength
             attn = attn / (attn.sum(dim=-1, keepdim=True) + 1e-8)
-        if self.q_ds:
-            attn = F.interpolate(attn, size=(attn.size(2) * 2, kv_seqlen), mode='nearest')[:, :, :q_seqlen]
+        if self.q_ds > 1:
+            attn = F.interpolate(attn, size=(attn.size(2) * self.q_ds, kv_seqlen),
+                                 mode='nearest')[:, :, :q_seqlen]
         attn_before_drop = attn
         attn = self.attn_drop(attn)
         x = (attn @ v).type_as(v)

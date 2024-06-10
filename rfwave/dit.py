@@ -310,6 +310,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         standalone_align: bool = False,
         standalone_distill: Optional[bool] = None,
         align_attention_type: Optional[str] = None,
+        num_align_ds_layers: Optional[int] = None,
         num_align_proj_layers: Optional[int] = None,
     ):
         super().__init__()
@@ -333,8 +334,8 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             assert num_ctx_layers % 2 == 0 and num_ctx_layers // 2 >= 1
             self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
             self.align_block = AlignmentBlock(  # only 1 head for alignment.
-                dim, input_channels, 1, num_proj_layers=num_align_proj_layers,
-                attention_type=align_attention_type)
+                dim, input_channels, 1, num_query_ds_layers=num_align_ds_layers,
+                num_proj_layers=num_align_proj_layers, attention_type=align_attention_type)
         elif self.standalone_align and not self.standalone_distill:
             self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
             self.sa_align_block = EmptyAlignmentBlock(dim, input_channels)
