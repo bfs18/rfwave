@@ -10,6 +10,7 @@ from rfwave.attention import (Attention, FeedForward, ConvFeedForward, MLP, prec
                               get_pos_embed_indices, modulate, score_mask, _get_len, _get_start, sequence_mask)
 from rfwave.dataset import get_exp_length
 from rfwave.standalone_alignment import EmptyAlignmentBlock, gaussian_prior, binarize_attention
+from rfwave.stylegan import StyleGANNoise
 
 
 class DiTBlock(nn.Module):
@@ -356,6 +357,8 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             pe_scale=pe_scale,
             with_fourier_features=with_fourier_features)
 
+        self.stylegan_noise = StyleGANNoise(dim, use_noise=True)
+
     def get_pos_embed(self, start, length, scale=1.):
         # always use the same positional embedding, since the input tokens and reference are not segment
         attn_freqs_cis = self.module.attn_freqs_cis
@@ -428,5 +431,6 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             align_ctx = ctx.transpose(-1, -2) + ref_emb  # not really
             attn = None
         ctx = ctx.transpose(1, 2)
+        ctx = self.stylegan_noise(ctx, noise_mode='random')
 
         return self.module(z_t, t, ctx, bandwidth_id, start=start), attn, align_ctx
