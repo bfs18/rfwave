@@ -729,8 +729,7 @@ class VocosExp(pl.LightningModule):
         super().__init__()
         assert intt == 0. or (0. < intt < 1. and intt_mode == 'cascade' or
                               0. < intt < 0.5 and intt_mode == 'pipeline')
-        if intt > 0.:
-            print(f"using intt {intt:.2f}, intt_mode {intt_mode}")
+        print(f"using intt {intt:.2f}, intt_mode {intt_mode}")
         self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head", "input_adaptor",
                                           "input_adaptor_proj", "standalone_align"])
         self.feature_extractor = feature_extractor
@@ -992,7 +991,8 @@ class VocosExp(pl.LightningModule):
         else:
             mask = sequence_mask(num_tokens)
             dur_out = dur_out * mask
-            dur_out = torch.ceil(dur_out).long() if self.global_step < 100 else torch.round(dur_out).long()
+            dur_out = (torch.ceil(dur_out.clamp_min(0.)).long() if self.global_step < 100
+                       else torch.round(dur_out.clamp_min(0.)).long())
             length = dur_out.sum(-1)
             return {'out_length': length.clamp(0).max(), 'duration': dur_out.clamp(0),
                     'token_exp_scale': get_exp_scale(num_tokens, length)}
