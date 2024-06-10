@@ -382,7 +382,7 @@ class CrossAttentionWithPrior(nn.Module):
             self.q_proj = QueryProj(dim, num_proj_layers)
         else:
             self.q_proj = None
-        self.score_conv = nn.Conv2d(num_heads, num_heads, kernel_size=(45, 5), padding=(22, 2))
+        self.score_conv = nn.Conv2d(num_heads, num_heads, kernel_size=(45, 7), padding=(22, 3))
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
