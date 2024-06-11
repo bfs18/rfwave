@@ -74,7 +74,7 @@ model:
         standalone_distill: False
         align_attention_type: dot_product
         num_align_proj_layers: 2
-        num_align_ds_layers: 2
+        num_align_ds_layers: 1
 
     head:
       class_path: rfwave.heads.RFSTFTHead

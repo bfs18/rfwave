@@ -330,6 +330,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         self.z_t1_proj = nn.Conv1d(output_channels1, dim, 1)
         if self.rad_align or (self.standalone_align and self.standalone_distill):
             assert align_attention_type is not None
+            assert num_align_ds_layers is not None and num_align_ds_layers >= 0
             assert num_align_proj_layers is not None and num_align_proj_layers >= 0
             assert num_ctx_layers % 2 == 0 and num_ctx_layers // 2 >= 1
             self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
