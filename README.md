@@ -19,6 +19,13 @@ Recent advancements in generative modeling have significantly enhanced the recon
 
 ### Setup
 1. Install the requirements.
+```
+sudo apt-get update
+sudo apt-get install sox libsox-fmt-all libsox-dev
+conda create -n rfwave python=3.10
+conda activate rfwave
+pip install -r requirements.txt
+```
 2. Download and extract the [LJ Speech dataset](https://keithito.com/LJ-Speech-Dataset/)
 3. Update the wav paths in filelists `sed -i -- 's,LJSPEECH_PATH,ljs_dataset_folder,g' LJSpeech/*.filelist`
 4. Update the `filelist_path` in configs/*.yaml.

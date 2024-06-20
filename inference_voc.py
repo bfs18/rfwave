@@ -120,7 +120,7 @@ def voc(model_dir, wav_dir, save_dir, guidance_scale):
 
     for wav_fp in tqdm(list(wav_fps)):
         if isinstance(wav_fp, Path):
-            y, fs = torchaudio.load(wav_fp)
+            y, fs = torchaudio.load(str(wav_fp))
             fn = wav_fp.name
         elif isinstance(wav_fp, tuple):
             fn = wav_fp[0].replace('/', '_') + '.wav'
