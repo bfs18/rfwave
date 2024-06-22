@@ -983,7 +983,8 @@ class VocosExp(pl.LightningModule):
             mel_loss = masked_mse_loss(self.feature_extractor(audio_hat), mel, mask)
             self.logger.log_metrics(
                 {"train/mel_loss": mel_loss, "train/tandem_mel_loss": tandem_mel_loss,
-                 "train/total_loss": loss, "train/cond_mel_loss": cond_mel_loss}, step=self.global_step)
+                 "train/total_loss": loss, "train/cond_mel_loss": cond_mel_loss,
+                 "train/mi_loss": mi_loss}, step=self.global_step)
             attn = loss_dict.pop('attn', None)
             loss_dict['sa_attn_loss'] = sa_loss
             loss_dict['dur_loss'] = dur_loss
