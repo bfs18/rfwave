@@ -540,6 +540,7 @@ class RectifiedFlow(nn.Module):
     def compute_mi_feature(self, z_t, t, target, pred, attn):
         z0 = z_t - t.view(-1, 1, 1) * target
         pred_z1 = z0 + pred
+        attn = attn.clamp_min(1e-7).softmax(dim=2)
         out = torch.einsum('b h t n, b c t -> b h c n', attn, pred_z1)
         return out
 
