@@ -25,6 +25,7 @@ from rfwave.feature_weight import get_feature_weight, get_feature_weight2
 from rfwave.logit_normal import LogitNormal
 from rfwave.attention import sequence_mask
 from rfwave.dit import DiTRFBackbone
+from rfwave.ot_coupling import get_ot_segment_coupling, OTPlanSampler
 
 
 def masked_mse_loss(pred, target, mask=None):
@@ -81,6 +82,10 @@ class RectifiedFlow(nn.Module):
             self.register_buffer(
                 "feature_weight", get_feature_weight2(self.head.n_fft, self.head.hop_length))
 
+        self.ot = True
+        self.ot_sampler = OTPlanSampler(method='exact')
+        self.ot_segment_frames = 8
+
     def get_subband(self, S, i):
         # if i.numel() > 1:
         #     i = i[0]
@@ -132,26 +137,26 @@ class RectifiedFlow(nn.Module):
         cond[:, cond.size(1) - self.right_overlap:] = 0.
         return torch.cat([cond[..., 0], cond[..., 1]], dim=1)
 
-    def get_z0(self, mel, bandwidth_id):
+    def get_z0(self, mel, bandwidth_id, r=None):
         bandwidth_id = bandwidth_id[0]
         if self.wave:
             nf = mel.shape[2] if self.head.padding == "same" else (mel.shape[2] - 1)
-            r = torch.randn([mel.shape[0], self.head.hop_length * nf], device=mel.device)
+            r = torch.randn([mel.shape[0], self.head.hop_length * nf], device=mel.device) if r is None else r
             rf = self.stft(r)
             z0 = self.get_subband(rf, bandwidth_id)
         else:
-            r = torch.randn([mel.shape[0], self.head.n_fft + 2, mel.shape[2]], device=mel.device)
+            r = torch.randn([mel.shape[0], self.head.n_fft + 2, mel.shape[2]], device=mel.device) if r is None else r
             z0 = self.get_subband(r, bandwidth_id)
         return z0
 
-    def get_joint_z0(self, mel):
+    def get_joint_z0(self, mel, r=None):
         if self.wave:
             nf = mel.shape[2] if self.head.padding == "same" else (mel.shape[2] - 1)
-            r = torch.randn([mel.shape[0], self.head.hop_length * nf], device=mel.device)
+            r = torch.randn([mel.shape[0], self.head.hop_length * nf], device=mel.device) if r is None else r
             rf = self.stft(r)
             z0 = self.get_joint_subband(rf)
         else:
-            r = torch.randn([mel.shape[0], self.head.n_fft + 2, mel.shape[2]], device=mel.device)
+            r = torch.randn([mel.shape[0], self.head.n_fft + 2, mel.shape[2]], device=mel.device) if r is None else r
             z0 = self.get_joint_subband(r)
         z0 = z0.reshape(z0.size(0) * self.num_bands, z0.size(1) // self.num_bands, z0.size(2))
         return z0
@@ -162,11 +167,10 @@ class RectifiedFlow(nn.Module):
         S = self.stft(audio)
         if self.stft_norm:
             S = self.stft_processor.project_sample(S)
-        return S
+        return audio, S
 
-    def get_z1(self, audio, bandwidth_id):
+    def get_z1(self, S, bandwidth_id):
         bandwidth_id = bandwidth_id[0]
-        S = self.get_eq_norm_stft(audio)
         z1 = self.get_subband(S, bandwidth_id)
         if self.prev_cond:
             cond_band = self.get_subband(S, bandwidth_id - 1)
@@ -176,8 +180,7 @@ class RectifiedFlow(nn.Module):
             cond_band = None
         return z1, cond_band
 
-    def get_joint_z1(self, audio):
-        S = self.get_eq_norm_stft(audio)
+    def get_joint_z1(self, S):
         z1 = self.get_joint_subband(S)
         z1 = z1.reshape(z1.size(0) * self.num_bands, z1.size(1) // self.num_bands, z1.size(2))
         return z1
@@ -197,17 +200,27 @@ class RectifiedFlow(nn.Module):
             return torch.rand(shape, device=device)
 
     def get_train_tuple(self, mel, audio_input):
+        audio_input, S = self.get_eq_norm_stft(audio_input)
+        if self.ot:
+            if self.wave:
+                segment_size = self.ot_segment_frames * self.head.hop_length
+                r, _ = get_ot_segment_coupling(audio_input, segment_size=segment_size, ot_sampler=self.ot_sampler)
+            else:
+                r, _ = get_ot_segment_coupling(S, segment_size=self.ot_segment_frames, ot_sampler=self.ot_sampler)
+        else:
+            r = None
+
         if self.prev_cond or not self.parallel_uncond:
             t = self.sample_t((mel.size(0),), device=mel.device)
             bandwidth_id = torch.tile(torch.randint(0, self.num_bands, (), device=mel.device), (mel.size(0),))
             bandwidth_id = torch.ones([mel.shape[0]], dtype=torch.long, device=mel.device) * bandwidth_id
-            z0 = self.get_z0(mel, bandwidth_id)
-            z1, cond_band = self.get_z1(audio_input, bandwidth_id)
+            z0 = self.get_z0(mel, bandwidth_id, r=r)
+            z1, cond_band = self.get_z1(S, bandwidth_id)
             mel = torch.cat([mel, cond_band], 1) if self.prev_cond else mel
         else:
             t = self.sample_t((mel.size(0),), device=mel.device).repeat_interleave(self.num_bands, 0)
-            z0 = self.get_joint_z0(mel)
-            z1 = self.get_joint_z1(audio_input)
+            z0 = self.get_joint_z0(mel, r=r)
+            z1 = self.get_joint_z1(S)
             bandwidth_id = torch.tile(torch.arange(self.num_bands, device=mel.device), (mel.size(0),))
             mel = torch.repeat_interleave(mel, self.num_bands, 0)
         t_ = t.view(-1, 1, 1)
