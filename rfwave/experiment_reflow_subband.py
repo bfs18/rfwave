@@ -83,8 +83,9 @@ class RectifiedFlow(nn.Module):
                 "feature_weight", get_feature_weight2(self.head.n_fft, self.head.hop_length))
 
         self.ot = True
+        # self.ot_sampler = OTPlanSampler(method='sinkhorn', reg=2.)
         self.ot_sampler = OTPlanSampler(method='exact')
-        self.ot_segment_frames = 8
+        self.ot_segment_frames = 1
 
     def get_subband(self, S, i):
         # if i.numel() > 1:

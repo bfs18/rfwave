@@ -217,6 +217,7 @@ def get_ot_segment_coupling(x1, segment_size, ot_sampler):
     ndim = x1.ndim
     if ndim == 2:
         x1 = x1.unsqueeze(1)
+    assert x1.size(-1) % segment_size == 0
     sh = x1.shape
     x1 = x1.transpose(1, 2)
     x1 = x1.reshape(-1, segment_size * x1.shape[-1])
