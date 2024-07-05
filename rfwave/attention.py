@@ -366,13 +366,15 @@ class CrossAttentionWithPrior(nn.Module):
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
+        match_head_dim = 8
+        match_dim = match_head_dim * num_heads
+        self.scale = match_head_dim ** -0.5
 
-        self.q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.k = nn.Linear(dim, dim, bias=qkv_bias)
+        self.q = nn.Linear(dim, match_dim, bias=qkv_bias)
+        self.k = nn.Linear(dim, match_dim, bias=qkv_bias)
         self.v = nn.Linear(dim, dim, bias=qkv_bias)
-        self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        self.q_norm = norm_layer(match_head_dim) if qk_norm else nn.Identity()
+        self.k_norm = norm_layer(match_head_dim) if qk_norm else nn.Identity()
         # add conv layers as standalone attention.
         self.q_ds = (2 ** num_query_ds_layers
                      if num_query_ds_layers is not None and num_query_ds_layers else 1)
@@ -408,8 +410,8 @@ class CrossAttentionWithPrior(nn.Module):
             q_x = self.q_proj(q_x)
 
         q = self.q(q_x).reshape(bsz, (q_seqlen + self.q_ds - 1) // self.q_ds if self.q_ds else q_seqlen,
-                                self.num_heads, self.head_dim)
-        k = self.k(kv_x).reshape(bsz, kv_seqlen, self.num_heads, self.head_dim)
+                                self.num_heads, -1)
+        k = self.k(kv_x).reshape(bsz, kv_seqlen, self.num_heads, -1)
         v = self.v(kv_x).reshape(bsz, kv_seqlen, self.num_heads, self.head_dim)
         q, k = self.q_norm(q), self.k_norm(k)
 
@@ -418,8 +420,8 @@ class CrossAttentionWithPrior(nn.Module):
         if self.q_ds > 1:
             q_freqs_cis = F.pad(q_freqs_cis, (0, 0, 0, self.q_ds - 1),
                                 mode='replicate')[:, self.q_ds - 1::self.q_ds]
-        q = q + q_freqs_cis.unsqueeze(2) * ps
-        k = k + k_freqs_cis.unsqueeze(2) * ps
+        q = q + q_freqs_cis.unsqueeze(2)[..., :q.size(-1)] * ps
+        k = k + k_freqs_cis.unsqueeze(2)[..., :k.size(-1)] * ps
 
         # (bs, n_local_heads, q_seqlen, head_dim)
         q = q.transpose(1, 2).float()

@@ -233,9 +233,9 @@ class AlignmentBlock(nn.Module):
         context = self.ctx_proj(context).transpose(1, 2)
         assert self.head_dim >= c_freqs_cis.size(2) and self.head_dim % c_freqs_cis.size(2) == 0, \
             f"head_dim {self.head_dim}, pos dim {c_freqs_cis.size(2)}"
-        rpt = self.head_dim // c_freqs_cis.size(2)
-        x_freqs_cis = x_freqs_cis.repeat_interleave(rpt, dim=-1) if x_freqs_cis is not None else None
-        c_freqs_cis = c_freqs_cis.repeat_interleave(rpt, dim=-1) if c_freqs_cis is not None else None
+        rpt = self.head_dim // c_freqs_cis.size(2)  # head dim may be different from match head dim.
+        x_freqs_cis = x_freqs_cis.repeat((1, 1, rpt)) if x_freqs_cis is not None else None
+        c_freqs_cis = c_freqs_cis.repeat((1, 1, rpt)) if c_freqs_cis is not None else None
         shift_crs, scale_crs, gate_crs = self.adaLN_modulation(mod_c).chunk(3, dim=1)
         h, attn = self.align_attn(
             modulate(self.cross_attention_norm(x), shift_crs, scale_crs),

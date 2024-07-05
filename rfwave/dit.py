@@ -10,6 +10,8 @@ from rfwave.attention import (Attention, FeedForward, ConvFeedForward, MLP, prec
                               get_pos_embed_indices, modulate, score_mask, _get_len, _get_start, sequence_mask)
 from rfwave.dataset import get_exp_length
 from rfwave.standalone_alignment import EmptyAlignmentBlock, gaussian_prior, binarize_attention
+from vector_quantize_pytorch import FSQ
+
 
 
 class DiTBlock(nn.Module):
@@ -344,6 +346,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
         self.ref_embed = RefEmbedding(input_channels)
         print(f"input channels {input_channels} dim {dim}")
+        self.fsq = FSQ(levels=[4, 4, 4, 4, 4], dim=dim, channel_first=True)
 
         self.module = DiTRFBackbone(
             input_channels=dim,
@@ -430,5 +433,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             align_ctx = ctx.transpose(-1, -2) + ref_emb  # not really
             attn = None
         ctx = ctx.transpose(1, 2)
+        dctx, _ = self.fsq(ctx.float())
+        dctx = dctx.type_as(ctx)
 
-        return self.module(z_t, t, ctx, bandwidth_id, start=start), attn, align_ctx
+        return self.module(z_t, t, dctx, bandwidth_id, start=start), attn, align_ctx
