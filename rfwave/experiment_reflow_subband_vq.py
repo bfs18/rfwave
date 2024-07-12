@@ -22,7 +22,7 @@ from rfwave.input import InputAdaptor, InputAdaptorProject
 from rfwave.helpers import save_code
 from rfwave.instantaneous_frequency import compute_phase_loss, compute_phase_error, compute_instantaneous_frequency
 from rfwave.feature_weight import get_feature_weight, get_feature_weight2
-from vector_quantize_pytorch import ResidualFSQ
+from rfwave.quantizer import Quantizer
 
 
 class RectifiedFlow(nn.Module):
@@ -444,6 +444,7 @@ class VocosExp(pl.LightningModule):
         backbone: Backbone,
         head: FourierHead,
         input_adaptor: InputAdaptor = None,
+        quantizer: Quantizer = None,
         task: str = "voc",
         sample_rate: int = 24000,
         initial_learning_rate: float = 2e-4,
@@ -455,7 +456,7 @@ class VocosExp(pl.LightningModule):
         num_warmup_steps: int = 0,
     ):
         super().__init__()
-        self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head", "input_adaptor"])
+        self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head", "input_adaptor", "quantizer"])
 
         self.task = task
         self.feature_extractor = feature_extractor
@@ -478,15 +479,14 @@ class VocosExp(pl.LightningModule):
         self.automatic_optimization = False
         assert num_bands == backbone.num_bands
 
-        self.rvq = ResidualFSQ(levels=[5, 5, 5, 5], num_quantizers=2, dim=feature_extractor.dim)
-        self.reduce = 2
+        self.quantizer = quantizer
 
     def configure_optimizers(self):
         gen_params = [
             {"params": self.feature_extractor.parameters()},
             {"params": self.reflow.backbone.parameters()},
             {"params": self.reflow.head.parameters()},
-            {"params": self.rvq.parameters()},
+            {"params": self.quantizer.parameters()},
         ]
         if self.input_adaptor is not None:
             gen_params.append({"params": self.input_adaptor.parameters()})
@@ -538,20 +538,6 @@ class VocosExp(pl.LightningModule):
             raise ValueError(f"Invalid phone_info, #fields {len(phone_info)}")
         return phone_info
 
-    def quantize(self, mel):
-        padding = 0
-        if self.reduce > 1:
-            padding = self.reduce - (mel.size(-1) % self.reduce)
-            mel = F.pad(mel, (0, padding))
-            mel = F.avg_pool1d(mel, kernel_size=self.reduce, stride=self.reduce)
-        z, *_ = self.rvq(mel.transpose(1, 2))
-        z = z.transpose(1, 2)
-        if self.reduce > 1:
-            z = F.interpolate(z, scale_factor=self.reduce)
-            if padding > 0:
-                z = z[:, :, :-padding]
-        return z
-
     def training_step(self, batch, batch_idx, **kwargs):
         if self.task == 'tts':
             audio_input, phone_info = batch
@@ -568,7 +554,7 @@ class VocosExp(pl.LightningModule):
             features = self.input_adaptor(*phone_info)
             cond_mel_loss = self.compute_aux_loss(features, audio_input, self.aux_type) if self.aux_loss else 0.
         else:
-            features = self.quantize(mel)
+            features = self.quantizer(mel)
             cond_mel_loss = 0.
         features_ext, bandwidth_id, (z_t, t, target) = self.reflow.get_train_tuple(features, audio_input)
         bi = kwargs.get("encodec_bandwidth_id", None)
@@ -604,7 +590,7 @@ class VocosExp(pl.LightningModule):
             audio_input = batch
         with torch.no_grad():
             features = self.feature_extractor(audio_input, **kwargs)
-            cond = self.input_adaptor(*phone_info) if self.task == 'tts' else self.quantize(features)
+            cond = self.input_adaptor(*phone_info) if self.task == 'tts' else self.quantizer(features)
             audio_hat_traj = self.reflow.sample_ode(cond, N=100, **kwargs)
             cond_mel_hat = self.input_adaptor_proj(cond) if self.aux_loss and self.task == 'tts' else None
         audio_hat = audio_hat_traj[-1]

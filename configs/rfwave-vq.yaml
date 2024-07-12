@@ -61,6 +61,16 @@ model:
         hop_length: 256
         padding: center
 
+    quantizer:
+      class_path: rfwave.quantizer.Quantizer
+      init_args:
+        feat_dim: 100
+        dim: 100
+        reduce: 1
+        num_layers: 4
+        levels: [5, 5, 5, 5]
+        num_quantizers: 2
+
 trainer:
   check_val_every_n_epoch: 10
   logger:
