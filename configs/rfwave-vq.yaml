@@ -65,11 +65,11 @@ model:
       class_path: rfwave.quantizer.Quantizer
       init_args:
         feat_dim: 100
-        dim: 100
-        reduce: 1
-        num_layers: 4
-        levels: [5, 5, 5, 5]
-        num_quantizers: 2
+        dim: 512
+        reduce: 2
+        num_layers: 12
+        levels: [4, 4, 4, 4, 4]
+        num_quantizers: 4
 
 trainer:
   check_val_every_n_epoch: 10

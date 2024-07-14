@@ -1,7 +1,7 @@
 import torch.nn as nn
 import torch.nn.functional as F
 
-from vector_quantize_pytorch import ResidualFSQ
+from vector_quantize_pytorch import ResidualFSQ, GroupedResidualFSQ
 from rfwave.models import ConvNeXtV2Block
 
 
@@ -16,7 +16,8 @@ class Quantizer(nn.Module):
         if num_layers >= 1:
             layers.extend([ConvNeXtV2Block(dim, dim * 4) for _ in range(num_layers)])
         self.enc = nn.Sequential(*layers)
-        self.rvq = ResidualFSQ(dim=dim, levels=levels, num_quantizers=num_quantizers)
+        # self.rvq = ResidualFSQ(dim=dim, levels=levels, num_quantizers=num_quantizers)
+        self.rvq = GroupedResidualFSQ(dim=dim, levels=levels, groups=num_quantizers, num_quantizers=1)
         self.out = nn.ConvTranspose1d(dim, feat_dim, kernel_size=reduce * 2, stride=reduce)
 
     def forward(self, mel):
