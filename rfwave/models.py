@@ -264,6 +264,98 @@ class VocosRFBackbone(Backbone):
         return x
 
 
+class VocosRFResNetBackbone(Backbone):
+    """
+    Vocos backbone module built with ResBlocks.
+
+    Args:
+        input_channels (int): Number of input features channels.
+        dim (int): Hidden dimension of the model.
+        num_blocks (int): Number of ResBlock1 blocks.
+        layer_scale_init_value (float, optional): Initial value for layer scaling. Defaults to None.
+    """
+
+    def __init__(
+        self,
+        input_channels,
+        output_channels,
+        dim,
+        num_layers,
+        num_bands,
+        encodec_num_embeddings=None,
+        prev_cond=False,
+        pe_scale=1000.,
+        with_fourier_features=True,
+        layer_scale_init_value=None,
+    ):
+        super().__init__()
+        self.prev_cond = prev_cond
+        self.output_channels = output_channels
+        self.with_fourier_features = with_fourier_features
+        self.num_bands = num_bands
+        if self.with_fourier_features:
+            self.fourier_module = Base2FourierFeatures(start=6, stop=8, step=1)
+            fourier_dim = output_channels * 2 * (
+                    (self.fourier_module.stop - self.fourier_module.start) // self.fourier_module.step)
+        else:
+            fourier_dim = 0
+        mel_ch = input_channels
+        input_channels = mel_ch + output_channels if prev_cond else mel_ch
+        self.input_channels = mel_ch
+        self.embed = nn.Conv1d(input_channels + output_channels + fourier_dim, dim, kernel_size=7, padding=3)
+        self.adanorm = num_bands is not None and num_bands > 1
+        if self.adanorm:
+            self.norm = AdaLayerNorm(num_bands, dim, eps=1e-6)
+        else:
+            self.norm = nn.LayerNorm(dim, eps=1e-6)
+        layer_scale_init_value = layer_scale_init_value or 1 / num_layers / 3
+        self.resnet = nn.ModuleList(
+            [ResBlock1(dim=dim, layer_scale_init_value=layer_scale_init_value) for _ in range(num_layers)]
+        )
+        self.band_emb = nn.Embedding(num_bands, dim)
+        self.final_layer_norm = nn.LayerNorm(dim, eps=1e-6)
+        self.pe_scale = pe_scale
+        self.time_pos_emb = SinusoidalPosEmb(dim)
+        self.time_mlp = torch.nn.Sequential(
+            torch.nn.Linear(dim, dim * 4), nn.GELU(), torch.nn.Linear(dim * 4, dim))
+        if encodec_num_embeddings is not None:
+            self.encodec_bandwidth_emb = nn.Embedding(encodec_num_embeddings, dim)
+        else:
+            self.encodec_bandwidth_emb = None
+        self.out = nn.Linear(dim, output_channels)
+
+    @staticmethod
+    def get_out(out_layer, x):
+        x = out_layer(x).transpose(1, 2)
+        return x
+
+    def forward(self, z_t: torch.Tensor, t: torch.Tensor, x: torch.Tensor,
+                bandwidth_id=None, encodec_bandwidth_id: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+        if self.with_fourier_features:
+            z_t_f = self.fourier_module(z_t)
+            x = self.embed(torch.cat([z_t, x, z_t_f], dim=1))
+        else:
+            x = self.embed(torch.cat([z_t, x], dim=1))
+        emb_t = self.time_mlp(self.time_pos_emb(t, scale=self.pe_scale)).unsqueeze(2)
+        if self.encodec_bandwidth_emb is not None:
+            assert encodec_bandwidth_id is not None
+            emb_b = self.encodec_bandwidth_emb(encodec_bandwidth_id).unsqueeze(-1)
+        else:
+            emb_b = 0.
+        if self.adanorm:
+            assert bandwidth_id is not None
+            x = self.norm(x.transpose(1, 2), cond_embedding_id=bandwidth_id)
+        else:
+            x = self.norm(x.transpose(1, 2))
+        x = x.transpose(1, 2)
+        emb_bw = self.band_emb(bandwidth_id).unsqueeze(-1)
+        for conv_block in self.resnet:
+            x = conv_block(x + emb_t + emb_b + emb_bw)
+        x = self.final_layer_norm(x.transpose(1, 2))
+        x = self.get_out(self.out, x)
+        return x
+
+
 class VocosRFTTSTandemBackbone(Backbone):
     """
     Tandem TTS
