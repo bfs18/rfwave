@@ -129,6 +129,7 @@ def voc(model_dir, wav_dir, save_dir, guidance_scale):
         else:
             raise ValueError(f"wav_fp should be a Path or a tuple, got {wav_fp}")
         y, _ = torchaudio.sox_effects.apply_effects_tensor(y, fs, [["norm", "-3.0"]])
+        # y, _ = torchaudio.sox_effects.apply_effects_tensor(y, fs, [["norm", "-1.5"]])
 
         if y.size(0) > 1:
             y = y[:1]

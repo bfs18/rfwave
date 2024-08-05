@@ -45,13 +45,16 @@ pip install -r requirements.txt
 
 ## Pre-trained models
 
-`python3 inference_voc.py --model_dir MODEL_DIR --wav_dir WAV_DIR --save_dir SAVE_DIR`
+`python3 inference_voc.py --model_dir MODEL_DIR --wav_dir WAV_DIR --save_dir SAVE_DIR [--guidance_scale GUIDANCE_SCALE]`
 
-[rfwave-libritts-24k](https://drive.google.com/file/d/1IQNXAAVRTtr9P8Gc-CoPeRIJ_l_O4y38/view?usp=sharing)
++ Optional parameter: `--guidance_scale` Adjusts the guidance scale for input types. Recommended to set 1.0 for Mel input and 2.0 for Encodec token input.
 
-[rfwave-jamendo-44.1k](https://drive.google.com/file/d/1yM0BWFrXvuwb2SZvyPOBr6Wgto0sjdqh/view?usp=sharing)
++ Available Models
+    + [rfwave-libritts-24k](https://drive.google.com/file/d/1IQNXAAVRTtr9P8Gc-CoPeRIJ_l_O4y38/view?usp=sharing)
 
-[rfwave-encodec-24k](https://drive.google.com/file/d/1gUpkpJPIs-9wKoLIhX8ZHfl5PhMNJdDb/view?usp=sharing)
+    + [rfwave-jamendo-44.1k](https://drive.google.com/file/d/1yM0BWFrXvuwb2SZvyPOBr6Wgto0sjdqh/view?usp=sharing)
+
+    + [rfwave-encodec-24k](https://drive.google.com/file/d/1gUpkpJPIs-9wKoLIhX8ZHfl5PhMNJdDb/view?usp=sharing)
 
 ## Test set
 The test set for reconstructing waveform form EnCodec tokens.
@@ -61,3 +64,6 @@ The test set for reconstructing waveform form EnCodec tokens.
 ## Thanks
 
 This repository uses code from [Vocos](https://github.com/gemelo-ai/vocos), [audiocraft](https://github.com/facebookresearch/audiocraft) 
+
+## License
+This project is licensed under the MIT License.
