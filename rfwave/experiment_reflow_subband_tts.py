@@ -537,12 +537,6 @@ class RectifiedFlow(nn.Module):
                          (torch.norm(target_mag, p="fro") + 1))
         return mag_loss + converge_loss
 
-    def compute_mi_feature(self, z_t, t, target, pred, attn):
-        z0 = z_t - t.view(-1, 1, 1) * target
-        pred_z1 = z0 + pred
-        out = torch.einsum('b h t n, b c t -> b h c n', attn, pred_z1)
-        return out
-
     def compute_phase_loss(self, z_t, t, target, pred, bandwidth_id):
         def _complex_spec(S):
             r, i = torch.chunk(S, 2, dim=1)
@@ -687,10 +681,9 @@ class RectifiedFlow(nn.Module):
         overlap_loss = self.compute_overlap_loss(pred2) if self.overlap_loss else 0.
         pred1_consistent_loss = self.compute_pred1_consistent_loss(pred1) if self.pred1_consistent_loss else 0.
         attn_loss = self.compute_alignment_loss(opt_attn, **kwargs) * (0. if self.cfg_iter else 1.)
-        mi_feat = self.compute_mi_feature(z_t1, t, target1, pred1, opt_attn) if opt_attn is not None else None
         loss_dict = {"loss1": loss1, "loss2": loss2, "stft_loss": stft_loss, "phase_loss": phase_loss,
                      "overlap_loss": overlap_loss, "pred1_consistent_loss": pred1_consistent_loss,
-                     "attn_loss": attn_loss, "attn": opt_attn, 'ctx': ctx, 'mi_feat': mi_feat}
+                     "attn_loss": attn_loss, "attn": opt_attn, 'ctx': ctx}
         return (loss1 * 5. + loss2 +
                 (stft_loss + phase_loss + overlap_loss + attn_loss + pred1_consistent_loss) * 0.1, loss_dict)
 
@@ -716,7 +709,6 @@ class VocosExp(pl.LightningModule):
         num_warmup_steps: int = 0,
         torch_compile: bool = False,
         aux_loss: bool = False,
-        mi_loss: bool = False,
     ):
         """
         Args:
@@ -771,11 +763,11 @@ class VocosExp(pl.LightningModule):
         assert input_adaptor is not None
         self.tandem_type = 'mel'
         self.aux_loss = aux_loss  # aux_loss improve attention learning for E2E
-        self.mi_loss = mi_loss
-        self.input_adaptor_proj = (InputAdaptorProject(self.input_adaptor.dim, feature_extractor.dim)
+        # aux_input_dim = (backbone.dim if isinstance(backbone, DiTRFE2ETTSMultiTaskBackbone)
+        #                  else self.input_adaptor.dim)
+        aux_input_dim = self.input_adaptor.dim
+        self.input_adaptor_proj = (InputAdaptorProject(aux_input_dim, feature_extractor.dim)
                                    if self.aux_loss else None)
-        self.mi_proj = (InputAdaptorProject(backbone.output_channels1, self.input_adaptor.dim)
-                        if self.mi_loss else None)
 
         self.melspec_loss = MelSpecReconstructionLoss(sample_rate=sample_rate)
         self.rvm = RelativeVolumeMel(sample_rate=sample_rate)
@@ -794,8 +786,6 @@ class VocosExp(pl.LightningModule):
         ]
         if self.input_adaptor_proj is not None:
             gen_params.append({"params": self.input_adaptor_proj.parameters()})
-        if self.mi_proj is not None:
-            gen_params.append({"params": self.mi_proj.parameters()})
         if self.standalone_align is not None:
             gen_params.append({"params": self.standalone_align.parameters()})
         if self.standalone_dur is not None:
@@ -825,26 +815,14 @@ class VocosExp(pl.LightningModule):
         target = torch.log(S.abs().clamp_min_(1e-6))
         return target
 
-    def compute_aux_loss(self, features, audio_input, length):
-        # not mask reference ctx for attn aux loss mask since aux feature is calculated from
-        mask = sequence_mask_with_ctx(length)
+    def compute_aux_loss(self, features, audio_input, mask):
         rpt = features.size(0) // audio_input.size(0)
-        mask = mask.repeat_interleave(rpt, 0)
         target = self.feature_extractor(audio_input)
         target = target.repeat_interleave(rpt, 0)
         pred = self.input_adaptor_proj(features)
+        if pred.ndim == 4:
+            target = target.unsqueeze(1)  # for num heads
         loss = masked_mse_loss(pred, target, mask)
-        return loss
-
-    def compute_mi_loss(self, mi_features, text, length):
-        mi_features = mi_features.squeeze(1)
-        text, _ = torch.split(text, [length.max(), text.size(-1) - length.max()], dim=-1)
-        mask = sequence_mask_with_ctx(length)
-        rpt = mi_features.size(0) // text.size(0)
-        mask = mask.repeat_interleave(rpt, 0)
-        text = text.repeat_interleave(rpt, 0)
-        pred = self.mi_proj(mi_features)
-        loss = masked_mse_loss(pred, text.detach(), mask)
         return loss
 
     def process_context(self, phone_info):
@@ -957,15 +935,15 @@ class VocosExp(pl.LightningModule):
         loss, loss_dict = self.reflow.compute_loss(
             z_t, t, target, text_ext, bandwidth_id=bandwidth_id, mask=ctx_mask,
             standalone_attn=sa_attn, **kwargs)
-        aux = loss_dict['ctx']
-        mi_feat = loss_dict['mi_feat']
+        aux = loss_dict['ctx'] if loss_dict['ctx'] is not None else text
         # TODO: attn_loss = 0. is cfg iter, but this is not correct when gt duration is used.
-        cond_mel_loss = (self.compute_aux_loss(aux, audio_input, ctx_kwargs['length'])
-                         if self.aux_loss and aux is not None else 0.)
-        mi_loss = (self.compute_mi_loss(mi_feat, text, pi_kwargs['num_tokens'])
-                   if self.mi_loss and mi_feat is not None else 0.)
+        # not mask reference ctx for attn aux loss mask since aux feature is calculated from
+        # attention weights @ text embedding
+        mask = sequence_mask_with_ctx(ctx_kwargs['length'])
+        mask = mask.repeat_interleave(z_t.size(0) // mask.size(0), 0)
+        cond_mel_loss = self.compute_aux_loss(aux, audio_input, mask) if self.aux_loss else 0.
         cfg_or_not = 0. if self.cfg_iter else 1.
-        loss = loss + (sa_loss + dur_loss + cond_mel_loss + mi_loss) * 0.1 * cfg_or_not
+        loss = loss + (sa_loss + dur_loss + cond_mel_loss) * 0.1 * cfg_or_not
         self.manual_backward(loss)
         opt_gen.step()
         sch_gen.step()
