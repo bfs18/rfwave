@@ -18,7 +18,7 @@ Recent advancements in generative modeling have significantly enhanced the recon
 
 **BigVGAN(LibriTTS)** | **RFWave(LibriTTS)**
 :--: | :--:
-<audio controls><source src="assets/bigvgan_05.wav" type="audio/wav">Your browser does not support the audio element.</audio> | <audio controls><source src="assets/rfwave_05.wav" type="audio/wav">Your browser does not support the audio element.</audio>
+[Listen to BigVGAN](assets/bigvgan_05.wav) | [Listen to RFWave](assets/rfwave_05.wav)
 ![BigVGan Spectrogram](assets/bigvgan_05.png) | ![RFWave Spectrogram](assets/rfwave_05.png)
 
 
