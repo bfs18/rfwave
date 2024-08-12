@@ -18,7 +18,7 @@ Recent advancements in generative modeling have significantly enhanced the recon
 
 **BigVGAN(LibriTTS)** | **RFWave(LibriTTS)**
 :--: | :--:
-[Listen to BigVGAN](assets/bigvgan_05.wav) | [Listen to RFWave](assets/rfwave_05.wav)
+[Listen to BigVGAN](https://rfwave-demo.github.io/rfwave/opencpop_res/wavs_bigvgan/05.wav) | [Listen to RFWave](https://rfwave-demo.github.io/rfwave/opencpop_res/wavs_rfwave/05.wav)
 ![BigVGan Spectrogram](assets/bigvgan_05.png) | ![RFWave Spectrogram](assets/rfwave_05.png)
 
 
