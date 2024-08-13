@@ -247,7 +247,15 @@ class RectifiedFlow(nn.Module):
 
         z0_1, z0_2 = self.split(z0)
         z1_1, z1_2 = self.split(z1)
-        if self.intt_mode == 'cascade':
+
+        if self.intt_mode == 'async':
+            m = t_ < self.intt
+            intt1 = t_ / self.intt
+            zt_1 = intt1 * z1_1 + (1 - intt1) * z0_1
+            zt_1 = torch.where(m, zt_1, z1_1)
+            zt_2 = t_ * z1_2 + (1. - t_) * z0_2
+            zt = torch.cat([zt_1, zt_2], dim=1)
+        elif self.intt_mode == 'cascade':
             m = t_ < self.intt
             intt1 = t_ / self.intt
             intt2 = (t_ - self.intt) / (1 - self.intt)
@@ -282,7 +290,12 @@ class RectifiedFlow(nn.Module):
         target_2 = z1_2 - z0_2
         zero_1 = torch.zeros_like(target_1)
         zero_2 = torch.zeros_like(target_2)
-        if self.intt_mode == 'cascade':
+
+        if self.intt_mode == 'async':
+            m = t_ < self.intt
+            target_1 = torch.where(m, target_1, zero_1)
+            target = torch.cat([target_1, target_2], dim=1)
+        elif self.intt_mode == 'cascade':
             m = t_ < self.intt
             # target = z1 - z0
             target_1 = torch.where(m, target_1, zero_1)
@@ -301,6 +314,8 @@ class RectifiedFlow(nn.Module):
     def sample_t(self, shape, device):
         if self.t_dist is not None:
             if self.intt == 0:
+                return self.t_dist.sample(shape).to(device)
+            elif self.intt_mode == 'async':
                 return self.t_dist.sample(shape).to(device)
             elif self.intt_mode == 'cascade':
                 return torch.where(
@@ -354,6 +369,9 @@ class RectifiedFlow(nn.Module):
         if self.intt == 0:
             ts = np.linspace(0., 1., N + 1)
             dt = ts[1:] - ts[:-1]
+        elif self.intt_mode == 'async':
+            ts = np.linspace(0., 1., N + 1)
+            dt = ts[1:] - ts[:-1]
         elif self.intt_mode == 'cascade':
             ts1 = np.linspace(0., 1, int(N * self.intt), endpoint=False)
             ts2 = np.linspace(0, 1., int(N * (1 - self.intt)) + 1)
@@ -369,7 +387,12 @@ class RectifiedFlow(nn.Module):
 
     def intt_postprocess(self, pred1, pred2, t):
         if self.intt > 0.:
-            if self.intt_mode == 'cascade':
+            if self.intt_mode == 'async':
+                if t < self.intt:
+                    pred1 = pred1 / self.intt
+                else:
+                    pred1 = torch.zeros_like(pred1)
+            elif self.intt_mode == 'cascade':
                 if t < self.intt:
                     pred2 = torch.zeros_like(pred2)
                 else:
@@ -626,7 +649,10 @@ class RectifiedFlow(nn.Module):
             return pred1, pred2
         zero1 = torch.zeros_like(pred1)
         zero2 = torch.zeros_like(pred2)
-        if self.intt_mode == 'cascade':
+        if self.intt_mode == 'async':
+            m = t_ < self.intt
+            pred1 = torch.where(m, pred1, zero1)
+        elif self.intt_mode == 'cascade':
             m = t_ < self.intt
             pred1 = torch.where(m, pred1, zero1)
             pred2 = torch.where(m, zero2, pred2)
@@ -727,7 +753,7 @@ class VocosExp(pl.LightningModule):
             evaluate_periodicty (bool, optional): If True, periodicity scores are computed for each validation run.
         """
         super().__init__()
-        assert intt == 0. or (0. < intt < 1. and intt_mode == 'cascade' or
+        assert intt == 0. or (0. < intt < 1. and intt_mode in ('cascade', 'async') or
                               0. < intt < 0.5 and intt_mode == 'pipeline')
         print(f"using intt {intt:.2f}, intt_mode {intt_mode}")
         self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head", "input_adaptor",
