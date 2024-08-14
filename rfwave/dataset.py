@@ -775,7 +775,8 @@ class E2ETTSCtxDataset(DynamicBucketingDataset):
         y_ctx = y[:, ctx_start: ctx_end]
         ctx_n_frame = ctx_n_frame + 1 if self.padding == 'center' else ctx_n_frame
 
-        return y[0], (token_ids, len(token_ids), y_ctx[0], ctx_start, ctx_n_frame, exp_scale)
+        assert ctx_start_frame + ctx_n_frame <= num_frames
+        return y[0], (token_ids, len(token_ids), y_ctx[0], ctx_start_frame, ctx_n_frame, exp_scale)
 
 
 class DurDataset(Dataset):
