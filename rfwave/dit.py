@@ -306,6 +306,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         dropout: float = 0.,
         pe_scale: float = 1000.,
         with_fourier_features: bool = True,
+        e2_tts: bool = False,
         rad_align: bool = True,
         standalone_align: bool = False,
         standalone_distill: Optional[bool] = None,
@@ -318,17 +319,20 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         self.output_channels1 = output_channels1
         self.output_channels2 = output_channels2
         self.num_bands = num_bands
+        self.e2_tts = e2_tts
         self.rad_align = rad_align
         self.standalone_align = standalone_align
         self.standalone_distill = standalone_distill
         self.dim = dim
-        assert not (self.rad_align and self.standalone_align)
+        assert self.e2_tts + self.rad_align + self.standalone_align <= 1
         # standalone distill must be assigned when using standalone_align
         assert not standalone_align or (standalone_align and self.standalone_distill is not None)
 
         params = ModelArgs(dim=dim, n_heads=num_heads, dropout=dropout)
         self.z_t1_proj = nn.Conv1d(output_channels1, dim, 1)
-        if self.rad_align or (self.standalone_align and self.standalone_distill):
+        if self.e2_tts:
+            self.cond_proj = nn.Conv1d(input_channels * 2, dim, 1)
+        elif self.rad_align or (self.standalone_align and self.standalone_distill):
             assert align_attention_type is not None
             assert num_align_ds_layers is not None and num_align_ds_layers >= 0
             assert num_align_proj_layers is not None and num_align_proj_layers >= 0
@@ -376,7 +380,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         return self.module.time_embed(t)
 
     def forward(self, z_t: torch.Tensor, t: torch.Tensor, x: torch.Tensor,
-                bandwidth_id: torch.Tensor=None, num_tokens=None, ctx_length=None,
+                bandwidth_id: torch.Tensor=None, num_tokens=None, ctx_start=None, ctx_length=None,
                 token_exp_scale=None, standalone_attn=None, duration=None):
         # pos_embed for z_t1
         assert num_tokens is not None
@@ -407,7 +411,19 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         ref_emb = self.ref_embed(x_ref, ctx_length)
         te = self.time_embed(t)
         z_t1 = z_t1.transpose(1, 2)
-        if self.rad_align or (self.standalone_align and self.standalone_distill):
+        if self.e2_tts:
+            assert ctx_start is not None
+            b, _, l = z_t.shape
+            assert torch.all(ctx_start + ctx_length < l)
+            x_token_fill = F.pad(x_token, (0, l - x_token.shape[-1]))
+            x_ref_fill = torch.zeros(b, x_ref.size(1), l, device=z_t.device)
+            for i in range(b):
+                x_ref_fill[i, :, ctx_start[i]: ctx_start[i] + ctx_length[i]] = x_ref[i, :, :ctx_length[i]]
+            cond = torch.cat([x_token_fill, x_ref_fill], dim=1)
+            ctx = self.cond_proj(cond).mT
+            attn = None
+            align_ctx = None
+        elif self.rad_align or (self.standalone_align and self.standalone_distill):
             ctx = self.cross_attn(z_t1, x, z_freq_cis, ctx_freq_cis, z_mask, ctx_mask, mod_c=te)
             attn_prior = gaussian_prior(num_tokens, token_exp_scale)
             ctx, attn = self.align_block(ctx, x_token, z_freq_cis, token_freq_cis, token_mask,

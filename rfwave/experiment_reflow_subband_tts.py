@@ -348,7 +348,7 @@ class RectifiedFlow(nn.Module):
         return text, bandwidth_id, (zt, t, target)
 
     def get_pred(self, z_t, t, text, bandwidth_id, **kwargs):
-        _backbone_keys = ['start', 'length', 'num_tokens', 'ctx_length',
+        _backbone_keys = ['start', 'length', 'num_tokens', 'ctx_start', 'ctx_length',
                           'token_exp_scale', 'standalone_attn', 'token', 'duration']
         backbone_kwargs = {}
         for k in _backbone_keys:
@@ -789,6 +789,7 @@ class VocosExp(pl.LightningModule):
         assert input_adaptor is not None
         self.tandem_type = 'mel'
         self.aux_loss = aux_loss  # aux_loss improve attention learning for E2E
+        assert not (self.aux_loss and self.reflow.backbone.e2_tts)
         # aux_input_dim = (backbone.dim if isinstance(backbone, DiTRFE2ETTSMultiTaskBackbone)
         #                  else self.input_adaptor.dim)
         aux_input_dim = self.input_adaptor.dim
@@ -868,6 +869,7 @@ class VocosExp(pl.LightningModule):
             # length = torch.round(phone_info[1] * phone_info[5]).long()
             length = get_exp_length(phone_info[1], phone_info[5])
             pi_kwargs['num_tokens'] = phone_info[1]
+            pi_kwargs['ctx_start'] = phone_info[3]
             pi_kwargs['ctx_length'] = phone_info[4]
             pi_kwargs['token_exp_scale'] = phone_info[5]
             ctx_kwargs['length'] = length
