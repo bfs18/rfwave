@@ -4,6 +4,7 @@ import numpy as np
 from torch import nn
 from torch.nn import functional as F
 from rfwave.modules import GRN, ConvNeXtV2Block
+from vector_quantize_pytorch.finite_scalar_quantization import FSQ
 
 
 class RMSNorm(torch.nn.Module):
@@ -357,6 +358,7 @@ class CrossAttentionWithPrior(nn.Module):
         norm_layer: nn.Module = nn.LayerNorm,
         num_query_ds_layers: int = 1,
         num_proj_layers: int = 2,
+        quantize_query: bool = False,
         type: str = 'gaussian'
     ) -> None:
         assert type in ['gaussian', 'dot_product']
@@ -382,6 +384,7 @@ class CrossAttentionWithPrior(nn.Module):
             self.q_proj = QueryProj(dim, num_proj_layers)
         else:
             self.q_proj = None
+        self.q_fsq = FSQ(levels=[4, 4, 4, 4, 4], dim=dim, channel_first=False) if quantize_query else None
         self.score_conv = nn.Conv2d(num_heads, num_heads, kernel_size=(45, 7), padding=(22, 3))
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
@@ -406,6 +409,8 @@ class CrossAttentionWithPrior(nn.Module):
             q_x = self.q_ds_layer(q_x)
         if self.q_proj is not None:
             q_x = self.q_proj(q_x)
+        if self.q_fsq is not None:
+            q_x, _ = self.q_fsq(q_x)
 
         q = self.q(q_x).reshape(bsz, (q_seqlen + self.q_ds - 1) // self.q_ds if self.q_ds else q_seqlen,
                                 self.num_heads, self.head_dim)
