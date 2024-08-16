@@ -275,12 +275,15 @@ class DiTRFTTSMultiTaskBackbone(Backbone):
 
 
 class RefEmbedding(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, dim, proj=True):
         super().__init__()
-        self.proj = nn.Sequential(
-            nn.Linear(dim, dim), nn.SiLU(), nn.LayerNorm(dim),
-            nn.Linear(dim, dim), nn.SiLU(), nn.LayerNorm(dim),
-            nn.Linear(dim, dim))
+        if proj:
+            self.proj = nn.Sequential(
+                nn.Linear(dim, dim), nn.SiLU(), nn.LayerNorm(dim),
+                nn.Linear(dim, dim), nn.SiLU(), nn.LayerNorm(dim),
+                nn.Linear(dim, dim))
+        else:
+            self.proj = nn.Identity()
 
     def forward(self, ref, ref_length):
         ref_mask = sequence_mask(ref_length)
@@ -346,7 +349,7 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             self.sa_align_block = EmptyAlignmentBlock(dim, input_channels)
         else:
             self.cross_attn = ContextBlock(params, input_channels, num_ctx_layers, modulate=True)
-        self.ref_embed = RefEmbedding(input_channels)
+        self.ref_embed = RefEmbedding(input_channels, proj=(not self.e2_tts))
         print(f"input channels {input_channels} dim {dim}")
 
         self.module = DiTRFBackbone(
@@ -416,7 +419,8 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             b, _, l = z_t.shape
             assert torch.all(ctx_start + ctx_length < l)
             x_token_fill = F.pad(x_token, (0, l - x_token.shape[-1]))
-            x_ref_fill = torch.zeros(b, x_ref.size(1), l, device=z_t.device)
+            # use mean for empty values to avoid distribution shift abruptly.
+            x_ref_fill = torch.ones(b, x_ref.size(1), l, device=z_t.device) * ref_emb
             for i in range(b):
                 x_ref_fill[i, :, ctx_start[i]: ctx_start[i] + ctx_length[i]] = x_ref[i, :, :ctx_length[i]]
             cond = torch.cat([x_token_fill, x_ref_fill], dim=1)

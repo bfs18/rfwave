@@ -41,6 +41,7 @@ def sequence_mask_with_ctx(length, ctx_start=None, ctx_length=None, max_length=N
     if ctx_length is None or ctx_start is None:
         return non_padding
     else:
+        assert torch.all(ctx_start + ctx_length < length)
         if max_length is None:
             max_length = length.max()
         non_ctx = torch.arange(0, max_length, device=length.device).unsqueeze(0)
@@ -773,12 +774,12 @@ class VocosExp(pl.LightningModule):
 
         self.train_dur = False
         self.standalone_dur = None
-        if standalone_align is not None or backbone.rad_align:
+        if standalone_align is not None or backbone.rad_align or backbone.e2_tts:
             assert isinstance(getattr(backbone, "_orig_mod", backbone), DiTRFE2ETTSMultiTaskBackbone)
             assert not (backbone.rad_align and (backbone.standalone_align or standalone_align is not None)), (
                 "standalone align and rad align should not be used at the same time.")
 
-            self.dur_output_exp_scale = backbone.standalone_distill or backbone.rad_align
+            self.dur_output_exp_scale = backbone.standalone_distill or backbone.rad_align or backbone.e2_tts
             self.standalone_dur = E2EDuration(
                 DurModel(self.input_adaptor.dim, 2),
                 output_exp_scale=self.dur_output_exp_scale)
@@ -789,7 +790,7 @@ class VocosExp(pl.LightningModule):
         assert input_adaptor is not None
         self.tandem_type = 'mel'
         self.aux_loss = aux_loss  # aux_loss improve attention learning for E2E
-        assert not (self.aux_loss and self.reflow.backbone.e2_tts)
+        assert not (self.aux_loss and backbone.e2_tts)  # not use aux_loss for e2-tts
         # aux_input_dim = (backbone.dim if isinstance(backbone, DiTRFE2ETTSMultiTaskBackbone)
         #                  else self.input_adaptor.dim)
         aux_input_dim = self.input_adaptor.dim
