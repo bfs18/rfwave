@@ -417,11 +417,14 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         if self.e2_tts:
             assert ctx_start is not None
             b, _, l = z_t.shape
-            assert torch.all(ctx_start + ctx_length < l)
+            if self.training:
+                assert torch.all(ctx_start + ctx_length < l)
             x_token_fill = F.pad(x_token, (0, l - x_token.shape[-1]))
             # use mean for empty values to avoid distribution shift abruptly.
             x_ref_fill = torch.ones(b, x_ref.size(1), l, device=z_t.device) * ref_emb
             for i in range(b):
+                if ctx_start[i] + ctx_length[i] > l:  # for inference.
+                    ctx_length[i] = l - ctx_start[i]
                 x_ref_fill[i, :, ctx_start[i]: ctx_start[i] + ctx_length[i]] = x_ref[i, :, :ctx_length[i]]
             cond = torch.cat([x_token_fill, x_ref_fill], dim=1)
             ctx = self.cond_proj(cond).mT
