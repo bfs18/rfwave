@@ -15,6 +15,7 @@ from rfwave.dataset import upsample_durations
 
 from inference_voc import load_config, create_instance, load_model
 from rfwave.helpers import plot_attention_to_numpy
+from rfwave.dataset import get_exp_scale
 
 
 def dur(model_dir, text_lines, phone2id, scale, num_samples=1):
@@ -60,7 +61,7 @@ def get_random_ref(ref_audio, ref_align, hop_length, padding):
             durations[0] = ctx_end_frame - ctx_start_frame
     else:
         token_ids, durations = None, None
-    return y_ctx, ctx_n_frame, token_ids, durations
+    return y_ctx, ctx_start_frame, ctx_n_frame, token_ids, durations
 
 
 def tts(model_dir, phone_info, save_dir, ref_audio, ref_align, sr):
@@ -71,7 +72,7 @@ def tts(model_dir, phone_info, save_dir, ref_audio, ref_align, sr):
     hop_length = config['data']['init_args']['train_params']['hop_length']
     padding = config['data']['init_args']['train_params']['padding']
     for k, phone_info in phone_info.items():
-        (y_ctx, ctx_n_frame, ctx_token_ids, ctx_durations
+        (y_ctx, ctx_start_frame, ctx_n_frame, ctx_token_ids, ctx_durations
          ) = get_random_ref(ref_audio, ref_align, hop_length, padding)
         y_ctx = y_ctx
         ctx_n_frame = torch.tensor(ctx_n_frame)
@@ -99,13 +100,14 @@ def tts_e2e(model_dir, text_lines, save_dir, ref_audio, sr, num_samples=1):
     hop_length = config['data']['init_args']['train_params']['hop_length']
     padding = config['data']['init_args']['train_params']['padding']
     for k, line in text_lines.items():
-        token_ids = torch.tensor([phone2id[str(tk)] for tk in line.split()])
-        y_ctx, ctx_n_frame, *_ = get_random_ref(ref_audio, None, hop_length, padding)
+        token_ids = torch.tensor([phone2id[str(tk)] for tk in line.split('~')])
+        y_ctx, ctx_start_frame, ctx_n_frame, *_ = get_random_ref(ref_audio, None, hop_length, padding)
         num_tokens = torch.tensor(token_ids.shape[0])
         ctx_length = torch.tensor(ctx_n_frame)
-        phone_info = [token_ids, y_ctx, num_tokens, ctx_length]
+        ctx_start_frame = torch.tensor(ctx_start_frame)
+        phone_info = [token_ids, y_ctx, num_tokens, ctx_start_frame, ctx_length]
         phone_info = [v.unsqueeze(0).to(device) for v in phone_info]
-        pi_kwargs = {'num_tokens': phone_info[2], 'ctx_length': phone_info[3]}
+        pi_kwargs = {'num_tokens': phone_info[2], 'ctx_start': phone_info[3], 'ctx_length': phone_info[4]}
         phone_info = phone_info[:2]
         phone_info[1] = exp.feature_extractor(phone_info[1])
         text = exp.input_adaptor(*phone_info)
@@ -117,9 +119,10 @@ def tts_e2e(model_dir, text_lines, save_dir, ref_audio, sr, num_samples=1):
         torch.save(mel, Path(save_dir) / f'{k}.th')
         soundfile.write(Path(save_dir) / f'{k}-syn.wav', wave, samplerate=sr, subtype='PCM_16')
         for i, attn_i in enumerate(attn):
-            attn_i = attn_i[0, 0].detach().cpu().numpy()
-            align_np = plot_attention_to_numpy(attn_i)
-            matplotlib.image.imsave(Path(save_dir) / f'{k}-{i}.png', align_np)
+            if attn_i is not None:
+                attn_i = attn_i[0, 0].detach().cpu().numpy()
+                align_np = plot_attention_to_numpy(attn_i)
+                matplotlib.image.imsave(Path(save_dir) / f'{k}-{i}.png', align_np)
 
 
 if __name__ == '__main__':
