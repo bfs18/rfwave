@@ -332,7 +332,9 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         assert not standalone_align or (standalone_align and self.standalone_distill is not None)
 
         params = ModelArgs(dim=dim, n_heads=num_heads, dropout=dropout)
-        self.z_t1_proj = nn.Conv1d(output_channels1, dim, 1)
+        if not self.e2_tts:
+            self.z_t1_proj = nn.Conv1d(output_channels1, dim, 1)
+
         if self.e2_tts:
             self.cond_proj = nn.Conv1d(input_channels * 2, dim, 1)
         elif self.rad_align or (self.standalone_align and self.standalone_distill):
@@ -390,8 +392,12 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
         assert ctx_length is not None
         assert token_exp_scale is not None
 
-        z_t1, z_t2 = torch.split(z_t, [self.output_channels1, self.output_channels2], dim=1)
-        z_t1 = self.z_t1_proj(z_t1)
+        if not self.e2_tts:
+            z_t1, z_t2 = torch.split(z_t, [self.output_channels1, self.output_channels2], dim=1)
+            z_t1 = self.z_t1_proj(z_t1)
+            z_t1 = z_t1.transpose(1, 2)
+        else:
+            z_t1 = None
 
         start = _get_start(z_t, None)  # always start from 0 for sentence training.
         # length = torch.round(num_tokens * token_exp_scale).long()
@@ -413,7 +419,6 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
 
         ref_emb = self.ref_embed(x_ref, ctx_length)
         te = self.time_embed(t)
-        z_t1 = z_t1.transpose(1, 2)
         if self.e2_tts:
             assert ctx_start is not None
             b, _, l = z_t.shape

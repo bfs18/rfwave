@@ -355,6 +355,7 @@ class RectifiedFlow(nn.Module):
         for k in _backbone_keys:
             if k in kwargs and kwargs[k] is not None:
                 n_rpt = z_t.size(0) // kwargs[k].size(0)
+                assert n_rpt == self.num_bands
                 backbone_kwargs[k] = torch.repeat_interleave(kwargs[k], n_rpt, 0)
         pred = self.backbone(z_t, t, text, bandwidth_id, **backbone_kwargs)
         return pred if isinstance(pred, tuple) else (pred, None, None)
@@ -430,6 +431,12 @@ class RectifiedFlow(nn.Module):
             z0 = self.get_joint_z0(text, kwargs['out_length'])  # get z0 must be called before pre-processing text
             text = torch.repeat_interleave(text, self.num_bands, 0)
 
+        if self.cfg:
+            text = torch.cat([text, torch.ones_like(text) * text.mean(dim=(0, 2), keepdim=True)], dim=0)
+            for k, v in kwargs.items():
+                if isinstance(v, torch.Tensor):
+                    kwargs[k] = torch.cat([v] * 2, dim=0)
+
         z = z0.detach()
         fs = (z.size(0) // self.num_bands, self.output_channels2 * self.num_bands, z.size(2))
         ss = (z.size(0), self.output_channels2, z.size(2))
@@ -437,9 +444,8 @@ class RectifiedFlow(nn.Module):
         for i, (t, dt) in enumerate(t_dt):
             t_ = torch.ones(z.size(0)) * t
             if self.cfg:
-                text_ = torch.cat([text, torch.ones_like(text) * text.mean(dim=(0, 2), keepdim=True)], dim=0)
                 (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t_, bandwidth_id)]
-                pred, opt_attn, _ = self.get_pred(z_, t_.to(text.device), text_, bandwidth_id_, **kwargs)
+                pred, opt_attn, _ = self.get_pred(z_, t_.to(text.device), text, bandwidth_id_, **kwargs)
                 pred, uncond_pred = torch.chunk(pred, 2, dim=0)
                 pred = uncond_pred + self.guidance_scale * (pred - uncond_pred)
             else:
