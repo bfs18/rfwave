@@ -422,6 +422,8 @@ class DiTRFE2ETTSMultiTaskBackbone(Backbone):
             x_token_fill = F.pad(x_token, (0, l - x_token.shape[-1]))
             # use mean for empty values to avoid distribution shift abruptly.
             x_ref_fill = torch.ones(b, x_ref.size(1), l, device=z_t.device) * ref_emb
+            # ctx length may be updated here, so clone it first.
+            ctx_length = ctx_length.clone()
             for i in range(b):
                 if ctx_start[i] + ctx_length[i] > l:  # for inference.
                     ctx_length[i] = l - ctx_start[i]
