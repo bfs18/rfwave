@@ -434,7 +434,7 @@ class RectifiedFlow(nn.Module):
         if self.cfg:
             text = torch.cat([text, torch.ones_like(text) * text.mean(dim=(0, 2), keepdim=True)], dim=0)
             for k, v in kwargs.items():
-                if isinstance(v, torch.Tensor):
+                if isinstance(v, torch.Tensor) or v.ndim == 1:
                     kwargs[k] = torch.cat([v] * 2, dim=0)
 
         z = z0.detach()
