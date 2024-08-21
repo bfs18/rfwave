@@ -434,7 +434,7 @@ class RectifiedFlow(nn.Module):
         if self.cfg:
             text_, ref = torch.split(text, [kwargs['num_tokens'].max(), kwargs['ctx_length'].max()], dim=-1)
             # clutter text information only.
-            text_ = torch.ones_like(text_) * text_.detach().mean(dim=(0, 2), keepdim=True)
+            text_ = torch.ones_like(text_) * text_.detach().mean(dim=2, keepdim=True)
             text_ = torch.cat([text_, ref], dim=-1)
             text = torch.cat([text, text_], dim=0)
             for k, v in kwargs.items():
@@ -695,7 +695,7 @@ class RectifiedFlow(nn.Module):
             text_, ref = torch.split(
                 text, [kwargs['num_tokens'].max(), kwargs['ctx_length'].max()], dim=-1)
             # clutter text information only.
-            text_ = torch.ones_like(text_) * text_.mean(dim=(0, 2), keepdim=True)
+            text_ = torch.ones_like(text_) * text_.mean(dim=2, keepdim=True)
             text = torch.cat([text_, ref], dim=-1).detach()
             self.cfg_iter = True
         else:

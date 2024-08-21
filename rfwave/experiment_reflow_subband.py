@@ -261,7 +261,7 @@ class RectifiedFlow(nn.Module):
             dt = ts[i + 1] - t
             t_ = torch.ones(z.size(0)) * t
             if self.cfg:
-                mel_ = torch.cat([mel, torch.ones_like(mel) * mel.mean(dim=(0, 2), keepdim=True)], dim=0)
+                mel_ = torch.cat([mel, torch.ones_like(mel) * mel.mean(dim=2, keepdim=True)], dim=0)
                 (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t_, bandwidth_id)]
                 pred = self.get_pred(z_, t_.to(mel.device), mel_, bandwidth_id_, encodec_bandwidth_id, **kwargs)
                 pred, uncond_pred = torch.chunk(pred, 2, dim=0)
@@ -444,7 +444,7 @@ class RectifiedFlow(nn.Module):
 
     def compute_loss(self, z_t, t, target, mel, bandwidth_id, encodec_bandwidth_id=None, mask=None, **kwargs):
         if self.cfg and np.random.uniform() < self.p_uncond:
-            mel = torch.ones_like(mel) * mel.mean(dim=(0, 2), keepdim=True)
+            mel = torch.ones_like(mel) * mel.mean(dim=2, keepdim=True)
         pred = self.get_pred(z_t, t, mel, bandwidth_id, encodec_bandwidth_id=encodec_bandwidth_id, **kwargs)
         if mask is not None:
             pred = torch.where(mask.unsqueeze(1), pred, target)
