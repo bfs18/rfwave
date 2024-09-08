@@ -444,6 +444,7 @@ class VocosExp(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head", "input_adaptor"])
 
+        backbone = torch.compile(backbone)
         self.task = task
         self.feature_extractor = feature_extractor
         self.input_adaptor = input_adaptor
