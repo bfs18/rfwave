@@ -75,8 +75,8 @@ def generate_data(exp, dataloader, num_pairs, save_dir, device):
             z0, z1 = sample_ode(exp.reflow, features)
         for j in range(z0.size(0)):
             save_fp = Path(save_dir) / f'sample_{i:0>7d}_{j:0>3d}.th'
-            torch.save({'z0': z0[i].cpu(), 'z1': z1[i].cpu(),
-                        'mel': features[i].cpu()}, save_fp.as_posix())
+            torch.save({'z0': z0[j].cpu(), 'z1': z1[j].cpu(),
+                        'mel': features[j].cpu()}, save_fp.as_posix())
         i += 1
 
 

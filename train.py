@@ -1,5 +1,9 @@
 import os
+import torch
+
 from pytorch_lightning.cli import LightningCLI
+
+torch.set_float32_matmul_precision('high')
 
 
 class CustomCLI(LightningCLI):
@@ -7,6 +11,7 @@ class CustomCLI(LightningCLI):
         super().add_arguments_to_parser(parser)
         # Add a custom argument for the checkpoint path
         parser.add_argument('--ckpt_path', type=str, default=None, help='Path to the checkpoint file.')
+
 
 if __name__ == "__main__":
     # Initialize your custom CLI

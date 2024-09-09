@@ -3,7 +3,7 @@ from pytorch_lightning import LightningDataModule
 from torch.utils.data import Dataset, DataLoader
 
 
-class VocosDataModule(LightningDataModule):
+class ReflowDataModule(LightningDataModule):
     def __init__(self, train_filelist, val_filelist, batch_size, num_workers):
         super().__init__()
         self.train_filelist = train_filelist
@@ -15,7 +15,7 @@ class VocosDataModule(LightningDataModule):
         dataset = ReflowDataset(filelist)
         dataloader = DataLoader(
             dataset, batch_size=self.batch_size, shuffle=train,
-            num_workers=self.num_workers, pin_memory=True)
+            num_workers=self.num_workers, pin_memory=False)
         return dataloader
 
     def train_dataloader(self):

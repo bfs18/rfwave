@@ -2,10 +2,10 @@
 seed_everything: 4444
 
 data:
-  class_path: rfwave.dataset.VocosDataModule
+  class_path: reflow.reflow_dataset.ReflowDataModule
   init_args:
-    train_filelist: wav_filelist.train
-    val_filelist: wav_filelist.valid
+    train_filelist: LJSpeech/reflow.train
+    val_filelist: LJSpeech/reflow.valid
     batch_size: 32
     num_workers: 4
 
@@ -20,7 +20,7 @@ model:
     p_uncond: 0.1
     initial_learning_rate: 2e-4
     num_warmup_steps: 20_000 # Optimizers warmup steps
-    pretrained_ckpt_path: path/to/ckpt
+    pretrained_ckpt_path: /data/Downloads/rf_voc/rf_ljspeech/rfwave-voc-ljspeech_compile_gd2/rfwave/dqdo0veh/checkpoints/last.ckpt
 
     feature_extractor:
       class_path: rfwave.feature_extractors.MelSpectrogramFeatures
@@ -57,8 +57,8 @@ trainer:
     class_path: pytorch_lightning.loggers.WandbLogger
     init_args:
       project: rfwave
-      save_dir: logs-rfwave/
-      name: rfwave
+      save_dir: /data/logs/rfwave/logs-rfwave-reflow/
+      name: rfwave-reflow
   callbacks:
     - class_path: pytorch_lightning.callbacks.LearningRateMonitor
     - class_path: pytorch_lightning.callbacks.ModelSummary

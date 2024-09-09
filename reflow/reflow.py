@@ -24,19 +24,22 @@ class Reflow(RectifiedFlow):
         mel = batch['mel']
         z0 = batch['z0']
         z1 = batch['z1']
+
+        t = torch.rand((mel.size(0),), device=mel.device).repeat_interleave(self.num_bands, 0)
+        bandwidth_id = torch.tile(torch.arange(self.num_bands, device=mel.device), (mel.size(0),))
+
         z0 = self.get_joint_subband(self.stft(z0))
         z1 = self.get_joint_subband(self.get_eq_norm_stft(z1))
-        z0, z1 = [x.reshape(x.size(0) * self.num_bands, x.size(0) // self.num_bands, x.size(2))
+        z0, z1 = [x.reshape(x.size(0) * self.num_bands, x.size(1) // self.num_bands, x.size(2))
                   for x in [z0, z1]]
         mel = torch.repeat_interleave(mel, self.num_bands, 0)
-        bandwidth_id = torch.tile(torch.arange(self.num_bands, device=mel.device), (mel.size(0),))
-        t = torch.rand((mel.size(0),), device=mel.device).repeat_interleave(self.num_bands, 0)
         t_ = t.view(-1, 1, 1)
         z_t = t_ * z1 + (1. - t_) * z0
         target = z1 - z0
         return mel, bandwidth_id, (z_t, t, target)
 
     def from_pretrained(self, pretrained_ckpt_path):
+        print(f'Loading pretrained model from {pretrained_ckpt_path}.')
         assert Path(pretrained_ckpt_path).exists()
         state_dict = torch.load(pretrained_ckpt_path, map_location=torch.device('cpu'))
         reflow_state_dict = OrderedDict()
