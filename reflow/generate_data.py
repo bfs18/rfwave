@@ -4,8 +4,6 @@ from argparse import ArgumentParser
 from torch.utils.data import DataLoader
 from pathlib import Path
 
-import rfwave.experiment_reflow_subband
-
 from rfwave.dataset import VocosDataModule, DataConfig, VocosDataset
 from inference_voc import create_instance, load_model, load_config
 
@@ -75,8 +73,10 @@ def generate_data(exp, dataloader, num_pairs, save_dir, device):
         features = exp.feature_extractor(batch.to(device))
         with torch.no_grad():
             z0, z1 = sample_ode(exp.reflow, features)
-        save_fp = Path(save_dir) / f'sample_{i:0>7d}.th'
-        torch.save({'z0': z0.cpu(), 'z1': z1.cpu(), 'mel': features.cpu()}, save_fp.as_posix())
+        for j in range(z0.size(0)):
+            save_fp = Path(save_dir) / f'sample_{i:0>7d}_{j:0>3d}.th'
+            torch.save({'z0': z0[i].cpu(), 'z1': z1[i].cpu(),
+                        'mel': features[i].cpu()}, save_fp.as_posix())
         i += 1
 
 

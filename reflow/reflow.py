@@ -3,6 +3,9 @@ import pytorch_lightning as pl
 import wandb
 import torch.nn.functional as F
 
+from collections import OrderedDict
+from pathlib import Path
+
 from rfwave.experiment_reflow_subband import RectifiedFlow
 from rfwave.heads import FourierHead
 from rfwave.models import Backbone
@@ -10,6 +13,7 @@ from rfwave.rvm import RelativeVolumeMel
 from rfwave.lr_schedule import get_cosine_schedule_with_warmup
 from rfwave.helpers import plot_spectrogram_to_numpy, save_code
 from rfwave.instantaneous_frequency import compute_phase_error
+from rfwave.feature_extractors import FeatureExtractor
 
 
 class Reflow(RectifiedFlow):
@@ -32,12 +36,23 @@ class Reflow(RectifiedFlow):
         target = z1 - z0
         return mel, bandwidth_id, (z_t, t, target)
 
+    def from_pretrained(self, pretrained_ckpt_path):
+        assert Path(pretrained_ckpt_path).exists()
+        state_dict = torch.load(pretrained_ckpt_path, map_location=torch.device('cpu'))
+        reflow_state_dict = OrderedDict()
+        for k, v in state_dict['state_dict'].items():
+            if k.startswith('reflow.'):
+                reflow_state_dict[k.replace('reflow.', '')] = v
+        self.load_state_dict(reflow_state_dict)
+
 
 class ReflowExp(pl.LightningModule):
     def __init__(
             self,
+            feature_extractor: FeatureExtractor,
             backbone: Backbone,
             head: FourierHead,
+            pretrained_ckpt_path: str,
             task: str = "voc",
             sample_rate: int = 24000,
             initial_learning_rate: float = 2e-4,
@@ -49,8 +64,9 @@ class ReflowExp(pl.LightningModule):
             num_warmup_steps: int = 0,
     ):
         super().__init__()
-        self.save_hyperparameters(ignore=["backbone", "head"])
+        self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head"])
 
+        self.feature_extractor = feature_extractor
         backbone = torch.compile(backbone)
         self.task = task
         self.reflow = Reflow(
@@ -61,6 +77,8 @@ class ReflowExp(pl.LightningModule):
         self.validation_step_outputs = []
         self.automatic_optimization = False
         assert num_bands == backbone.num_bands
+
+        self.reflow.from_pretrained(pretrained_ckpt_path)
 
     def configure_optimizers(self):
         gen_params = [
@@ -116,33 +134,20 @@ class ReflowExp(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx, **kwargs):
-        if self.task == 'tts':
-            audio_input, phone_info = batch
-            phone_info = self.process_context(phone_info)
-        else:
-            audio_input = batch
         with torch.no_grad():
-            features = self.feature_extractor(audio_input, **kwargs)
-            cond = self.input_adaptor(*phone_info) if self.task == 'tts' else features
-            audio_hat_traj = self.reflow.sample_ode(cond, N=100, **kwargs)
-            cond_mel_hat = self.input_adaptor_proj(cond) if self.aux_loss and self.task == 'tts' else None
+            audio_hat_traj = self.reflow.sample_ode(batch['mel'], N=100, **kwargs)
         audio_hat = audio_hat_traj[-1]
 
-        mel_loss = F.mse_loss(self.feature_extractor(audio_hat, **kwargs), features)
-        rvm_loss = self.rvm(audio_hat.unsqueeze(1), audio_input.unsqueeze(1))
-        cond_mel_loss = (F.mse_loss(cond_mel_hat, features) if cond_mel_hat is not None
-                         else torch.zeros(1, device=self.device))
-        phase_loss = compute_phase_error(audio_hat, audio_input, self.reflow.head.get_spec)
+        mel_loss = F.mse_loss(self.feature_extractor(audio_hat, **kwargs), batch['mel'])
+        rvm_loss = self.rvm(audio_hat.unsqueeze(1), batch['z1'].unsqueeze(1))
+        phase_loss = compute_phase_error(audio_hat, batch['z1'], self.reflow.head.get_spec)
 
         output = {
             "mel_loss": mel_loss,
-            "audio_input": audio_input[0],
+            "audio_input": batch['z1'][0],
             "audio_pred": audio_hat[0],
-            "cond_mel_loss": cond_mel_loss,
             "phase_loss": phase_loss,
         }
-        if cond_mel_hat is not None:
-            output['cond_mel_pred'] = cond_mel_hat[0]
         output.update(rvm_loss)
         self.validation_step_outputs.append(output)
         return output
@@ -150,7 +155,6 @@ class ReflowExp(pl.LightningModule):
     def on_validation_epoch_end(self, **kwargs):
         outputs = self.validation_step_outputs
         mel_loss = torch.stack([x["mel_loss"] for x in outputs]).mean()
-        cond_mel_loss = torch.stack([x["cond_mel_loss"] for x in outputs]).mean()
         phase_loss = torch.stack([x["phase_loss"] for x in outputs]).mean()
         rvm_loss_dict = {}
         for k in outputs[0].keys():
@@ -164,7 +168,6 @@ class ReflowExp(pl.LightningModule):
             mel_hat = self.feature_extractor(audio_pred.unsqueeze(0), **kwargs)[0]
             metrics = {
                 "valid/mel_loss": mel_loss,
-                "valid/cond_mel_loss": cond_mel_loss,
                 "valid/phase_loss": phase_loss}
             self.logger.log_metrics({**metrics, **rvm_loss_dict}, step=self.global_step)
             self.logger.experiment.log(
@@ -173,11 +176,6 @@ class ReflowExp(pl.LightningModule):
                  "valid_media/mel_in": wandb.Image(plot_spectrogram_to_numpy(mel_target.data.cpu().numpy())),
                  "valid_media/mel_hat": wandb.Image(plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()))},
                 step=self.global_step)
-            if 'cond_mel_pred' in outputs[0]:
-                self.logger.experiment.log(
-                    {"valid_media/cond_mel_hat": wandb.Image(
-                        plot_spectrogram_to_numpy(outputs[0]['cond_mel_pred'].data.cpu().numpy()))},
-                    step=self.global_step)
         self.validation_step_outputs.clear()
 
     def on_train_start(self, *args):
