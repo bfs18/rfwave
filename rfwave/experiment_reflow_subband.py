@@ -226,7 +226,7 @@ class RectifiedFlow(nn.Module):
         for i in range(N):
             t = torch.ones(z.size(0)) * i / N
             if self.cfg:
-                mel_ = torch.cat([mel, torch.ones_like(mel) * mel.mean(dim=(0, 2), keepdim=True)], dim=0)
+                mel_ = torch.cat([mel, torch.ones_like(mel) * mel.mean(dim=(2,), keepdim=True)], dim=0)
                 (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t, bandwidth_id)]
                 pred = self.get_pred(z_, t_.to(mel.device), mel_, bandwidth_id_, encodec_bandwidth_id)
                 pred, uncond_pred = torch.chunk(pred, 2, dim=0)
