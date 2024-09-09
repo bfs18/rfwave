@@ -37,7 +37,7 @@ class RectifiedFlow(nn.Module):
         self.wave = wave
         self.equalizer = wave
         self.stft_norm = not wave
-        self.stft_loss = False
+        self.stft_loss = True
         self.phase_loss = False
         self.overlap_loss = True
         self.num_bands = num_bands
