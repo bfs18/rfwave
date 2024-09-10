@@ -2,6 +2,7 @@ import torch
 import pytorch_lightning as pl
 import wandb
 import torch.nn.functional as F
+import numpy as np
 
 from collections import OrderedDict
 from pathlib import Path
@@ -47,6 +48,25 @@ class Reflow(RectifiedFlow):
             if k.startswith('reflow.'):
                 reflow_state_dict[k.replace('reflow.', '')] = v
         self.load_state_dict(reflow_state_dict)
+
+    def compute_teacher_loss(self, teacher_model, noise, mel, bandwidth_id, encodec_bandwidth_id=None):
+        if self.cfg and np.random.uniform() < self.p_uncond:
+            mel = torch.ones_like(mel) * mel.mean(dim=(2,), keepdim=True)
+        t0 = 0. * torch.ones((noise.size(0),), device=noise.device)
+        pred = self.get_pred(noise, t0, mel, bandwidth_id, encodec_bandwidth_id=encodec_bandwidth_id)
+        with torch.no_grad():
+            # from SlimFlow code
+            t_ = torch.rand((mel.shape[0],), device=mel.device) * 0.6 + 0.2     # 0.2 ~ 0.8
+            step_t = torch.einsum('b,bij->bij', t_, pred)
+            x_t_psuedo = noise + step_t
+            pred_teacher = teacher_model.get_pred(
+                x_t_psuedo, t_, mel, bandwidth_id, encodec_bandwidth_id=encodec_bandwidth_id)
+            step_1_t = torch.einsum('b,bij->bij', 1 - t_, pred_teacher)
+            pred_teacher = step_t + step_1_t
+        loss = self.compute_rf_loss(pred, pred_teacher.detach(), bandwidth_id)
+        stft_loss = self.compute_stft_loss(noise, t0, pred_teacher, pred, bandwidth_id) if self.stft_loss else 0.
+        loss_dict = {'teacher_loss': loss, 'teacher_stft_loss': stft_loss}
+        return loss + stft_loss * 0.01, loss_dict
 
 
 class ReflowExp(pl.LightningModule):
