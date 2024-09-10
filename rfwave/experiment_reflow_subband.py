@@ -497,6 +497,11 @@ class VocosExp(pl.LightningModule):
             print("detected inf or nan values in gradients. not updating model parameters")
             optimizer.zero_grad()
 
+    def on_before_optimizer_step(self, optimizer):
+        # Note: `unscale` happens after the closure is executed, but before the `on_before_optimizer_step` hook.
+        self.skip_nan(optimizer)
+        self.clip_gradients(optimizer, gradient_clip_val=5., gradient_clip_algorithm="norm")
+
     def compute_aux_loss(self, features, audio_input, loss_type):
         if loss_type == 'mel':
             target = self.feature_extractor(audio_input)
@@ -615,8 +620,10 @@ class VocosExp(pl.LightningModule):
                 "valid/phase_loss": phase_loss}
             self.logger.log_metrics({**metrics, **rvm_loss_dict}, step=self.global_step)
             self.logger.experiment.log(
-                {"valid_media/audio_in": wandb.Audio(audio_in.data.cpu().numpy(), sample_rate=self.hparams.sample_rate),
-                 "valid_media/audio_hat": wandb.Audio(audio_pred.data.cpu().numpy(), sample_rate=self.hparams.sample_rate),
+                {"valid_media/audio_in": wandb.Audio(
+                    audio_in.float().cpu().numpy(), sample_rate=self.hparams.sample_rate),
+                 "valid_media/audio_hat": wandb.Audio(
+                     audio_pred.float().cpu().numpy(), sample_rate=self.hparams.sample_rate),
                  "valid_media/mel_in": wandb.Image(plot_spectrogram_to_numpy(mel_target.data.cpu().numpy())),
                  "valid_media/mel_hat": wandb.Image(plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()))},
                 step=self.global_step)

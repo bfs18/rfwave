@@ -159,6 +159,11 @@ class ReflowExp(pl.LightningModule):
             print("detected inf or nan values in gradients. not updating model parameters")
             optimizer.zero_grad()
 
+    def on_before_optimizer_step(self, optimizer):
+        # Note: `unscale` happens after the closure is executed, but before the `on_before_optimizer_step` hook.
+        self.skip_nan(optimizer)
+        self.clip_gradients(optimizer, gradient_clip_val=5., gradient_clip_algorithm="norm")
+
     def training_step(self, batch, batch_idx, **kwargs):
         # train generator
         opt_gen = self.optimizers()
@@ -179,7 +184,6 @@ class ReflowExp(pl.LightningModule):
             loss = loss + teacher_loss
             loss_dict.update(**teacher_loss_dict)
         self.manual_backward(loss)
-        self.skip_nan(opt_gen)
         opt_gen.step()
         sch_gen.step()
 
@@ -237,8 +241,10 @@ class ReflowExp(pl.LightningModule):
                 "valid/phase_loss": phase_loss}
             self.logger.log_metrics({**metrics, **rvm_loss_dict}, step=self.global_step)
             self.logger.experiment.log(
-                {"valid_media/audio_in": wandb.Audio(audio_in.data.cpu().numpy(), sample_rate=self.hparams.sample_rate),
-                 "valid_media/audio_hat": wandb.Audio(audio_pred.data.cpu().numpy(), sample_rate=self.hparams.sample_rate),
+                {"valid_media/audio_in": wandb.Audio(
+                    audio_in.float().cpu().numpy(), sample_rate=self.hparams.sample_rate),
+                 "valid_media/audio_hat": wandb.Audio(
+                     audio_pred.float().cpu().numpy(), sample_rate=self.hparams.sample_rate),
                  "valid_media/mel_in": wandb.Image(plot_spectrogram_to_numpy(mel_target.data.cpu().numpy())),
                  "valid_media/mel_hat": wandb.Image(plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()))},
                 step=self.global_step)
