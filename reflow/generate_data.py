@@ -4,8 +4,8 @@ from argparse import ArgumentParser
 from torch.utils.data import DataLoader
 from pathlib import Path
 
-from rfwave.dataset import VocosDataModule, DataConfig, VocosDataset
-from inference_voc import create_instance, load_model, load_config
+from rfwave.dataset import DataConfig, VocosDataset
+from inference_voc import load_model, load_config
 
 
 torch.set_float32_matmul_precision('high')
@@ -85,11 +85,16 @@ if __name__ == '__main__':
     parser.add_argument('--model_dir', type=str, required=True)
     parser.add_argument('--save_dir', type=str, required=True)
     parser.add_argument('--num_pairs', type=int, default=100000)
+    parser.add_argument('--data_config', type=str, default=None)
 
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     exp = load_model(args.model_dir, device=device, last=True)
-    config = load_config(Path(args.model_dir) / 'config.yaml')
+    if args.data_config is None:
+        config = load_config(Path(args.model_dir) / 'config.yaml')
+    else:
+        assert Path(args.data_config).exists()
+        config = load_config(args.data_config)
     data_config = DataConfig(**config['data']['init_args']['train_params'])
     dataset = VocosDataset(data_config, train=True)
     dataloader = DataLoader(

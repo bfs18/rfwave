@@ -10,7 +10,7 @@ data:
     num_workers: 4
 
 model:
-  class_path: reflow.reflow.ReflowExp
+  class_path: reflow.reflow_exp.ReflowExp
   init_args:
     sample_rate: 24000
     feature_loss: False

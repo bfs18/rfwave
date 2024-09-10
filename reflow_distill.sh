@@ -14,7 +14,7 @@ split_file_list() {
     local generate_dir=$1
     local temp_file_list=$(mktemp)
 
-    ls "$generate_dir" > "$temp_file_list"
+    find "$generate_dir" -type f -name "*.th" > "$temp_file_list"
 
     head -n 1000 "$temp_file_list" > "$generate_dir/filelist.valid"
     tail -n +1001 "$temp_file_list" > "$generate_dir/filelist.train"
@@ -93,9 +93,12 @@ python3 train.py --config "$config" \
   --data.init_args.train_filelist "$rf1_generate_dir/filelist.train" \
   --data.init_args.val_filelist "$rf1_generate_dir/filelist.valid"
 
+# Use the data configuration from the pretrained model. Note that the data configuration of the
+# ReFlow model is designed for paired data and is not compatible with generate_data.py.
 python3 reflow/generate_data.py --model_dir "$rf2_log_dir" \
     --save_dir "$rf2_generate_dir" \
-    --num_pairs $num_pairs
+    --num_pairs $num_pairs \
+    --data_config "${pretrained_dir}/config.yaml"
 echo "generate rf2 data successfully."
 
 split_file_list "$rf2_generate_dir"
