@@ -32,6 +32,7 @@ pretrained_dir=$1
 config=$2
 generate_dir=$3
 log_dir=$4
+num_pairs=10000
 
 
 if [ ! -d "$pretrained_dir" ]; then
@@ -81,7 +82,7 @@ export PYTHONPATH=$(pwd):$PYTHONPATH
 
 python3 reflow/generate_data.py --model_dir "$pretrained_dir" \
     --save_dir "$rf1_generate_dir" \
-    --num_pairs 10000
+    --num_pairs $num_pairs
 echo "generate rf1 data successfully."
 
 split_file_list "$rf1_generate_dir"
@@ -94,7 +95,7 @@ python3 train.py --config "$config" \
 
 python3 reflow/generate_data.py --model_dir "$rf2_log_dir" \
     --save_dir "$rf2_generate_dir" \
-    --num_pairs 10000
+    --num_pairs $num_pairs
 echo "generate rf2 data successfully."
 
 split_file_list "$rf2_generate_dir"
