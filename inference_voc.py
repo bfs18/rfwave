@@ -98,7 +98,7 @@ def copy_synthesis_encodec(exp, y, N=1000):
     return recons, costs, rmv_losses
 
 
-def voc(model_dir, wav_dir, save_dir, guidance_scale):
+def voc(model_dir, wav_dir, save_dir, guidance_scale, N=10):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     exp = load_model(model_dir, device=device, last=True)
     if exp.reflow.guidance_scale == 1. and guidance_scale is not None and guidance_scale > 1.:
@@ -107,6 +107,8 @@ def voc(model_dir, wav_dir, save_dir, guidance_scale):
         print(f"Original guidance_scale {exp.reflow.guidance_scale:.2f}, using guidance_scale {guidance_scale:.2f}")
         exp.reflow.guidance_scale = guidance_scale
     is_encodec = isinstance(exp.feature_extractor, rfwave.feature_extractors.EncodecFeatures)
+
+    N = 1 if getattr(exp, 'one_step', False) else N
 
     tot_cost = 0.
     tot_dur = 0.
@@ -142,7 +144,7 @@ def voc(model_dir, wav_dir, save_dir, guidance_scale):
         if is_encodec:
             fn = fn.rstrip('.wav')
             with amp.autocast(enabled=ENABLE_FP16, dtype=torch.float16) and torch.no_grad():
-                recon, cost, rvm_loss = copy_synthesis_encodec(exp, y, N=10)
+                recon, cost, rvm_loss = copy_synthesis_encodec(exp, y, N=N)
             for k, v in recon.items():
                 fn_ = f'{fn}-{k}.wav'
                 save_fp = Path(save_dir_) / fn_
@@ -154,7 +156,7 @@ def voc(model_dir, wav_dir, save_dir, guidance_scale):
         else:
             save_fp = Path(save_dir_) / fn
             with amp.autocast(enabled=ENABLE_FP16, dtype=torch.float16) and torch.no_grad():
-                recon, cost, rvm_loss = copy_synthesis(exp, y, N=10)
+                recon, cost, rvm_loss = copy_synthesis(exp, y, N=N)
             soundfile.write(save_fp, recon.astype(float), fs, 'PCM_16')
             dur = len(recon) / fs
             tot_cost += cost
@@ -169,9 +171,10 @@ if __name__ == '__main__':
     parser.add_argument('--wav_dir', type=str, required=True)
     parser.add_argument('--save_dir', type=str, required=True)
     parser.add_argument('--guidance_scale', type=float, default=None)
+    parser.add_argument('--num_steps', type=int, default=10)
 
     args = parser.parse_args()
     assert not (args.model_dir is None and args.pretrained is None)
     Path(args.save_dir).mkdir(exist_ok=True)
-    cost, dur = voc(args.model_dir, args.wav_dir, args.save_dir, args.guidance_scale)
+    cost, dur = voc(args.model_dir, args.wav_dir, args.save_dir, args.guidance_scale, args.num_steps)
     print(f"Total cost: {cost:.2f}s, Total duration: {dur:.2f}s, ratio: {dur / cost:.2f}")

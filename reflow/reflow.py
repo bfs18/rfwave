@@ -1,3 +1,4 @@
+import copy
 import torch
 import pytorch_lightning as pl
 import wandb
@@ -25,9 +26,10 @@ class Reflow(RectifiedFlow):
         mel = batch['mel']
         z0 = batch['z0']
         z1 = batch['z1']
+        bs = mel.size(0)
 
-        t = torch.rand((mel.size(0),), device=mel.device).repeat_interleave(self.num_bands, 0)
-        bandwidth_id = torch.tile(torch.arange(self.num_bands, device=mel.device), (mel.size(0),))
+        t = torch.rand((bs,), device=mel.device).repeat_interleave(self.num_bands, 0)
+        bandwidth_id = torch.tile(torch.arange(self.num_bands, device=mel.device), (bs,))
 
         z0 = self.get_joint_subband(self.stft(z0))
         z1 = self.get_joint_subband(self.get_eq_norm_stft(z1))
@@ -39,6 +41,28 @@ class Reflow(RectifiedFlow):
         target = z1 - z0
         return mel, bandwidth_id, (z_t, t, target)
 
+    def get_one_step_train_tuple(self, batch):
+        mel = batch['mel']
+        z0 = batch['z0']
+        z1 = batch['z1']
+        teacher_z0 = torch.randn_like(z0)
+        bs = mel.size(0)
+
+        # always start from 0.
+        t = torch.zeros((bs,), device=mel.device).repeat_interleave(self.num_bands, 0)
+        bandwidth_id = torch.tile(torch.arange(self.num_bands, device=mel.device), (bs,))
+
+        z0 = self.get_joint_subband(self.stft(z0))
+        z1 = self.get_joint_subband(self.get_eq_norm_stft(z1))
+        teacher_z0 = self.get_joint_subband(self.stft(teacher_z0))
+        z0, z1, teacher_z0 = [
+            x.reshape(x.size(0) * self.num_bands, x.size(1) // self.num_bands, x.size(2))
+            for x in [z0, z1, teacher_z0]]
+        mel = torch.repeat_interleave(mel, self.num_bands, 0)
+        z_t = z0
+        target = z1 - z0
+        return mel, bandwidth_id, (z_t, t, target, teacher_z0)
+
     def from_pretrained(self, pretrained_ckpt_path):
         print(f'Loading pretrained model from {pretrained_ckpt_path}.')
         assert Path(pretrained_ckpt_path).exists()
@@ -49,24 +73,26 @@ class Reflow(RectifiedFlow):
                 reflow_state_dict[k.replace('reflow.', '')] = v
         self.load_state_dict(reflow_state_dict)
 
-    def compute_teacher_loss(self, teacher_model, noise, mel, bandwidth_id, encodec_bandwidth_id=None):
+    def compute_teacher_loss(self, teacher_model, z0, mel, bandwidth_id, encodec_bandwidth_id=None):
         if self.cfg and np.random.uniform() < self.p_uncond:
             mel = torch.ones_like(mel) * mel.mean(dim=(2,), keepdim=True)
-        t0 = 0. * torch.ones((noise.size(0),), device=noise.device)
-        pred = self.get_pred(noise, t0, mel, bandwidth_id, encodec_bandwidth_id=encodec_bandwidth_id)
+        t0 = torch.zeros((z0.size(0),), device=z0.device)
+        pred = self.get_pred(z0, t0, mel, bandwidth_id, encodec_bandwidth_id=encodec_bandwidth_id)
         with torch.no_grad():
             # from SlimFlow code
-            t_ = torch.rand((mel.shape[0],), device=mel.device) * 0.6 + 0.2     # 0.2 ~ 0.8
+            t_ = torch.rand((mel.shape[0] // self.num_bands,), device=mel.device) * 0.6 + 0.2     # 0.2 ~ 0.8
+            t_ = torch.repeat_interleave(t_, self.num_bands, dim=0)
             step_t = torch.einsum('b,bij->bij', t_, pred)
-            x_t_psuedo = noise + step_t
+            x_t_psuedo = z0 + step_t
             pred_teacher = teacher_model.get_pred(
                 x_t_psuedo, t_, mel, bandwidth_id, encodec_bandwidth_id=encodec_bandwidth_id)
             step_1_t = torch.einsum('b,bij->bij', 1 - t_, pred_teacher)
             pred_teacher = step_t + step_1_t
         loss = self.compute_rf_loss(pred, pred_teacher.detach(), bandwidth_id)
-        stft_loss = self.compute_stft_loss(noise, t0, pred_teacher, pred, bandwidth_id) if self.stft_loss else 0.
-        loss_dict = {'teacher_loss': loss, 'teacher_stft_loss': stft_loss}
-        return loss + stft_loss * 0.01, loss_dict
+        stft_loss = self.compute_stft_loss(z0, t0, pred_teacher, pred, bandwidth_id) if self.stft_loss else 0.
+        overlap_loss = self.compute_overlap_loss(pred) if self.overlap_loss else 0.
+        loss_dict = {'teacher_loss': loss, 'teacher_stft_loss': stft_loss, 'teacher_overlap_loss': overlap_loss}
+        return loss + (stft_loss + overlap_loss) * 0.01, loss_dict
 
 
 class ReflowExp(pl.LightningModule):
@@ -76,6 +102,7 @@ class ReflowExp(pl.LightningModule):
             backbone: Backbone,
             head: FourierHead,
             pretrained_ckpt_path: str,
+            one_step: bool = False,
             task: str = "voc",
             sample_rate: int = 24000,
             initial_learning_rate: float = 2e-4,
@@ -91,6 +118,7 @@ class ReflowExp(pl.LightningModule):
 
         self.feature_extractor = feature_extractor
         backbone = torch.compile(backbone)
+        self.one_step = one_step
         self.task = task
         self.reflow = Reflow(
             backbone, head, feature_loss=feature_loss, wave=wave, num_bands=num_bands,
@@ -102,6 +130,11 @@ class ReflowExp(pl.LightningModule):
         assert num_bands == backbone.num_bands
 
         self.reflow.from_pretrained(pretrained_ckpt_path)
+
+        if self.one_step:
+            self.teacher_reflow = copy.deepcopy(self.reflow)
+            self.teacher_reflow.requires_grad_(False)
+            self.teacher_reflow.eval()
 
     def configure_optimizers(self):
         gen_params = [
@@ -132,10 +165,19 @@ class ReflowExp(pl.LightningModule):
         sch_gen = self.lr_schedulers()
         opt_gen.zero_grad()
 
-        features_ext, bandwidth_id, (z_t, t, target) = self.reflow.get_train_tuple(batch)
+        if self.one_step:
+            features_ext, bandwidth_id, (z_t, t, target, teacher_z0) = self.reflow.get_one_step_train_tuple(batch)
+        else:
+            features_ext, bandwidth_id, (z_t, t, target) = self.reflow.get_train_tuple(batch)
+
         bi = kwargs.get("encodec_bandwidth_id", None)
         loss, loss_dict = self.reflow.compute_loss(
             z_t, t, target, features_ext, bandwidth_id=bandwidth_id, encodec_bandwidth_id=bi)
+        if self.one_step:
+            teacher_loss, teacher_loss_dict = self.reflow.compute_teacher_loss(
+                self.teacher_reflow, teacher_z0, features_ext, bandwidth_id=bandwidth_id, encodec_bandwidth_id=bi)
+            loss = loss + teacher_loss
+            loss_dict.update(**teacher_loss_dict)
         self.manual_backward(loss)
         self.skip_nan(opt_gen)
         opt_gen.step()
@@ -158,7 +200,8 @@ class ReflowExp(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx, **kwargs):
         with torch.no_grad():
-            audio_hat_traj = self.reflow.sample_ode(batch['mel'], N=100, **kwargs)
+            N = 1 if self.one_step else 100
+            audio_hat_traj = self.reflow.sample_ode(batch['mel'], N=N, **kwargs)
         audio_hat = audio_hat_traj[-1]
 
         mel_loss = F.mse_loss(self.feature_extractor(audio_hat, **kwargs), batch['mel'])
