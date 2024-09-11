@@ -15,7 +15,7 @@ class ReflowDataModule(LightningDataModule):
         dataset = ReflowDataset(filelist)
         dataloader = DataLoader(
             dataset, batch_size=self.batch_size, shuffle=train,
-            num_workers=self.num_workers, pin_memory=False)
+            num_workers=self.num_workers, pin_memory=True)
         return dataloader
 
     def train_dataloader(self):
