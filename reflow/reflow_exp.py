@@ -74,7 +74,16 @@ class Reflow(RectifiedFlow):
         for k, v in state_dict['state_dict'].items():
             if k.startswith('reflow.'):
                 reflow_state_dict[k.replace('reflow.', '')] = v
-        self.load_state_dict(reflow_state_dict)
+        for n, v in self.named_parameters():
+            if 'convnext.' in n:
+                print(n, v.numel())
+            elif 'convnext_adaptor.' in n:
+                print(n, v.numel())
+
+            if n not in reflow_state_dict and 'convnext_adaptor' not in n:
+                raise RuntimeError(f'{n} is not found in pretrained model.')
+        self.load_state_dict(reflow_state_dict, strict=False)
+        del state_dict
 
     def compute_teacher_loss(self, teacher_model, z0, mel, bandwidth_id, encodec_bandwidth_id=None):
         if self.cfg and np.random.uniform() < self.p_uncond:

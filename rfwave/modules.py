@@ -1,9 +1,11 @@
-from typing import Optional
-
 import torch
 import math
+import torch.nn.functional as F
+
+from typing import Optional
 from torch import nn
 from torch.nn.utils import weight_norm, remove_weight_norm
+from einops import rearrange
 
 
 class GroupLinear(nn.Linear):
@@ -157,6 +159,47 @@ class ConvNeXtV2Block(nn.Module):
 
         x = residual + x
         return x
+
+
+class ConvNeXtV2BandAdaptor(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        intermediate_dim: int,
+        num_bands: Optional[int] = None,
+        dilation: int = 1,
+    ):
+        super().__init__()
+        self.num_bands = num_bands
+        self.dilation = dilation
+        self.dim = dim
+        self.dwconv_padding = (dilation * (7 - 1)) // 2
+        self.dwconv_weights = nn.Parameter(torch.empty(num_bands, dim, 1, 7))
+        self.norm = nn.LayerNorm(dim, eps=1e-6)  # not separated
+        self.pwconv1_weights = nn.Parameter(torch.empty(num_bands, intermediate_dim, dim))
+        self.act = nn.GELU()
+        self.grn = GRN(intermediate_dim, groups=1)  # not separated
+        self.pwconv2_weights = nn.Parameter(torch.zeros(num_bands, dim, intermediate_dim))
+
+        nn.init.kaiming_uniform_(self.dwconv_weights, a=math.sqrt(5))
+        nn.init.kaiming_uniform_(self.pwconv1_weights, a=math.sqrt(5))
+
+    def forward(self, x: torch.Tensor, cond_embedding_id: Optional[torch.Tensor] = None):
+        assert cond_embedding_id is not None
+        bs = x.size(0)
+        x = rearrange(x, 'b i l -> 1 (b i) l')
+        dw = self.dwconv_weights[cond_embedding_id]
+        dw = rearrange(dw, 'b o i k -> (b o) i k')
+        x = F.conv1d(x, dw, padding=self.dwconv_padding, groups=bs*self.dim, dilation=self.dilation)
+        x = rearrange(x, '1 (b o) l -> b o l', b=bs)
+        x = self.norm(x.mT)
+        p1w = self.pwconv1_weights[cond_embedding_id]
+        x = torch.einsum('b l i, b o i -> b l o', x, p1w)
+        x = self.act(x)
+        x = self.grn(x)
+        p2w = self.pwconv2_weights[cond_embedding_id]
+        x = torch.einsum('b l i, b o i -> b l o', x, p2w)
+        return x.mT
 
 
 class AdaLayerNorm(nn.Module):

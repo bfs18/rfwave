@@ -43,6 +43,7 @@ model:
         num_bands: 8
         prev_cond: False
         encodec_num_embeddings: null
+        one_step_adaptor: True
 
     head:
       class_path: rfwave.heads.RFSTFTHead

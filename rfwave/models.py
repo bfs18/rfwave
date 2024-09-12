@@ -5,7 +5,7 @@ import math
 from torch import nn
 from torch.nn.utils import weight_norm
 
-from rfwave.modules import ConvNeXtV2Block, ResBlock1, AdaLayerNorm
+from rfwave.modules import ConvNeXtV2Block, ResBlock1, AdaLayerNorm, ConvNeXtV2BandAdaptor
 
 
 class Backbone(nn.Module):
@@ -178,12 +178,14 @@ class VocosRFBackbone(Backbone):
         prev_cond: Optional[bool] = True,
         pe_scale: float = 1000.,
         with_fourier_features: bool = True,
+        one_step_adaptor: bool = False,
     ):
         super().__init__()
         self.prev_cond = prev_cond
         self.output_channels = output_channels
         self.with_fourier_features = with_fourier_features
         self.num_bands = num_bands
+        self.one_step_adaptor = one_step_adaptor
         if self.with_fourier_features:
             self.fourier_module = Base2FourierFeatures(start=6, stop=8, step=1)
             fourier_dim = output_channels * 2 * (
@@ -216,6 +218,16 @@ class VocosRFBackbone(Backbone):
                 for i in range(num_layers)
             ]
         )
+        if self.one_step_adaptor:
+            self.convnext_adaptor = nn.ModuleList(
+                [
+                    ConvNeXtV2BandAdaptor(
+                        dim=dim,
+                        intermediate_dim=intermediate_dim,
+                        num_bands=num_bands)
+                    for i in range(num_layers)
+                ]
+            )
         self.final_layer_norm = nn.LayerNorm(dim, eps=1e-6)
         self.pe_scale = pe_scale
         self.time_pos_emb = SinusoidalPosEmb(dim)
@@ -257,8 +269,11 @@ class VocosRFBackbone(Backbone):
         else:
             x = self.norm(x.transpose(1, 2))
         x = x.transpose(1, 2)
-        for conv_block in self.convnext:
-            x = conv_block(x + emb_t + emb_b, cond_embedding_id=bandwidth_id)
+        for i, conv_block in enumerate(self.convnext):
+            x_t_b = x + emb_t + emb_b
+            x = conv_block(x_t_b, cond_embedding_id=bandwidth_id)
+            if self.one_step_adaptor:
+                x = x + self.convnext_adaptor[i](x_t_b, cond_embedding_id=bandwidth_id)
         x = self.final_layer_norm(x.transpose(1, 2))
         x = self.get_out(self.out, x)
         return x
