@@ -106,6 +106,7 @@ class ReflowExp(pl.LightningModule):
             head: FourierHead,
             pretrained_ckpt_path: str,
             one_step: bool = False,
+            teacher: bool = False,
             task: str = "voc",
             sample_rate: int = 24000,
             initial_learning_rate: float = 2e-4,
@@ -122,6 +123,7 @@ class ReflowExp(pl.LightningModule):
         self.feature_extractor = feature_extractor
         backbone = torch.compile(backbone)
         self.one_step = one_step
+        self.teacher = teacher
         self.task = task
         self.reflow = Reflow(
             backbone, head, feature_loss=feature_loss, wave=wave, num_bands=num_bands,
@@ -134,7 +136,7 @@ class ReflowExp(pl.LightningModule):
 
         self.reflow.from_pretrained(pretrained_ckpt_path)
 
-        if self.one_step:
+        if self.one_step and self.teacher:
             self.teacher_reflow = copy.deepcopy(self.reflow)
             self.teacher_reflow.requires_grad_(False)
             self.teacher_reflow.eval()
@@ -181,7 +183,7 @@ class ReflowExp(pl.LightningModule):
         bi = kwargs.get("encodec_bandwidth_id", None)
         loss, loss_dict = self.reflow.compute_loss(
             z_t, t, target, features_ext, bandwidth_id=bandwidth_id, encodec_bandwidth_id=bi)
-        if self.one_step:
+        if self.one_step and self.teacher:
             teacher_loss, teacher_loss_dict = self.reflow.compute_teacher_loss(
                 self.teacher_reflow, teacher_z0, features_ext, bandwidth_id=bandwidth_id, encodec_bandwidth_id=bi)
             loss = loss + teacher_loss
