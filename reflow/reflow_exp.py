@@ -21,6 +21,8 @@ from rfwave.feature_extractors import FeatureExtractor
 class Reflow(RectifiedFlow):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.stft_loss = False
+        self.overlap_loss = False
 
     def get_train_tuple(self, batch):
         mel = batch['mel']
@@ -64,6 +66,7 @@ class Reflow(RectifiedFlow):
         return mel, bandwidth_id, (z_t, t, target, teacher_z0)
 
     def from_pretrained(self, pretrained_ckpt_path):
+        print('Reflow initialization, this does not influence model restore after model initialization.')
         print(f'Loading pretrained model from {pretrained_ckpt_path}.')
         assert Path(pretrained_ckpt_path).exists()
         state_dict = torch.load(pretrained_ckpt_path, map_location=torch.device('cpu'))
@@ -190,7 +193,8 @@ class ReflowExp(pl.LightningModule):
         self.log("train/total_loss", loss, prog_bar=True, logger=False)
         if self.global_step % 1000 == 0 and self.global_rank == 0:
             with torch.no_grad():
-                audio_hat_traj = self.reflow.sample_ode(batch['mel'], N=100, **kwargs)
+                N = 1 if self.one_step else 100
+                audio_hat_traj = self.reflow.sample_ode(batch['mel'], N=N, **kwargs)
             audio_hat = audio_hat_traj[-1]
             mel_loss = F.mse_loss(self.feature_extractor(audio_hat, **kwargs), batch['mel'])
             self.logger.log_metrics(
