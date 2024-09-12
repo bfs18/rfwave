@@ -21,8 +21,8 @@ from rfwave.feature_extractors import FeatureExtractor
 class Reflow(RectifiedFlow):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.stft_loss = False
-        self.overlap_loss = False
+        self.stft_loss = True
+        self.overlap_loss = True
 
     def get_train_tuple(self, batch):
         mel = batch['mel']
