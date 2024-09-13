@@ -11,7 +11,7 @@ from inference_voc import load_model, load_config
 torch.set_float32_matmul_precision('high')
 
 
-def sample_ode(reflow, mel, encodec_bandwidth_id=None, N=100):
+def sample_ode(reflow, mel, audio=None, encodec_bandwidth_id=None, N=25, reverse=False):
     traj = []  # to store the trajectory
     dt = 1. / N
 
@@ -28,11 +28,20 @@ def sample_ode(reflow, mel, encodec_bandwidth_id=None, N=100):
     z0 = z0.reshape(z0.size(0) * reflow.num_bands, z0.size(1) // reflow.num_bands, z0.size(2))
 
     mel = torch.repeat_interleave(mel, reflow.num_bands, 0)
-    z = z0.detach()
+    if reverse:
+        assert audio is not None
+        z1 = reflow.get_joint_z1(audio)
+        z = z1
+    else:
+        z = z0
+
     fs = (z.size(0) // reflow.num_bands, z.size(1) * reflow.num_bands, z.size(2))
     ss = z.shape
     for i in range(N):
-        t = torch.ones(z.size(0)) * i / N
+        if reverse:
+            t = 1. - torch.ones(z.size(0)) * i / N
+        else:
+            t = torch.ones(z.size(0)) * i / N
         if reflow.cfg:
             mel_ = torch.cat([mel, torch.ones_like(mel) * mel.mean(dim=(2,), keepdim=True)], dim=0)
             (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t, bandwidth_id)]
@@ -45,15 +54,21 @@ def sample_ode(reflow, mel, encodec_bandwidth_id=None, N=100):
             pred = reflow.place_joint_subband(pred.reshape(fs))
             pred = reflow.stft(reflow.istft(pred))
             pred = reflow.get_joint_subband(pred).reshape(ss)
-            z = z.detach() + pred * dt
+        if reverse:
+            z = z.detach() - pred * dt
         else:
             z = z.detach() + pred * dt
         if i == N - 1:
             traj.append(z.detach())
+    if reverse:
+        z = reflow.place_joint_subband(z.reshape(z.size(0) // reflow.num_bands, -1, z.size(2)))
+        z = reflow.istft(z)
+        return z, audio
+    else:
         traj = [reflow.place_joint_subband(tt.reshape(tt.size(0) // reflow.num_bands, -1, tt.size(2)))
                 for tt in traj]
         traj = [reflow.get_wave(tt) for tt in traj]
-    return r, traj[0]
+        return r, traj[0]
 
 
 def generate_data(exp, dataloader, num_pairs, save_dir, device):
@@ -70,9 +85,10 @@ def generate_data(exp, dataloader, num_pairs, save_dir, device):
             print(f"epoch {e}")
             dataiter = iter(dataloader)
             batch = next(dataiter)
-        features = exp.feature_extractor(batch.to(device))
+        batch = batch.to(device)
+        features = exp.feature_extractor(batch)
         with torch.no_grad():
-            z0, z1 = sample_ode(exp.reflow, features)
+            z0, z1 = sample_ode(exp.reflow, features, batch)
         for j in range(z0.size(0)):
             save_fp = Path(save_dir) / f'sample_{i:0>7d}_{j:0>3d}.th'
             torch.save({'z0': z0[j].cpu(), 'z1': z1[j].cpu(),
