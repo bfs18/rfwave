@@ -63,11 +63,43 @@ def load_model(model_dir, device, last=False):
     exp.to(device)
     return exp
 
+# test code for rf2 model.
+def sample_teacher(teacher_model, mel, encodec_bandwidth_id=None):
+    def remove_image(pred):
+        ss = pred.shape
+        fs = (ss[0] // teacher_model.num_bands, ss[1] * teacher_model.num_bands, ss[2])
+        pred = teacher_model.place_joint_subband(pred.reshape(fs))
+        pred = teacher_model.stft(teacher_model.istft(pred))
+        pred = teacher_model.get_joint_subband(pred).reshape(ss)
+        return pred
+
+    with torch.no_grad():
+        bandwidth_id = torch.tile(torch.arange(teacher_model.num_bands, device=mel.device), (mel.size(0),))
+        z0 = teacher_model.get_joint_z0(mel)
+        t0 = torch.zeros((z0.size(0),), device=mel.device)
+        mel = mel.repeat_interleave(teacher_model.num_bands, 0)
+        pred = teacher_model.get_pred(z0, t0, mel, bandwidth_id, encodec_bandwidth_id=encodec_bandwidth_id)
+        pred = remove_image(pred)
+        t_ = torch.rand((mel.shape[0] // teacher_model.num_bands,), device=mel.device) * 0.6 + 0.2     # 0.2 ~ 0.8
+        t_ = torch.repeat_interleave(t_, teacher_model.num_bands, dim=0)
+        step_t = torch.einsum('b,bij->bij', t_, pred)
+        x_t_psuedo = z0 + step_t
+        pred_teacher = teacher_model.get_pred(
+            x_t_psuedo, t_, mel, bandwidth_id, encodec_bandwidth_id=encodec_bandwidth_id)
+        # pred_teacher = remove_image(pred_teacher)
+        step_1_t = torch.einsum('b,bij->bij', 1 - t_, pred_teacher)
+        pred_teacher = step_t + step_1_t
+        z1 = z0 + pred_teacher
+    z1 = teacher_model.place_joint_subband(z1.reshape(z1.size(0) // teacher_model.num_bands, -1, z1.size(2)))
+    wave = teacher_model.get_wave(z1)
+    return wave
+
 
 def copy_synthesis(exp, y, N=1000):
     features = exp.feature_extractor(y)
     start = time.time()
     sample = exp.reflow.sample_ode(features, N=N)[-1]
+    # samples = sample_teacher(exp.reflow, features)
     cost = time.time() - start
     l = min(sample.size(-1), y.size(-1))
     rvm_loss = exp.rvm(sample[..., :l], y[..., :l])
