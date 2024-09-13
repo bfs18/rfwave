@@ -98,10 +98,11 @@ class PQMFProcessor(SampleProcessor):
         self.pqmf = PQMF(subbands, taps, cutoff_ratio, beta)
         self.register_buffer('mean_ema', torch.zeros([subbands]))
         self.register_buffer('var_ema', torch.ones([subbands]))
+        self.update = True
 
     def project_sample(self, x: torch.Tensor):
         audio_subbands = self.pqmf.analysis(x)
-        if self.training:
+        if self.training and self.update:
             audio_subbands_mean = [torch.mean(x.float()) for x in torch.unbind(audio_subbands, dim=1)]
             audio_subbands_var = [torch.var(x.float()) for x in torch.unbind(audio_subbands, dim=1)]
             self.mean_ema.lerp_(torch.stack(audio_subbands_mean).detach(), 0.01)
@@ -122,9 +123,10 @@ class STFTProcessor(SampleProcessor):
         super().__init__()
         self.register_buffer('mean_ema', torch.zeros([n_fft]))
         self.register_buffer('var_ema', torch.ones([n_fft]))
+        self.update = True
 
     def project_sample(self, x: torch.Tensor):
-        if self.training:
+        if self.training and self.update:
             mean = torch.mean(x.float(), dim=(0, 2))
             var = torch.var(x.float(), dim=(0, 2))
             self.mean_ema.lerp_(mean.detach(), 0.01)

@@ -24,6 +24,11 @@ class Reflow(RectifiedFlow):
         self.stft_loss = True
         self.overlap_loss = True
 
+        if self.stft_norm:
+            self.stft_processor.update = False
+        if self.equalizer:
+            self.eq_processor.update = False
+
     def get_train_tuple(self, batch):
         mel = batch['mel']
         z0 = batch['z0']
