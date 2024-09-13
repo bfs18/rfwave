@@ -16,6 +16,7 @@ from rfwave.lr_schedule import get_cosine_schedule_with_warmup
 from rfwave.helpers import plot_spectrogram_to_numpy, save_code
 from rfwave.instantaneous_frequency import compute_phase_error
 from rfwave.feature_extractors import FeatureExtractor
+from rfwave.modules import safe_log10
 
 
 class Reflow(RectifiedFlow):
@@ -23,6 +24,7 @@ class Reflow(RectifiedFlow):
         super().__init__(*args, **kwargs)
         self.stft_loss = True
         self.overlap_loss = True
+        self.mel_loss = False
 
         if self.stft_norm:
             self.stft_processor.update = False
@@ -74,6 +76,8 @@ class Reflow(RectifiedFlow):
         assert Path(pretrained_ckpt_path).exists()
         state_dict = torch.load(pretrained_ckpt_path, map_location=torch.device('cpu'))
         reflow_state_dict = OrderedDict()
+        mel_fb = state_dict['state_dict']['feature_extractor.mel_spec.mel_scale.fb']
+        self.register_buffer('mel_fb', mel_fb, persistent=False)
         for k, v in state_dict['state_dict'].items():
             if k.startswith('reflow.'):
                 k = k.replace('reflow.', '')
@@ -97,6 +101,38 @@ class Reflow(RectifiedFlow):
         pred = self.get_joint_subband(pred).reshape(ss)
         return pred
 
+    def compute_mel_loss(self, z_t, t, target, pred, bandwidth_id):
+        def _mag(S):
+            r, i = torch.chunk(S, 2, dim=1)
+            return torch.sqrt(r ** 2 + i ** 2)
+
+        z0 = z_t - t.view(-1, 1, 1) * target
+        pred_z1 = self._place_diff(z0 + pred, bandwidth_id)
+        target_z1 = self._place_diff(z0 + target, bandwidth_id)
+        pred_mag = _mag(pred_z1)
+        pred_mel = torch.matmul(pred_mag.transpose(-1, -2), self.mel_fb).transpose(-1, -2)
+        target_mag = _mag(target_z1)
+        target_mel = torch.matmul(target_mag.transpose(-1, -2), self.mel_fb).transpose(-1, -2)
+        pred_log_mel = safe_log10(pred_mel)
+        target_log_mel = safe_log10(target_mel)
+        mag_loss = F.mse_loss(pred_log_mel, target_log_mel)
+        converge_loss = (torch.norm(pred_mel - target_mel, p="fro") /
+                         (torch.norm(target_mel, p="fro") + 1))
+        return mag_loss + converge_loss
+
+    def compute_loss(self, z_t, t, target, mel, bandwidth_id, encodec_bandwidth_id=None):
+        if self.cfg and np.random.uniform() < self.p_uncond:
+            mel = torch.ones_like(mel) * mel.mean(dim=(2,), keepdim=True)
+        pred = self.get_pred(z_t, t, mel, bandwidth_id, encodec_bandwidth_id=encodec_bandwidth_id)
+        mel_loss = self.compute_mel_loss(z_t, t, target, pred, bandwidth_id) if self.mel_loss else 0.
+        stft_loss = self.compute_stft_loss(z_t, t, target, pred, bandwidth_id) if self.stft_loss else 0.
+        phase_loss = self.compute_phase_loss(z_t, t, target, pred, bandwidth_id) if self.phase_loss else 0.
+        overlap_loss = self.compute_overlap_loss(pred) if self.overlap_loss else 0.
+        loss = self.compute_rf_loss(pred, target, bandwidth_id)
+        loss_dict = {"loss": loss, "stft_loss": stft_loss, "mel_loss": mel_loss,
+                     "phase_loss": phase_loss, "overlap_loss": overlap_loss}
+        return loss + mel_loss + (stft_loss + phase_loss + overlap_loss) * 0.01, loss_dict
+
     def compute_teacher_loss(self, teacher_model, mel, bandwidth_id, encodec_bandwidth_id=None):
         # this mel is repeated.
         z0 = self.get_joint_z0(mel.reshape(mel.shape[0] // self.num_bands, self.num_bands, *mel.shape[1:])[:, 0])
@@ -116,10 +152,12 @@ class Reflow(RectifiedFlow):
             step_1_t = torch.einsum('b,bij->bij', 1 - t_, self.remove_image(pred_teacher))
             pred_teacher = step_t + step_1_t
         loss = self.compute_rf_loss(pred, pred_teacher.detach(), bandwidth_id)
+        mel_loss = self.compute_mel_loss(z0, t0, pred_teacher.detach(), pred, bandwidth_id) if self.mel_loss else 0.
         stft_loss = self.compute_stft_loss(z0, t0, pred_teacher, pred, bandwidth_id) if self.stft_loss else 0.
         overlap_loss = self.compute_overlap_loss(pred) if self.overlap_loss else 0.
-        loss_dict = {'teacher_loss': loss, 'teacher_stft_loss': stft_loss, 'teacher_overlap_loss': overlap_loss}
-        return loss + (stft_loss + overlap_loss) * 0.01, loss_dict
+        loss_dict = {'teacher_loss': loss, 'teacher_stft_loss': stft_loss, 'teacher_mel_loss': mel_loss,
+                     'teacher_overlap_loss': overlap_loss, 'mel_loss': mel_loss}
+        return loss + mel_loss + (stft_loss + overlap_loss) * 0.01, loss_dict
 
     def sample_teacher(self, teacher_model, mel, encodec_bandwidth_id=None):
         with torch.no_grad():

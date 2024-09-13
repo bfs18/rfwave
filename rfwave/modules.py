@@ -107,6 +107,22 @@ class GRN(nn.Module):
         return self.gamma * (x * Nx) + self.beta + x
 
 
+class AdaGRN(nn.Module):
+    """ GRN (Global Response Normalization) layer
+    """
+    def __init__(self, num_embeddings, dim):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.zeros(num_embeddings, 1, dim))
+        self.beta = nn.Parameter(torch.zeros(num_embeddings, 1, dim))
+
+    def forward(self, x, cond_embedding_id):
+        Gx = torch.norm(x, p=2, dim=1, keepdim=True)
+        Nx = Gx / (Gx.mean(dim=-1, keepdim=True) + 1e-6)
+        gamma = self.gamma[cond_embedding_id]
+        beta = self.beta[cond_embedding_id]
+        return gamma * (x * Nx) + beta + x
+
+
 class ConvNeXtV2Block(nn.Module):
     """ConvNeXt Block adapted from https://github.com/facebookresearch/ConvNeXt to 1D audio signal.
 
@@ -175,10 +191,10 @@ class ConvNeXtV2BandAdaptor(nn.Module):
         self.dim = dim
         self.dwconv_padding = (dilation * (7 - 1)) // 2
         self.dwconv_weights = nn.Parameter(torch.empty(num_bands, dim, 1, 7))
-        self.norm = nn.LayerNorm(dim, eps=1e-6)  # not separated
+        self.norm = AdaLayerNorm(num_bands, dim, eps=1e-6)
         self.pwconv1_weights = nn.Parameter(torch.empty(num_bands, intermediate_dim, dim))
         self.act = nn.GELU()
-        self.grn = GRN(intermediate_dim, groups=1)  # not separated
+        self.grn = AdaGRN(num_bands, intermediate_dim)
         self.pwconv2_weights = nn.Parameter(torch.zeros(num_bands, dim, intermediate_dim))
 
         nn.init.kaiming_uniform_(self.dwconv_weights, a=math.sqrt(5))
@@ -192,11 +208,11 @@ class ConvNeXtV2BandAdaptor(nn.Module):
         dw = rearrange(dw, 'b o i k -> (b o) i k')
         x = F.conv1d(x, dw, padding=self.dwconv_padding, groups=bs*self.dim, dilation=self.dilation)
         x = rearrange(x, '1 (b o) l -> b o l', b=bs)
-        x = self.norm(x.mT)
+        x = self.norm(x.mT, cond_embedding_id)
         p1w = self.pwconv1_weights[cond_embedding_id]
         x = torch.einsum('b l i, b o i -> b l o', x, p1w)
         x = self.act(x)
-        x = self.grn(x)
+        x = self.grn(x, cond_embedding_id)
         p2w = self.pwconv2_weights[cond_embedding_id]
         x = torch.einsum('b l i, b o i -> b l o', x, p2w)
         return x.mT
