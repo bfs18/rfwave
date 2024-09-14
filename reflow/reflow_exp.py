@@ -165,7 +165,6 @@ class ReflowExp(pl.LightningModule):
         self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head"])
 
         self.feature_extractor = feature_extractor
-        backbone = torch.compile(backbone)
         self.one_step = one_step
         self.teacher = teacher
         self.task = task
@@ -182,8 +181,11 @@ class ReflowExp(pl.LightningModule):
 
         if self.one_step and self.teacher:
             self.teacher_reflow = copy.deepcopy(self.reflow)
+            self.teacher_reflow.backbone.convnext_adaptor = None
+            self.teacher_reflow.backbone = torch.compile(self.teacher_reflow.backbone)
             self.teacher_reflow.requires_grad_(False)
             self.teacher_reflow.eval()
+        self.reflow.backbone = torch.compile(self.reflow.backbone)
 
     def configure_optimizers(self):
         gen_params = [
