@@ -48,7 +48,7 @@ class Reflow(RectifiedFlow):
         target = z1 - z0
         return mel, bandwidth_id, (z_t, t, target)
 
-    def get_one_step_train_tuple(self, batch):
+    def get_distill_train_tuple(self, batch):
         mel = batch['mel']
         z0 = batch['z0']
         z1 = batch['z1']
@@ -149,7 +149,7 @@ class ReflowExp(pl.LightningModule):
             backbone: Backbone,
             head: FourierHead,
             pretrained_ckpt_path: str,
-            one_step: bool = False,
+            distill: bool = False,
             teacher: bool = False,
             task: str = "voc",
             sample_rate: int = 24000,
@@ -165,7 +165,7 @@ class ReflowExp(pl.LightningModule):
         self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head"])
 
         self.feature_extractor = feature_extractor
-        self.one_step = one_step
+        self.distill = distill
         self.teacher = teacher
         self.task = task
         self.reflow = Reflow(
@@ -179,7 +179,7 @@ class ReflowExp(pl.LightningModule):
 
         self.reflow.from_pretrained(pretrained_ckpt_path)
 
-        if self.one_step and self.teacher:
+        if self.distill and self.teacher:
             self.teacher_reflow = copy.deepcopy(self.reflow)
             self.teacher_reflow.backbone.convnext_adaptor = None
             self.teacher_reflow.backbone = torch.compile(self.teacher_reflow.backbone)
@@ -221,15 +221,15 @@ class ReflowExp(pl.LightningModule):
         sch_gen = self.lr_schedulers()
         opt_gen.zero_grad()
 
-        if self.one_step:
-            features_ext, bandwidth_id, (z_t, t, target) = self.reflow.get_one_step_train_tuple(batch)
+        if self.distill:
+            features_ext, bandwidth_id, (z_t, t, target) = self.reflow.get_distill_train_tuple(batch)
         else:
             features_ext, bandwidth_id, (z_t, t, target) = self.reflow.get_train_tuple(batch)
 
         bi = kwargs.get("encodec_bandwidth_id", None)
         loss, loss_dict = self.reflow.compute_loss(
             z_t, t, target, features_ext, bandwidth_id=bandwidth_id, encodec_bandwidth_id=bi)
-        if self.one_step and self.teacher:
+        if self.distill and self.teacher:
             teacher_loss, teacher_loss_dict = self.reflow.compute_teacher_loss(
                 self.teacher_reflow, features_ext, bandwidth_id=bandwidth_id, encodec_bandwidth_id=bi)
             loss = loss + teacher_loss
@@ -241,7 +241,7 @@ class ReflowExp(pl.LightningModule):
         self.log("train/total_loss", loss, prog_bar=True, logger=False)
         if self.global_step % 1000 == 0 and self.global_rank == 0:
             with torch.no_grad():
-                N = 1 if self.one_step else 100
+                N = 1 if self.distill else 100
                 audio_hat_traj = self.reflow.sample_ode(batch['mel'], N=N, **kwargs)
             audio_hat = audio_hat_traj[-1]
             mel_loss = F.mse_loss(self.feature_extractor(audio_hat, **kwargs), batch['mel'])
@@ -256,7 +256,7 @@ class ReflowExp(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx, **kwargs):
         with torch.no_grad():
-            N = 1 if self.one_step else 100
+            N = 1 if self.distill else 100
             audio_hat_traj = self.reflow.sample_ode(batch['mel'], N=N, **kwargs)
         audio_hat = audio_hat_traj[-1]
         mel_loss = F.mse_loss(self.feature_extractor(audio_hat, **kwargs), batch['mel'])

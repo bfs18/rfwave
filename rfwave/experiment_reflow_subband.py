@@ -224,28 +224,25 @@ class RectifiedFlow(nn.Module):
         fs = (z.size(0) // self.num_bands, z.size(1) * self.num_bands, z.size(2))
         ss = z.shape
         for i in range(N):
-            t = torch.ones(z.size(0)) * i / N
+            t = torch.ones(z.size(0), device=mel.device) * i / N
             if self.cfg:
                 mel_ = torch.cat([mel, torch.ones_like(mel) * mel.mean(dim=(2,), keepdim=True)], dim=0)
                 (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t, bandwidth_id)]
-                pred = self.get_pred(z_, t_.to(mel.device), mel_, bandwidth_id_, encodec_bandwidth_id)
+                pred = self.get_pred(z_, t_, mel_, bandwidth_id_, encodec_bandwidth_id)
                 pred, uncond_pred = torch.chunk(pred, 2, dim=0)
                 pred = uncond_pred + self.guidance_scale * (pred - uncond_pred)
             else:
-                pred = self.get_pred(z, t.to(mel.device), mel, bandwidth_id, encodec_bandwidth_id)
+                pred = self.get_pred(z, t, mel, bandwidth_id, encodec_bandwidth_id)
             if self.wave:
                 if self.prev_cond or not self.parallel_uncond:
                     pred = self.place_subband(pred, bandwidth_id)
                     pred = self.stft(self.istft(pred))
                     pred = self.get_subband(pred, bandwidth_id)
-                    z = z.detach() + pred * dt
                 else:
                     pred = self.place_joint_subband(pred.reshape(fs))
                     pred = self.stft(self.istft(pred))
                     pred  = self.get_joint_subband(pred).reshape(ss)
-                    z = z.detach() + pred * dt
-            else:
-                z = z.detach() + pred * dt
+            z = z.detach() + pred * dt
             if i == N - 1 or keep_traj:
                 traj.append(z.detach())
         return traj
