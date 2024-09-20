@@ -141,7 +141,7 @@ def voc(model_dir, wav_dir, save_dir, guidance_scale, N=10):
         exp.reflow.guidance_scale = guidance_scale
     is_encodec = isinstance(exp.feature_extractor, rfwave.feature_extractors.EncodecFeatures)
 
-    N = 1 if getattr(exp, 'one_step', False) else N
+    N = 1 if getattr(exp, 'distill', False) else N
 
     tot_cost = 0.
     tot_dur = 0.
