@@ -546,7 +546,6 @@ class VocosExp(pl.LightningModule):
             z_t, t, target, features_ext, bandwidth_id=bandwidth_id, encodec_bandwidth_id=bi)
         loss = loss + cond_mel_loss
         self.manual_backward(loss)
-        self.skip_nan(opt_gen)
         opt_gen.step()
         sch_gen.step()
 
