@@ -79,7 +79,7 @@ if __name__ == '__main__':
         rmv_loss = rvm(syn_y, gt_y)
         syn_utmos_score = utmos_model.score(syn_y_16_khz).mean()
         gt_utmos_score = utmos_model.score(gt_y_16_khz).mean()
-        pesq_score = pesq(16000, gt_y.cpu().numpy(), syn_y.cpu().numpy(), 'wb', on_error=1)
+        pesq_score = pesq(16000, gt_y_16_khz.cpu().numpy(), syn_y_16_khz.cpu().numpy(), 'wb', on_error=1)
         # print(rmv_loss, syn_utmos_score, gt_utmos_score, pesq_score)
         for k, v in rmv_loss.items():
             tot_rmv_loss[k] += v.item()
