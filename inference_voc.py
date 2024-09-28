@@ -12,6 +12,8 @@ import torchaudio
 from pathlib import Path
 from argparse import ArgumentParser
 
+torch.set_float32_matmul_precision('high')
+
 
 def load_config(config_yaml):
     with open(config_yaml, 'r') as stream:
@@ -65,9 +67,14 @@ def copy_synthesis(exp, y, N=1000):
     return recon, cost, rvm_loss
 
 
-def voc(model_dir, wav_dir, save_dir):
+def voc(model_dir, wav_dir, save_dir, guidance_scale, N=10):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     exp = load_model(model_dir, device=device, last=True)
+    if exp.reflow.guidance_scale == 1. and guidance_scale is not None and guidance_scale > 1.:
+        warnings.warn("The original does not use classifier-free guidance. cfg argument is omitted")
+    if guidance_scale is not None:
+        print(f"Original guidance_scale {exp.reflow.guidance_scale:.2f}, using guidance_scale {guidance_scale:.2f}")
+        exp.reflow.guidance_scale = guidance_scale
 
     tot_cost = 0.
     tot_dur = 0.
@@ -78,6 +85,22 @@ def voc(model_dir, wav_dir, save_dir):
         wav_fps = arc_dict.items()
     else:
         raise ValueError(f"wav_dir should be a dir or a scp file, got {wav_dir}")
+
+    wav_fps = list(wav_fps)
+    for wav_fp in wav_fps[:5]:
+        if isinstance(wav_fp, Path):
+            y, fs = torchaudio.load(wav_fp)
+            fn = wav_fp.name
+        elif isinstance(wav_fp, tuple):
+            fn = wav_fp[0].replace('/', '_') + '.wav'
+            fs, y = wav_fp[1]
+            y = torch.from_numpy(y.T.astype('float32'))
+        else:
+            raise ValueError(f"wav_fp should be a Path or a tuple, got {wav_fp}")
+        if y.size(0) > 1:
+            y = y[:1]
+        y = y.to(exp.device)
+        copy_synthesis(exp, y, N=N)
 
     for wav_fp in wav_fps:
         if isinstance(wav_fp, Path):
@@ -95,7 +118,7 @@ def voc(model_dir, wav_dir, save_dir):
 
         y = y.to(exp.device)
         save_fp = Path(save_dir) / fn
-        recon, cost, rvm_loss = copy_synthesis(exp, y, N=10)
+        recon, cost, rvm_loss = copy_synthesis(exp, y, N=N)
         soundfile.write(save_fp, recon, fs, 'PCM_16')
         dur = len(recon) / fs
         tot_cost += cost
@@ -109,8 +132,10 @@ if __name__ == '__main__':
     parser.add_argument('--model_dir', type=str, required=True)
     parser.add_argument('--wav_dir', type=str, required=True)
     parser.add_argument('--save_dir', type=str, required=True)
+    parser.add_argument('--guidance_scale', type=float, default=None)
+    parser.add_argument('--num_steps', type=int, default=10)
 
     args = parser.parse_args()
     Path(args.save_dir).mkdir(exist_ok=True)
-    cost, dur = voc(args.model_dir, args.wav_dir, args.save_dir)
-    print(f"Total cost: {cost:.2f}s, Total duration: {dur:.2f}s, ratio: {cost / dur:.2f}")
+    cost, dur = voc(args.model_dir, args.wav_dir, args.save_dir, args.guidance_scale, args.num_steps)
+    print(f"Total cost: {cost:.2f}s, Total duration: {dur:.2f}s, ratio: {dur / cost:.2f}")
