@@ -50,7 +50,6 @@ class RectifiedFlow(nn.Module):
         self.parallel_uncond = True
         self.time_balance_loss = True
         self.noise_alpha = 0.1
-        self.cfg = guidance_scale > 1.
         self.p_uncond = p_uncond
         self.guidance_scale = guidance_scale
         assert self.backbone.output_channels == self.head.n_fft // self.num_bands + 2 * self.overlap
@@ -64,6 +63,10 @@ class RectifiedFlow(nn.Module):
         if self.feature_loss:
             self.register_buffer(
                 "feature_weight", get_feature_weight2(self.head.n_fft, self.head.hop_length))
+
+    @property
+    def cfg(self):
+        return self.guidance_scale > 1.
 
     def get_subband(self, S, i):
         if i.numel() > 1:
