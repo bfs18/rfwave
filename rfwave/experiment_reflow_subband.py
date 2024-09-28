@@ -204,12 +204,22 @@ class RectifiedFlow(nn.Module):
 
     @torch.no_grad()
     def sample_ode_subband(self, mel, band, bandwidth_id,
-                           encodec_bandwidth_id=None, N=None, keep_traj=False):
+                           encodec_bandwidth_id=None, N=None, ts=None, keep_traj=False):
         ### NOTE: Use Euler method to sample from the learned flow
         if N is None:
             N = self.N
+
+        if ts is None:
+            ts = torch.linspace(0, 1., N + 1)
+        else:
+            assert N >= len(ts) - 1
+            N_per_t = N // (len(ts) - 1)
+            new_ts = []
+            for i in range(len(ts) - 1):
+                Ni = N_per_t + N % N_per_t if i == 0 else N_per_t
+                new_ts.append(torch.linspace(ts[i], ts[i + 1], Ni + 1))
+            ts = torch.cat([nt if i == 0 else nt[1:] for i, nt in enumerate(new_ts)])
         traj = []  # to store the trajectory
-        dt = 1. / N
         if self.prev_cond or not self.parallel_uncond:
             assert band is not None
             assert bandwidth_id is not None
@@ -226,29 +236,27 @@ class RectifiedFlow(nn.Module):
         z = z0.detach()
         fs = (z.size(0) // self.num_bands, z.size(1) * self.num_bands, z.size(2))
         ss = z.shape
-        for i in range(N):
-            t = torch.ones(z.size(0)) * i / N
+        for i in range(len(ts) - 1):
+            t = torch.ones(z.size(0), device=mel.device) * ts[i]
+            dt = ts[i + 1] - ts[i]
             if self.cfg:
                 mel_ = torch.cat([mel, torch.ones_like(mel) * mel.mean(dim=(2,), keepdim=True)], dim=0)
                 (z_, t_, bandwidth_id_) = [torch.cat([v] * 2, dim=0) for v in (z, t, bandwidth_id)]
-                pred = self.get_pred(z_, t_.to(mel.device), mel_, bandwidth_id_, encodec_bandwidth_id)
+                pred = self.get_pred(z_, t_, mel_, bandwidth_id_, encodec_bandwidth_id)
                 pred, uncond_pred = torch.chunk(pred, 2, dim=0)
                 pred = uncond_pred + self.guidance_scale * (pred - uncond_pred)
             else:
-                pred = self.get_pred(z, t.to(mel.device), mel, bandwidth_id, encodec_bandwidth_id)
+                pred = self.get_pred(z, t, mel, bandwidth_id, encodec_bandwidth_id)
             if self.wave:
                 if self.prev_cond or not self.parallel_uncond:
                     pred = self.place_subband(pred, bandwidth_id)
                     pred = self.stft(self.istft(pred))
                     pred = self.get_subband(pred, bandwidth_id)
-                    z = z.detach() + pred * dt
                 else:
                     pred = self.place_joint_subband(pred.reshape(fs))
                     pred = self.stft(self.istft(pred))
                     pred  = self.get_joint_subband(pred).reshape(ss)
-                    z = z.detach() + pred * dt
-            else:
-                z = z.detach() + pred * dt
+            z = z.detach() + pred * dt
             if i == N - 1 or keep_traj:
                 traj.append(z.detach())
         return traj
@@ -276,14 +284,15 @@ class RectifiedFlow(nn.Module):
 
         return c_traj
 
-    def sample_ode(self, mel, encodec_bandwidth_id=None, N=None, keep_traj=False):
+    def sample_ode(self, mel, encodec_bandwidth_id=None, N=None, ts=None, keep_traj=False):
         traj = []
         if self.prev_cond or not self.parallel_uncond:
             band = mel.new_zeros((mel.shape[0], 2 * (self.num_bins + self.overlap), mel.shape[2]), device=mel.device)
             for i in range(self.num_bands):
                 bandwidth_id = torch.ones([mel.shape[0]], dtype=torch.long, device=mel.device) * i
                 traj_i = self.sample_ode_subband(
-                    mel, band, bandwidth_id, encodec_bandwidth_id=encodec_bandwidth_id, N=N, keep_traj=keep_traj)
+                    mel, band, bandwidth_id, encodec_bandwidth_id=encodec_bandwidth_id,
+                    N=N, ts=ts, keep_traj=keep_traj)
                 band = traj_i[-1]
                 if self.prev_cond:
                     band = torch.zeros_like(band)
@@ -294,7 +303,7 @@ class RectifiedFlow(nn.Module):
         else:
             traj_f = self.sample_ode_subband(
                 mel, None, None,
-                encodec_bandwidth_id=encodec_bandwidth_id, N=N, keep_traj=keep_traj)
+                encodec_bandwidth_id=encodec_bandwidth_id, N=N, ts=ts, keep_traj=keep_traj)
             traj = [self.place_joint_subband(tt.reshape(tt.size(0) // self.num_bands, -1, tt.size(2)))
                     for tt in traj_f]
         return [self.get_wave(tt) for tt in traj]

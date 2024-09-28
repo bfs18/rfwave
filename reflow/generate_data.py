@@ -1,6 +1,8 @@
 import torch
 
 from argparse import ArgumentParser
+
+from sympy.physics.units import velocity
 from torch.utils.data import DataLoader
 from pathlib import Path
 
@@ -13,6 +15,7 @@ torch.set_float32_matmul_precision('high')
 
 def sample_ode(reflow, mel, encodec_bandwidth_id=None, N=100):
     traj = []  # to store the trajectory
+    velocity = []
     dt = 1. / N
 
     bandwidth_id = torch.tile(torch.arange(reflow.num_bands, device=mel.device), (mel.size(0),))
@@ -45,15 +48,15 @@ def sample_ode(reflow, mel, encodec_bandwidth_id=None, N=100):
             pred = reflow.place_joint_subband(pred.reshape(fs))
             pred = reflow.stft(reflow.istft(pred))
             pred = reflow.get_joint_subband(pred).reshape(ss)
-            z = z.detach() + pred * dt
-        else:
-            z = z.detach() + pred * dt
+        z = z.detach() + pred * dt
+        velocity.append(pred.detach())
         if i == N - 1:
             traj.append(z.detach())
-        traj = [reflow.place_joint_subband(tt.reshape(tt.size(0) // reflow.num_bands, -1, tt.size(2)))
-                for tt in traj]
-        traj = [reflow.get_wave(tt) for tt in traj]
-    return r, traj[0]
+            velocity.append(z - z0)
+    traj = [reflow.place_joint_subband(tt.reshape(tt.size(0) // reflow.num_bands, -1, tt.size(2)))
+            for tt in traj]
+    traj = [reflow.get_wave(tt) for tt in traj]
+    return r, traj[0], velocity
 
 
 def generate_data(exp, dataloader, num_pairs, save_dir, device):
@@ -72,7 +75,7 @@ def generate_data(exp, dataloader, num_pairs, save_dir, device):
             batch = next(dataiter)
         features = exp.feature_extractor(batch.to(device))
         with torch.no_grad():
-            z0, z1 = sample_ode(exp.reflow, features)
+            z0, z1, vel = sample_ode(exp.reflow, features)
         for j in range(z0.size(0)):
             save_fp = Path(save_dir) / f'sample_{i:0>7d}_{j:0>3d}.th'
             torch.save({'z0': z0[j].cpu(), 'z1': z1[j].cpu(),

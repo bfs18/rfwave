@@ -1,5 +1,7 @@
 import librosa
 import warnings
+
+import numpy as np
 import soundfile
 import torch
 import yaml
@@ -17,6 +19,18 @@ from tqdm import tqdm
 
 
 torch.set_float32_matmul_precision('high')
+
+ts_config = {
+    2: [0, 0.33, 1.0],
+    3: [0, 0.12, 0.65, 1.0],
+    4: [0, 0.06, 0.33, 0.76, 1.0],
+    5: [0, 0.04, 0.18, 0.53, 0.82, 1.0],
+    6: [0, 0.03, 0.12, 0.33, 0.65, 0.86, 1.0],
+    7: [0, 0.02, 0.08, 0.22, 0.48, 0.72, 0.88, 1.0],
+    8: [0, 0.01, 0.06, 0.15, 0.33, 0.58, 0.76, 0.9, 1.0],
+    9: [0, 0.01, 0.05, 0.12, 0.24, 0.44, 0.65, 0.8, 0.91, 1.0],
+    10: [0, 0.01, 0.04, 0.09, 0.18, 0.33, 0.53, 0.7, 0.82, 0.92, 1.0]
+}
 
 
 def load_config(config_yaml):
@@ -60,8 +74,13 @@ def load_model(model_dir, device, last=False):
 
 def copy_synthesis(exp, y, N=1000):
     features = exp.feature_extractor(y)
+    if N in ts_config:
+        ts = ts_config[N]
+        assert N == len(ts) - 1
+    else:
+        ts = np.linspace(0, 1, N + 1)
     start = time.time()
-    sample = exp.reflow.sample_ode(features, N=N)[-1]
+    sample = exp.reflow.sample_ode(features, N=N, ts=ts)[-1]
     cost = time.time() - start
     l = min(sample.size(-1), y.size(-1))
     rvm_loss = exp.rvm(sample[..., :l], y[..., :l])
