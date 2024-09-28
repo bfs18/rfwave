@@ -16,8 +16,6 @@ from argparse import ArgumentParser
 from tqdm import tqdm
 
 
-ENABLE_FP16 = False
-COMPILE = False
 torch.set_float32_matmul_precision('high')
 
 
@@ -55,10 +53,6 @@ def load_model(model_dir, device, last=False):
 
     model_dict = torch.load(ckpt_fp, map_location='cpu')
     exp.load_state_dict(model_dict['state_dict'])
-
-    if COMPILE:
-        exp.reflow.backbone = torch.compile(exp.reflow.backbone)
-
     exp.eval()
     exp.to(device)
     return exp
@@ -121,7 +115,27 @@ def voc(model_dir, wav_dir, save_dir, guidance_scale, N=10):
     else:
         raise ValueError(f"wav_dir should be a dir or a scp file, got {wav_dir}")
 
-    for wav_fp in tqdm(list(wav_fps)):
+    wav_fps = list(wav_fps)
+    # compile model first.
+    for wav_fp in wav_fps[:5]:
+        if isinstance(wav_fp, Path):
+            y, fs = torchaudio.load(str(wav_fp))
+            fn = wav_fp.name
+        elif isinstance(wav_fp, tuple):
+            fn = wav_fp[0].replace('/', '_') + '.wav'
+            fs, y = wav_fp[1]
+            y = torch.from_numpy(y.T.astype('float32'))
+        else:
+            raise ValueError(f"wav_fp should be a Path or a tuple, got {wav_fp}")
+        y, _ = torchaudio.sox_effects.apply_effects_tensor(y, fs, [["norm", "-3.0"]])
+        y = y.to(exp.device)
+        if is_encodec:
+            copy_synthesis_encodec(exp, y, N=N)
+        else:
+            copy_synthesis(exp, y, N=N)
+
+    print("start synthesizing")
+    for wav_fp in tqdm(wav_fps):
         if isinstance(wav_fp, Path):
             y, fs = torchaudio.load(str(wav_fp))
             fn = wav_fp.name
@@ -144,8 +158,7 @@ def voc(model_dir, wav_dir, save_dir, guidance_scale, N=10):
         y = y.to(exp.device)
         if is_encodec:
             fn = fn.rstrip('.wav')
-            with amp.autocast(enabled=ENABLE_FP16, dtype=torch.float16) and torch.no_grad():
-                recon, cost, rvm_loss = copy_synthesis_encodec(exp, y, N=N)
+            recon, cost, rvm_loss = copy_synthesis_encodec(exp, y, N=N)
             for k, v in recon.items():
                 fn_ = f'{fn}-{k}.wav'
                 save_fp = Path(save_dir_) / fn_
@@ -156,8 +169,7 @@ def voc(model_dir, wav_dir, save_dir, guidance_scale, N=10):
                 tot_cost += cost[k]
         else:
             save_fp = Path(save_dir_) / fn
-            with amp.autocast(enabled=ENABLE_FP16, dtype=torch.float16) and torch.no_grad():
-                recon, cost, rvm_loss = copy_synthesis(exp, y, N=N)
+            recon, cost, rvm_loss = copy_synthesis(exp, y, N=N)
             soundfile.write(save_fp, recon.astype(float), fs, 'PCM_16')
             dur = len(recon) / fs
             tot_cost += cost
