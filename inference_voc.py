@@ -79,8 +79,8 @@ def copy_synthesis_encodec(exp, y, N=1000):
         features = exp.feature_extractor(y, encodec_bandwidth_id=encodec_bandwidth_id)
         encodec_audio = exp.feature_extractor.encodec(y[None, :])
         encodec_audio = encodec_audio.detach().cpu().numpy()[0, 0]
-        start = time.time()
         encodec_bandwidth_id = torch.tensor([encodec_bandwidth_id], dtype=torch.long, device=y.device)
+        start = time.time()
         sample = exp.reflow.sample_ode(features, encodec_bandwidth_id=encodec_bandwidth_id, N=N)[-1]
         cost = time.time() - start
         l = min(sample.size(-1), y.size(-1))
