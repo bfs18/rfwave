@@ -19,13 +19,8 @@ for v in d[:-1]:
     straight = torch.norm(diff, p='fro', dim=1, keepdim=False)
     straightness.append(straight.mean())
 
-fig, axes = plt.subplots(2, 1)
-axes[0].plot(np.array(straightness) / 100.)
-axes[1].plot(np.cumsum(straightness) / 100.)
-pyplot.tight_layout()
-plt.show()
-
-z = np.cumsum(straightness)
+np.save('straightness.npy', straightness)
+z = np.cumsum(straightness) / 100.
 
 half_value = z[-1] / 2
 one_third_value = z[-1] / 3
@@ -41,13 +36,41 @@ print("Index for 2/3 of the total sum:", index_two_third)
 def find_piecewise_time(straightness_cum, N):
     d = straightness_cum[-1] / N
     ts = []
+    neddles = [0.]
     for i in range(1, N):
         needle = d * i
         idx = np.abs(straightness_cum - needle).argmin()
         ts.append(idx / len(straightness_cum))
+        neddles.append(straightness_cum[idx])
 
     ts = [0] + ts + [1.]
-    return ts
+    return ts, neddles
 
 for i in range(2, 11):
-    print(f"    {i}:", find_piecewise_time(z, i))
+    ts, neddles = find_piecewise_time(z, i)
+    print(f"    {i}:", ts)
+
+
+print(ts)
+print(neddles)
+
+fig, axes = plt.subplots(2, 1)
+x = np.linspace(0, 1, 101)[:-1]
+axes[0].plot(x, np.array(straightness) / 100.)
+axes[1].plot(x, np.cumsum(straightness) / 100.)
+
+for x, y in zip([0] + ts, [0] + neddles):
+    axes[1].plot(x, y, 'rx')
+    axes[1].vlines(x=x, ymin=0, ymax=y, color='gray', linestyle='--', linewidth=0.8)  # 垂直于x轴的线
+    axes[1].hlines(y=y, xmin=0, xmax=x, color='gray', linestyle='--', linewidth=0.8)  # 垂直于y轴的线
+    # plt.text(x, 0, f'{x:.2f}', fontsize=9, ha='center', va='top')  # 在x轴上标注x值
+    # plt.text(0, y, f'{y:.2f}', fontsize=9, ha='right', va='center')  # 在y轴上标注y值
+
+# 设置 x 轴范围
+axes[0].set_xlim([0, 1])
+axes[1].set_xlim([0, 1])
+# 设置 y 轴范围
+axes[0].set_ylim([min(straightness) / 100., max(straightness) / 100.])
+axes[1].set_ylim([0, max(np.cumsum(straightness) / 100.)])
+pyplot.tight_layout()
+plt.show()
