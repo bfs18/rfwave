@@ -93,19 +93,22 @@ class MultiBandProcessor(SampleProcessor):
 
 
 class PQMFProcessor(SampleProcessor):
-    def __init__(self, subbands=4, taps=62, cutoff_ratio=0.142, beta=9.0):
+    def __init__(self, subbands=4, taps=62, cutoff_ratio=0.142, beta=9.0, update_batches=100000):
         super().__init__()
         self.pqmf = PQMF(subbands, taps, cutoff_ratio, beta)
         self.register_buffer('mean_ema', torch.zeros([subbands]))
         self.register_buffer('var_ema', torch.ones([subbands]))
+        self.register_buffer('batch', torch.zeros(()))
+        self.update_batches = update_batches
 
     def project_sample(self, x: torch.Tensor):
         audio_subbands = self.pqmf.analysis(x)
-        if self.training:
+        if self.training and self.batch < self.update_batches:
             audio_subbands_mean = [torch.mean(x.float()) for x in torch.unbind(audio_subbands, dim=1)]
             audio_subbands_var = [torch.var(x.float()) for x in torch.unbind(audio_subbands, dim=1)]
             self.mean_ema.lerp_(torch.stack(audio_subbands_mean).detach(), 0.01)
             self.var_ema.lerp_(torch.stack(audio_subbands_var).detach(), 0.01)
+            self.batch += 1
         audio_subbands = (audio_subbands - self.mean_ema.unsqueeze(-1)) / torch.sqrt(self.var_ema.unsqueeze(-1) + 1e-6)
         audio = self.pqmf.synthesis(audio_subbands)
         return audio
@@ -118,17 +121,20 @@ class PQMFProcessor(SampleProcessor):
 
 
 class STFTProcessor(SampleProcessor):
-    def __init__(self, n_fft):
+    def __init__(self, n_fft, update_batches=100000):
         super().__init__()
         self.register_buffer('mean_ema', torch.zeros([n_fft]))
         self.register_buffer('var_ema', torch.ones([n_fft]))
+        self.register_buffer('batch', torch.zeros(()))
+        self.update_batches = update_batches
 
     def project_sample(self, x: torch.Tensor):
-        if self.training:
+        if self.training and self.batch < self.update_batches:
             mean = torch.mean(x.float(), dim=(0, 2))
             var = torch.var(x.float(), dim=(0, 2))
             self.mean_ema.lerp_(mean.detach(), 0.01)
             self.var_ema.lerp_(var.detach(), 0.01)
+            self.batch += 1
         return (x - self.mean_ema[None, :, None]) / torch.sqrt(self.var_ema[None, :, None] + 1e-6)
 
     def return_sample(self, x: torch.Tensor):
