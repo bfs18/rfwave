@@ -147,9 +147,10 @@ class Attention(nn.Module):
         xk = xk.view(bsz, kv_seqlen, self.n_local_kv_heads, self.head_dim)
         xv = xv.view(bsz, kv_seqlen, self.n_local_kv_heads, self.head_dim)
 
-        # RoPE relative positional embeddings
-        xq = apply_rotary_emb(xq, q_freqs_cis)
-        xk = apply_rotary_emb(xk, k_freqs_cis)
+        if q_freqs_cis is not None and k_freqs_cis is not None:
+            # RoPE relative positional embeddings
+            xq = apply_rotary_emb(xq, q_freqs_cis)
+            xk = apply_rotary_emb(xk, k_freqs_cis)
 
         # grouped multiquery attention: expand out keys and values
         xk = repeat_kv(xk, self.n_rep)  # (bs, kv_seqlen, n_local_heads, head_dim)
