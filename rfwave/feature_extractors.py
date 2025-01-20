@@ -243,3 +243,11 @@ class S3Features(FeatureExtractor):
     def forward(self, audio: torch.Tensor, sample_rate: int):
         if sample_rate != 16000:
             audio = torchaudio.functional.resample(audio, orig_freq=sample_rate, new_freq=16000)
+        feat = log_mel_spectrogram(audio, n_mels=128)
+        lengths = np.array([feat.shape[2]] * feat.shape[0], dtype=np.int32)
+        speech_token = session.run(
+            None,
+            {session.get_inputs()[0].name: feat.detach().cpu().numpy(),
+             session.get_inputs()[1].name: lengths})[0]
+        speech_token = torch.from_numpy(speech_token, device=audio.device)
+        return speech_token

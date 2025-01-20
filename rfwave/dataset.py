@@ -61,6 +61,9 @@ class VocosDataModule(LightningDataModule):
         elif cfg.task == "dur":
             dataset = DurDataset(cfg, train=train)
             collate_fn = dur_collate
+        elif cfg.task == "s3_voc":
+            dataset = S3Dataset(cfg, train=train)
+            collate_fn = None
         else:
             raise ValueError(f"Unknown task: {cfg.task}")
         if cfg.task == 'tts' and not cfg.segment:
@@ -199,6 +202,86 @@ class VocosDataset(Dataset):
         gain = np.random.uniform(-1, -6) if self.train else -3
         y, _ = torchaudio.sox_effects.apply_effects_tensor(y, sr, [["norm", f"{gain:.2f}"]])
         return y[0]
+
+
+class S3Dataset(Dataset):
+    def __init__(self, cfg: DataConfig, train: bool):
+        assert cfg.task == "s3_voc"
+        assert cfg.hop_length is not None
+        assert cfg.padding is not None
+        with open(cfg.filelist_path) as f:
+            self.filelist = f.read().splitlines()
+        self.sampling_rate = cfg.sampling_rate
+        self.num_samples = cfg.num_samples
+        self.train = train
+        self.hop_length = cfg.hop_length
+        self.padding = cfg.padding
+        self._cache = dict() if getattr(cfg, 'cache', False) else None
+        assert cfg.min_context == cfg.max_context
+        self.min_context = cfg.min_context
+        self.max_context = cfg.max_context + 1
+
+    def __len__(self):
+        return len(self.filelist)
+
+    def __getitem__(self, index):
+        k, audio_fp, *_ = self.filelist[index].split("|")
+        if self._cache is None or k not in self._cache:
+            y, sr = torchaudio.load(audio_fp)
+            if y.size(0) > 1:
+                y = y[:1]
+            if sr != self.sampling_rate:
+                y = torchaudio.functional.resample(y, orig_freq=sr, new_freq=self.sampling_rate)
+            if self._cache is not None:
+                self._cache[k] = y
+        else:
+            y = self._cache[k]
+
+        num_frames = self.num_samples // self.hop_length + (1 if self.padding == "center" else 0)
+        y = y.detach().clone()[:, :y.size(1) // self.hop_length * self.hop_length]
+
+        if y.size(-1) < self.num_samples + self.hop_length:
+            repeats = np.ceil((self.num_samples + self.hop_length) / y.size(-1)).astype(np.int64)
+            y = y.repeat(1, repeats)
+
+        total_frames = y.size(-1) // self.hop_length
+        assert total_frames - num_frames + 1 > 0, (
+            f"y length {y.size(-1)}, total_frames {total_frames}, num_frames {num_frames}")
+        if self.train:
+            start_frame = np.random.randint(low=0, high=total_frames - num_frames + 1)
+            start = start_frame * self.hop_length
+            end_frame = start_frame + num_frames
+            y_seg = y[:, start: start + self.num_samples]
+        else:
+            # During validation, take always the first segment for determinism
+            y_seg = y[:, : self.num_samples]
+            start = 0
+            start_frame = 0
+            end_frame = start_frame + num_frames
+
+        # get context
+        if start_frame > self.min_context:
+            max_context = np.minimum(start_frame, self.max_context)
+            ctx_n_frame = np.random.randint(self.min_context, max_context)
+            ctx_start_frame = np.random.randint(0, start_frame - ctx_n_frame)
+        elif total_frames - (start_frame + num_frames) > self.min_context:
+            max_context = np.minimum(total_frames - (start_frame + num_frames), self.max_context)
+            ctx_n_frame = np.random.randint(self.min_context, max_context)
+            ctx_start_frame = np.random.randint(start_frame + num_frames, total_frames - ctx_n_frame)
+        else:
+            ctx_start_frame = 0
+            ctx_n_frame = self.min_context
+        ctx_start = ctx_start_frame * self.hop_length
+        ctx_end = (ctx_start_frame + ctx_n_frame) * self.hop_length
+        y_ctx = y[:, ctx_start: ctx_end]
+        ctx_n_frame = ctx_n_frame + 1 if self.padding == 'center' else ctx_n_frame
+
+        gain = np.random.uniform(-1, -6) if self.train else -3
+        y_seg, _ = torchaudio.sox_effects.apply_effects_tensor(
+            y_seg, self.sampling_rate, [["norm", f"{gain:.2f}"]])
+        y_ctx, _ = torchaudio.sox_effects.apply_effects_tensor(
+            y_ctx, self.sampling_rate, [["norm", f"{gain:.2f}"]])
+        return y_seg[0], y_ctx[0], ctx_n_frame
 
 
 def load_ark_scp(scp_fp):
