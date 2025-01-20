@@ -250,14 +250,11 @@ class S3Dataset(Dataset):
         if self.train:
             start_frame = np.random.randint(low=0, high=total_frames - num_frames + 1)
             start = start_frame * self.hop_length
-            end_frame = start_frame + num_frames
             y_seg = y[:, start: start + self.num_samples]
         else:
             # During validation, take always the first segment for determinism
             y_seg = y[:, : self.num_samples]
-            start = 0
             start_frame = 0
-            end_frame = start_frame + num_frames
 
         # get context
         if start_frame > self.min_context:
@@ -311,7 +308,7 @@ class ArkDataset(torch.utils.data.Dataset):
             y = y[None, :]
         if y.size(0) > 1:
             # mix to mono
-            y = y.mean(dim=0, keepdim=True)
+            y = y[:1]
         if sr != self.sampling_rate:
             y = torchaudio.functional.resample(y, orig_freq=sr, new_freq=self.sampling_rate)
         if y.size(-1) < self.num_samples:
