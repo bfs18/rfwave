@@ -114,6 +114,28 @@ class RectifiedFlow(nn.Module):
         sS_i = [_get_subband(s, i) for i, s in enumerate(sS_ri[1::2])]
         return torch.cat([torch.cat(sS_r, dim=1), torch.cat(sS_i, dim=1)], dim=1)
 
+    def get_joint_and_reshape(self, S, bandwidth_id):
+        if self.prev_cond or not self.parallel_uncond:
+            out = self.get_subband(S, bandwidth_id)
+        else:
+            out = self.get_joint_subband(S)
+            out = out.reshape(out.size(0) * self.num_bands, -1, out.size(2))
+        return out
+
+    def reshape_and_place_joint(self, S, bandwidth_id):
+        if self.prev_cond or not self.parallel_uncond:
+            out = self.place_subband(S, bandwidth_id)
+        else:
+            S = S.reshape(S.shape[0] // self.num_bands, -1, S.shape[2])
+            out = self.place_joint_subband(S)
+        return out
+
+    def make_consistent(self, z, bandwidth_id):
+        z = self.reshape_and_place_joint(z, bandwidth_id)
+        z = self.stft(self.istft(z))
+        z = self.get_joint_and_reshape(z, bandwidth_id)
+        return z
+
     def mask_cond(self, cond):
         cond = torch.stack(torch.chunk(cond, 2, dim=1), dim=-1)
         cond[:, cond.size(1) - self.right_overlap:] = 0.
@@ -168,7 +190,7 @@ class RectifiedFlow(nn.Module):
     def get_joint_z1(self, audio):
         S = self.get_eq_norm_stft(audio)
         z1 = self.get_joint_subband(S)
-        z1 = z1.reshape(z1.size(0) * self.num_bands, z1.size(1) // self.num_bands, z1.size(2))
+        z1 = z1.reshape(z1.size(0) * self.num_bands, -1, z1.size(2))
         return z1
 
     def get_wave(self, x):
@@ -234,8 +256,6 @@ class RectifiedFlow(nn.Module):
             mel = torch.repeat_interleave(mel, self.num_bands, 0)
 
         z = z0.detach()
-        fs = (z.size(0) // self.num_bands, z.size(1) * self.num_bands, z.size(2))
-        ss = z.shape
         for i in range(len(ts) - 1):
             t = torch.ones(z.size(0), device=mel.device) * ts[i]
             dt = ts[i + 1] - ts[i]
@@ -248,14 +268,7 @@ class RectifiedFlow(nn.Module):
             else:
                 pred = self.get_pred(z, t, mel, bandwidth_id, encodec_bandwidth_id)
             if self.wave:
-                if self.prev_cond or not self.parallel_uncond:
-                    pred = self.place_subband(pred, bandwidth_id)
-                    pred = self.stft(self.istft(pred))
-                    pred = self.get_subband(pred, bandwidth_id)
-                else:
-                    pred = self.place_joint_subband(pred.reshape(fs))
-                    pred = self.stft(self.istft(pred))
-                    pred  = self.get_joint_subband(pred).reshape(ss)
+                pred = self.make_consistent(pred, bandwidth_id)
             z = z.detach() + pred * dt
             if i == N - 1 or keep_traj:
                 traj.append(z.detach())
@@ -324,22 +337,15 @@ class RectifiedFlow(nn.Module):
         target = target / torch.sqrt(v + 1e-6)
         return pred, target
 
-    def _place_diff(self, diff, bandwidth_id):
-        if self.prev_cond or not self.parallel_uncond:
-            diff = self.place_subband(diff, bandwidth_id)
-        else:
-            diff = diff.reshape(diff.shape[0] // self.num_bands, -1, diff.shape[2])
-            diff = self.place_joint_subband(diff)
-        return diff
-
     def compute_stft_loss(self, z_t, t, target, pred, bandwidth_id):
         def _mag(S):
             r, i = torch.chunk(S, 2, dim=1)
-            return torch.sqrt(r ** 2 + i ** 2)
-
+            return torch.sqrt((r ** 2 + i ** 2 + 1e-10))
         z0 = z_t - t.view(-1, 1, 1) * target
-        pred_z1 = self._place_diff(z0 + pred, bandwidth_id)
-        target_z1 = self._place_diff(z0 + target, bandwidth_id)
+        if self.wave:
+            pred = self.make_consistent(pred, bandwidth_id)
+        pred_z1 = self.reshape_and_place_joint(z0 + pred, bandwidth_id)
+        target_z1 = self.reshape_and_place_joint(z0 + target, bandwidth_id)
         pred_mag = _mag(pred_z1)
         target_mag = _mag(target_z1)
         pred_log_mag = safe_log10(pred_mag)
@@ -355,8 +361,8 @@ class RectifiedFlow(nn.Module):
             return torch.complex(r, i)
 
         z0 = z_t - t.view(-1, 1, 1) * target
-        pred_z1 = self._place_diff(z0 + pred, bandwidth_id)
-        target_z1 = self._place_diff(z0 + target, bandwidth_id)
+        pred_z1 = self.reshape_and_place_joint(z0 + pred, bandwidth_id)
+        target_z1 = self.reshape_and_place_joint(z0 + target, bandwidth_id)
         pred_spec = _complex_spec(pred_z1)
         targ_spec = _complex_spec(target_z1)
         pred_if = compute_instantaneous_frequency(pred_spec)
@@ -398,11 +404,10 @@ class RectifiedFlow(nn.Module):
 
     def compute_rf_loss(self, pred, target, bandwidth_id):
         if self.wave:
+            pred = self.make_consistent(pred, bandwidth_id)
             if self.time_balance_loss:
                 pred, target = self.time_balance_for_loss(pred, target)
-            diff = pred - target
-            diff = self._place_diff(diff, bandwidth_id)
-            loss = self.istft(diff).pow(2.).mean()
+            loss = F.mse_loss(pred, target)
         else:
             if self.feature_loss:
                 # if self.stft_norm:
@@ -412,7 +417,7 @@ class RectifiedFlow(nn.Module):
                     pred, target = self.time_balance_for_loss(pred, target)
 
                 diff = (pred - target) * np.sqrt(self.head.n_fft).astype(np.float32)
-                diff = self._place_diff(diff, bandwidth_id)
+                diff = self.reshape_and_place_joint(diff, bandwidth_id)
                 diff = torch.einsum("bct,dc->bdt", diff, self.feature_weight)
                 feature_loss = torch.mean(diff ** 2) * self.num_bands
                 loss = feature_loss
