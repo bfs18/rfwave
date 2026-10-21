@@ -52,21 +52,31 @@ pip install -r requirements.txt
 
 ## Pre-trained models
 
+> **Important:** the pre-trained checkpoints below are released for commit
+> [`28698f06b188e49bd2e112f8e9e67e777292a323`](https://github.com/bfs18/rfwave/tree/28698f06b188e49bd2e112f8e9e67e777292a323).
+> **If you use any of these checkpoints, please check out that commit first** — the module
+> layout and state-dict keys match that revision, and other revisions may fail to load with
+> `strict=True`.
+>
+> ```bash
+> git checkout 28698f06b188e49bd2e112f8e9e67e777292a323
+> ```
+
 `python3 inference_voc.py --model_dir MODEL_DIR --wav_dir WAV_DIR --save_dir SAVE_DIR [--guidance_scale GUIDANCE_SCALE]`
 
 + Optional parameter: `--guidance_scale` Adjusts the guidance scale for input types. Recommended to set 1.0 for Mel input and 2.0 for Encodec token input.
 
 + Available Models
-    + [rfwave-libritts-24k](https://drive.google.com/file/d/1IQNXAAVRTtr9P8Gc-CoPeRIJ_l_O4y38/view?usp=sharing)
+    + [rfwave-libritts-24k](https://huggingface.co/laupeng1989/rfwave-libritts-24k) — 24 kHz, Mel input
 
-    + [rfwave-jamendo-44.1k](https://drive.google.com/file/d/1yM0BWFrXvuwb2SZvyPOBr6Wgto0sjdqh/view?usp=sharing)
+    + [rfwave-jamendo-44.1k](https://huggingface.co/laupeng1989/rfwave-jamendo-44.1k) — 44.1 kHz, Mel input
 
-    + [rfwave-encodec-24k](https://drive.google.com/file/d/1gUpkpJPIs-9wKoLIhX8ZHfl5PhMNJdDb/view?usp=sharing)
+    + [rfwave-encodec-24k](https://huggingface.co/laupeng1989/rfwave-encodec-24k) — 24 kHz, EnCodec token input
 
 ## Test set
-The test set for reconstructing waveform form EnCodec tokens.
+The test set for reconstructing waveform from EnCodec tokens (v2, 900 clips, 24 kHz mono, 1.82 h).
 
-[audio_reconstruct_universal_testset](https://drive.google.com/file/d/1WjRRfD1yJSjEA3xfC8-635ugpLvnRK0f/view?usp=sharing)
+[audio_reconstruct_universal_testset_v2](https://huggingface.co/datasets/laupeng1989/audio-reconstruct-universal-testset-v2)
 
 ## Thanks
 
